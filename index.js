@@ -22,6 +22,12 @@ const AI_BASE_URL = (process.env.AI_BASE_URL || "https://api.openai.com/v1").rep
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const PORT = process.env.PORT || 3000;
 
+// Track last webhook for status checks (bypasses slow Render logs)
+let lastWebhook = { at: null, from: null, text: null };
+app.get("/status", (req, res) => {
+  res.json({ ok: true, lastWebhook, now: new Date().toISOString() });
+});
+
 // In-memory pause: { patientNumber: unpauseTimestamp }
 // When the secretary replies from the Business app (echo), the bot pauses for that chat.
 const pausedChats = new Map();
@@ -160,6 +166,7 @@ app.post("/webhook", async (req, res) => {
       }
       const text = msg.text.body;
       console.log(`[msg] from ${from}: ${text}`);
+      lastWebhook = { at: new Date().toISOString(), from, text };
       const reply = await aiReply(text);
       await sendWhatsApp(from, reply);
     }
