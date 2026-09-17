@@ -23,7 +23,7 @@ const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const PORT = process.env.PORT || 3000;
 
 // Track last webhook for status checks (bypasses slow Render logs)
-let lastWebhook = { at: null, from: null, text: null };
+let lastWebhook = { at: null, from: null, text: null, reply: null };
 app.get("/status", (req, res) => {
   res.json({ ok: true, lastWebhook, now: new Date().toISOString() });
 });
@@ -166,8 +166,8 @@ app.post("/webhook", async (req, res) => {
       }
       const text = msg.text.body;
       console.log(`[msg] from ${from}: ${text}`);
-      lastWebhook = { at: new Date().toISOString(), from, text };
       const reply = await aiReply(text);
+      lastWebhook = { at: new Date().toISOString(), from, text, reply };
       await sendWhatsApp(from, reply);
     }
 
