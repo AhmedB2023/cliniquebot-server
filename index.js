@@ -14,12 +14,6 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-// Diagnostic: log every incoming request
-app.use((req, res, next) => {
-  console.log(`[req] ${req.method} ${req.path}`);
-  next();
-});
-
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "clinic-bot-verify-123";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "";
@@ -127,14 +121,10 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200); // ack fast, process async
   try {
-    console.log(`[webhook:POST] has body: ${!!req.body}, keys: ${req.body ? Object.keys(req.body).join(",") : "none"}`);
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
-    if (!value) {
-      console.log("[webhook:POST] no value in payload -> ignored");
-      return;
-    }
+    if (!value) return;
 
     // 1) Staff replied from the WhatsApp Business app (coexistence echo) -> pause bot
     const echoes = value.smb_message_echoes || [];
