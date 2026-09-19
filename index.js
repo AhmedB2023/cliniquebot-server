@@ -31,7 +31,7 @@ app.get("/status", (req, res) => {
 // In-memory pause: { patientNumber: unpauseTimestamp }
 // When the secretary replies from the Business app (echo), the bot pauses for that chat.
 const pausedChats = new Map();
-const PAUSE_MS = 30 * 60 * 1000; // 30 minutes
+const PAUSE_MS = 10 * 60 * 1000; // 10 minutes
 
 const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi Tounes.
 - Jaweb dima bel derja tounsiya, bel 7rouf el latiniya (arabizi), w b i5tisar (message 9sir).
@@ -138,7 +138,7 @@ app.post("/webhook", async (req, res) => {
       const patient = echo.recipient || echo.to;
       if (patient) {
         pausedChats.set(patient, Date.now() + PAUSE_MS);
-        console.log(`[echo] staff took over chat ${patient} -> bot paused 30min`);
+        console.log(`[echo] staff took over chat ${patient} -> bot paused 10min`);
       }
     }
     // also handle generic message echoes some providers send
@@ -147,7 +147,7 @@ app.post("/webhook", async (req, res) => {
       const patient = echo.recipient || echo.to;
       if (patient) {
         pausedChats.set(patient, Date.now() + PAUSE_MS);
-        console.log(`[echo] staff took over chat ${patient} -> bot paused 30min`);
+        console.log(`[echo] staff took over chat ${patient} -> bot paused 10min`);
       }
     }
 
@@ -181,6 +181,50 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.get("/", (req, res) => res.send("clinic-bot server running 🤖"));
+
+// ---------- Browser test chat: same AI brain, no WhatsApp ----------
+// Open /test in a browser, enter the verify token as password, and chat.
+// Every message goes through the exact same aiReply() as the WhatsApp webhook.
+const TEST_PAGE = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot test chat</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:12px;background:#f4f4f4}
+h2{margin:6px 0} #badge{font-size:12px;padding:3px 8px;border-radius:10px;background:#ddd}
+#log{border:1px solid #ccc;background:#fff;height:55vh;overflow-y:auto;padding:10px;border-radius:8px;margin:10px 0}
+.me{text-align:right;margin:6px 0}.me span{background:#d1e7ff;padding:6px 10px;border-radius:12px;display:inline-block;max-width:80%}
+.bot{margin:6px 0}.bot span{background:#e8e8e8;padding:6px 10px;border-radius:12px;display:inline-block;max-width:80%}
+#row{display:flex;gap:6px}input{flex:1;padding:10px;border-radius:8px;border:1px solid #ccc;font-size:16px}
+button{padding:10px 14px;border-radius:8px;border:0;background:#0b7;color:#fff;font-size:16px}
+#pwrow{display:flex;gap:6px;margin-bottom:8px}
+</style></head><body>
+<h2>Bot test <span id="badge">...</span></h2>
+<div id="pwrow"><input id="pw" type="password" placeholder="password (verify token)"><button onclick="unlock()">OK</button></div>
+<div id="log"></div>
+<div id="row"><input id="msg" placeholder="ekteb houni..." onkeydown="if(event.key==='Enter')send()"><button onclick="send()">Send</button></div>
+<script>
+let pw="";
+function unlock(){pw=document.getElementById('pw').value;document.getElementById('pwrow').style.display='none';add('bot','mriguel! Ekteb ay message bech tjareb el bot.');}
+function add(w,t){const d=document.createElement('div');d.className=w;const s=document.createElement('span');s.textContent=t;d.appendChild(s);document.getElementById('log').appendChild(d);document.getElementById('log').scrollTop=1e9;}
+async function send(){const i=document.getElementById('msg');const t=i.value.trim();if(!t)return;i.value='';add('me',t);
+try{const r=await fetch('/test/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,text:t})});
+const j=await r.json();
+if(!r.ok){add('bot','⚠️ '+(j.error||'error'));return;}
+document.getElementById('badge').textContent=j.ai?'AI':'fallback';document.getElementById('badge').style.background=j.ai?'#bfe8bf':'#f0d090';
+add('bot',j.reply);}catch(e){add('bot','⚠️ mochkla fel connexion');}}
+</script></body></html>`;
+
+app.get("/test", (req, res) => res.send(TEST_PAGE));
+
+app.post("/test/chat", async (req, res) => {
+  const { password, text } = req.body || {};
+  if (password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const clean = (text || "").trim().slice(0, 500);
+  if (!clean) return res.status(400).json({ error: "empty message" });
+  const reply = await aiReply(clean);
+  res.json({ reply, ai: !!AI_API_KEY });
+});
 
 app.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
