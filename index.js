@@ -1,5 +1,5 @@
-// WhatsApp Clinic Bot — MVP server (Phase 0: talks)
-// Flow: patient WhatsApp -> Meta webhook -> this server -> AI (Derja) -> Meta API -> patient
+// WhatsApp Clinic Bot — MVP server (Phase 1: remembers)
+// Flow: patient WhatsApp -> Meta webhook -> this server -> AI (Derja + history) -> Meta API -> patient
 //
 // ENV needed:
 //   VERIFY_TOKEN    - token you choose, pasted in Meta webhook config
@@ -8,6 +8,7 @@
 //   AI_API_KEY      - OpenAI (or compatible) API key [optional for loop test]
 //   AI_BASE_URL     - default https://api.openai.com/v1
 //   AI_MODEL        - default gpt-4o-mini
+//   DATABASE_URL    - Render Postgres internal URL (memory; optional — bot works without it)
 //   PORT            - default 3000
 
 const express = require("express");
@@ -21,6 +22,8 @@ const AI_API_KEY = process.env.AI_API_KEY || "";
 const AI_BASE_URL = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const PORT = process.env.PORT || 3000;
+
+const db = require("./db"); // Postgres memory (stage 1)
 
 // Track last webhook for status checks (bypasses slow Render logs)
 let lastWebhook = { at: null, from: null, text: null, reply: null };
@@ -68,8 +71,8 @@ async function sendWhatsApp(to, text) {
   else console.log(`[send:OK] to ${to}: ${text.slice(0, 60)}...`);
 }
 
-// ---------- AI: Derja reply ----------
-async function aiReply(patientText) {
+// ---------- AI: Derja reply (with conversation history) ----------
+async function aiReply(patientText, history = []) {
   // Fallback: keyword replies so the webhook loop works even without an AI key
   if (!AI_API_KEY) return fallbackReply(patientText);
 
@@ -83,6 +86,7 @@ async function aiReply(patientText) {
       model: AI_MODEL,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
+        ...history.map((m) => ({ role: m.role, content: m.text })),
         { role: "user", content: patientText },
       ],
       max_tokens: 200,
@@ -168,9 +172,12 @@ app.post("/webhook", async (req, res) => {
       }
       const text = msg.text.body;
       console.log(`[msg] from ${from}: ${text}`);
-      const reply = await aiReply(text);
+      const history = await db.getHistory(from); // last 15 messages of this patient
+      await db.saveMessage(from, "user", text);
+      const reply = await aiReply(text, history);
       lastWebhook = { at: new Date().toISOString(), from, text, reply };
       await sendWhatsApp(from, reply);
+      await db.saveMessage(from, "assistant", reply);
     }
 
     // 3) Status updates -> just log
@@ -187,6 +194,7 @@ app.get("/", (req, res) => res.send("clinic-bot server running 🤖"));
 // ---------- Browser test chat: same AI brain, no WhatsApp ----------
 // Open /test in a browser, enter the verify token as password, and chat.
 // Every message goes through the exact same aiReply() as the WhatsApp webhook.
+// Test chats are stored under the "webtest" session so memory can be tested here too.
 const TEST_PAGE = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -224,13 +232,16 @@ app.post("/test/chat", async (req, res) => {
   if (password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
   const clean = (text || "").trim().slice(0, 500);
   if (!clean) return res.status(400).json({ error: "empty message" });
-  const reply = await aiReply(clean);
+  const history = await db.getHistory("webtest");
+  await db.saveMessage("webtest", "user", clean);
+  const reply = await aiReply(clean, history);
+  await db.saveMessage("webtest", "assistant", reply);
   res.json({ reply, ai: !!AI_API_KEY });
 });
 
 app.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
+  db.initDb(); // create messages table if needed (memory stage 1)
   console.log(`AI: ${AI_API_KEY ? AI_MODEL + " via " + AI_BASE_URL : "FALLBACK mode (no AI_API_KEY)"}`);
   console.log(`WhatsApp: ${WHATSAPP_TOKEN && PHONE_NUMBER_ID ? "configured" : "NOT configured (set WHATSAPP_TOKEN + PHONE_NUMBER_ID)"}`);
 });
-
