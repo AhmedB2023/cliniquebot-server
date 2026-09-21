@@ -1,5 +1,6 @@
-// db.js — Postgres persistence for clinic-bot (memory stage 1)
-// Stores every patient message + bot reply, per phone number.
+// db.js — Postgres persistence for clinic-bot
+// Stage 1: messages table (conversation memory per patient)
+// Stage 2: bookings table (pending/confirmed/cancelled rendez-vous)
 // If DATABASE_URL is not set, everything becomes a safe no-op and the bot
 // keeps working exactly like before (stateless).
 
@@ -35,6 +36,14 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages(phone, id);
+    CREATE TABLE IF NOT EXISTS bookings (
+      id SERIAL PRIMARY KEY,
+      phone TEXT NOT NULL,             -- patient phone (or 'webtest')
+      slot TEXT NOT NULL,              -- e.g. 'ba3d ghodwa 10'
+      status TEXT NOT NULL DEFAULT 'pending',  -- pending | confirmed | cancelled
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status, id);
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -70,4 +79,58 @@ async function getHistory(phone, limit = 15) {
   }
 }
 
-module.exports = { initDb, saveMessage, getHistory, hasDb: () => !!DATABASE_URL };
+// ---------- Bookings (stage 2) ----------
+
+async function saveBooking(phone, slot) {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query(
+    "INSERT INTO bookings(phone, slot) VALUES($1,$2) RETURNING id",
+    [phone, slot]
+  );
+  return r.rows[0].id;
+}
+
+async function findPendingBooking(phone, slot) {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query(
+    "SELECT id FROM bookings WHERE phone=$1 AND slot=$2 AND status='pending' LIMIT 1",
+    [phone, slot]
+  );
+  return r.rows[0] || null;
+}
+
+async function getBooking(id) {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query("SELECT * FROM bookings WHERE id=$1", [id]);
+  return r.rows[0] || null;
+}
+
+async function getPendingBookings() {
+  const p = getPool();
+  if (!p) return [];
+  const r = await p.query(
+    "SELECT * FROM bookings WHERE status='pending' ORDER BY created_at DESC"
+  );
+  return r.rows;
+}
+
+async function setBookingStatus(id, status) {
+  const p = getPool();
+  if (!p) return;
+  await p.query("UPDATE bookings SET status=$1 WHERE id=$2", [status, id]);
+}
+
+module.exports = {
+  initDb,
+  saveMessage,
+  getHistory,
+  saveBooking,
+  findPendingBooking,
+  getBooking,
+  getPendingBookings,
+  setBookingStatus,
+  hasDb: () => !!DATABASE_URL,
+};
