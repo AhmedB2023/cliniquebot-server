@@ -99,12 +99,15 @@ async function saveBooking(phone, slot, slot_at = null) {
   return r.rows[0].id;
 }
 
-async function findPendingBooking(phone, slot) {
+// Same patient + same instant + still pending = duplicate.
+// Compares slot_at (the instant), NOT the display text — "ghodwa 23 septembre, 17:00"
+// and "23 septembre, 17:00" are the same slot and must not double-book.
+async function findPendingBooking(phone, slot_at) {
   const p = getPool();
   if (!p) return null;
   const r = await p.query(
-    "SELECT id FROM bookings WHERE phone=$1 AND slot=$2 AND status='pending' LIMIT 1",
-    [phone, slot]
+    "SELECT id FROM bookings WHERE phone=$1 AND slot_at=$2 AND status='pending' LIMIT 1",
+    [phone, slot_at]
   );
   return r.rows[0] || null;
 }

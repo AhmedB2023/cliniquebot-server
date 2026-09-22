@@ -8,8 +8,13 @@
 
 function tunisNow() {
   // Shift so that getUTC*() reads Tunisia wall time.
-  return new Date(Date.now() + 3600000);
+  return new Date(nowMs() + 3600000);
 }
+
+// Overridable clock for the local regression test. Production never calls it.
+let nowOverride = null;
+function nowMs() { return nowOverride !== null ? nowOverride : Date.now(); }
+function setNow(ms) { nowOverride = ms; }
 
 function norm(s) {
   return (s || "")
@@ -76,8 +81,9 @@ function resolveSlot(rawText) {
   let dateUTC = null;
   let dateDisplay = null;
 
-  // ---- 1) explicit date: "21 septembre" ----
+  // ---- 1) explicit date: "21 septembre" or "25/09" ----
   const dm = t.match(/(\d{1,2})\s+(janvier|janfi|fevrier|fev|mars|avril|mai|juin|juillet|juil|aout|septembre|sept|octobre|oct|novembre|nov|decembre|dec)\b/);
+  const dsl = !dm && t.match(/\b(\d{1,2})[\/-](\d{1,2})\b/); // DD/MM or DD-MM
   let rest = t;
   if (dm) {
     const day = parseInt(dm[1], 10);
@@ -90,6 +96,19 @@ function resolveSlot(rawText) {
       dateDisplay = `${day} ${FR_MONTH[mon]}`;
     }
     rest = t.replace(dm[0], " ");
+  } else if (dsl) {
+    const day = parseInt(dsl[1], 10);
+    const mon = parseInt(dsl[2], 10) - 1; // Tunisian order: day first
+    if (mon >= 0 && mon <= 11) {
+      const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
+      if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
+        let dms = Date.UTC(now.getUTCFullYear(), mon, day);
+        if (dms < todayStart) dms = Date.UTC(now.getUTCFullYear() + 1, mon, day);
+        dateUTC = dms;
+        dateDisplay = `${day} ${FR_MONTH[mon]}`;
+      }
+    }
+    rest = t.replace(dsl[0], " ");
   }
 
   // ---- 2) weekday / relative day ----
@@ -123,7 +142,7 @@ function resolveSlot(rawText) {
   // Number words -> digits for the time search ("khamsa" -> 5).
   // The weekday word is blanked first so "ethnin" (Tuesday) isn't read as 2.
   let restTime = rest;
-  if (dayWord) restTime = restTime.split(" " + dayWord + " ").join(" ");
+  if (dayWord) restTime = restTime.replace(" " + dayWord + " ", " "); // first occurrence = the day
   for (const [w, d] of NUM_WORDS) {
     restTime = restTime.split(" " + w + " ").join(" " + d + " ");
   }
@@ -148,8 +167,10 @@ function resolveSlot(rawText) {
   let finalHour = hour;
   if (hour === null) {
     needs = dateUTC !== null ? "time" : null;
-  } else if (hour === 0 || hour === 12 || (hour >= 13 && hour <= 23)) {
-    // concrete: midnight, noon, or 24h time
+  } else if (hour === 0 || (hour >= 13 && hour <= 23)) {
+    // concrete: midnight or 24h time
+  } else if (hour === 12) {
+    finalHour = night ? 0 : 12; // "12 mte3 lil" = midnight, "12" alone = noon
   } else if (hour >= 1 && hour <= 11) {
     if (morning) { /* AM as-is */ }
     else if (afternoon) { finalHour = hour + 12; }
@@ -173,7 +194,7 @@ function resolveSlot(rawText) {
     past = wallMs <= Date.now() + 3600000;
   }
 
-  return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso };
+  return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso, morning, afternoon, night };
 }
 
-module.exports = { resolveSlot, tunisNow };
+module.exports = { resolveSlot, tunisNow, setNow };

@@ -122,9 +122,9 @@ async function aiReply(patientText, history = []) {
 
 function fallbackReply(text) {
   const t = text.toLowerCase();
-  if (t.includes("slem") || t.includes("ahla") || t.includes("salut") || t.includes("bonjour") || t.includes("sbe7") || t.includes("mse"))
+  if (t.includes("slem") || t.includes("slm") || t.includes("salem") || t.includes("salam") || t.includes("ahla") || t.includes("salut") || t.includes("bonjour") || t.includes("sbe7") || t.includes("mse"))
     return "ahla w sahla! 👋 chnowa tnajem n3awnek? (7ajz rendez-vous, wa9t el 5edma, el blasa...)";
-  if (t.includes("7ajz") || t.includes("rendez") || t.includes("rdv") || t.includes("wa9t"))
+  if (t.includes("7ajz") || t.includes("7jez") || t.includes("rendez") || t.includes("rdv") || t.includes("wa9t"))
     return "bech na7jzelek rendez-vous — 9olli nhar w wa9t yse3dek, w n2akkedlek m3a el 3iyada 👌";
   if (t.includes("win") || t.includes("blasa") || t.includes("adresse") || t.includes("ou"))
     return "n2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?";
@@ -147,6 +147,12 @@ function looksLikeAcceptance(text) {
   return false;
 }
 
+// Pure refusal answering the bot's "T7eb n7ajzlek?" — "le" alone.
+// ("le, jem3a" carries a new slot and is NOT a pure refusal.)
+function looksLikeRefusal(text) {
+  return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test((text || "").toLowerCase().trim());
+}
+
 async function say(phone, reply) {
   await db.saveMessage(phone, "assistant", reply);
   return { handled: true, reply };
@@ -154,7 +160,7 @@ async function say(phone, reply) {
 
 async function finishBooking(phone, p) {
   // p: { display, slot_at (ISO), slot_text }
-  const dup = await db.findPendingBooking(phone, p.display).catch(() => null);
+  const dup = await db.findPendingBooking(phone, p.slot_at).catch(() => null);
   let reply;
   if (dup) {
     reply = `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
@@ -209,10 +215,17 @@ async function handleBookingTurn(phone, text, history) {
 
   const proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
   let r = dates.resolveSlot(text);
-  if (!r.found && proposal && proposal.slot_text) {
-    // follow-up like "sbe7" -> merge with the previous slot phrase
-    const merged = dates.resolveSlot(proposal.slot_text + " " + text);
-    if (merged.found) r = merged;
+  let slotText = text; // the phrase the proposal remembers — grows as follow-ups merge
+  if ((!r.found || !r.date) && proposal && proposal.slot_text) {
+    // R) pure refusal ("le") -> drop the proposal, don't glue it to the old slot
+    if (looksLikeRefusal(text)) {
+      await db.clearProposal(phone).catch(() => {});
+      return say(phone, "Mriguel, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+    }
+    // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
+    // New text first, so a changed hour wins over the old one.
+    const merged = dates.resolveSlot(text + " " + proposal.slot_text);
+    if (merged.found && merged.date) { r = merged; slotText = text + " " + proposal.slot_text; }
   }
 
   // A) The patient accepts.
@@ -244,11 +257,17 @@ async function handleBookingTurn(phone, text, history) {
     return say(phone, "El wa9t hedha fet — a3tini wa9t e5er.");
   }
   if (r.needs === "time") {
-    await db.saveProposal(phone, text, null, r.dateDisplay);
-    return say(phone, `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`);
+    await db.saveProposal(phone, slotText, null, r.dateDisplay);
+    // If the patient already said sbe7/l3chiya/lil, ask for the hour only —
+    // not "sbe7 walla lil?" again.
+    const period = r.morning ? "mta3 sbe7" : r.afternoon ? "mta3 l3chiya" : r.night ? "mta3 lil" : null;
+    const q = period
+      ? `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`
+      : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`;
+    return say(phone, q);
   }
   // concrete date+time -> propose it back, wait for "ey"
-  await db.saveProposal(phone, text, r.iso, r.display);
+  await db.saveProposal(phone, slotText, r.iso, r.display);
   return say(phone, `Mriguel — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
 
@@ -491,3 +510,6 @@ app.listen(PORT, () => {
   console.log(`WhatsApp: ${WHATSAPP_TOKEN && PHONE_NUMBER_ID ? "configured" : "NOT configured (set WHATSAPP_TOKEN + PHONE_NUMBER_ID)"}`);
   console.log(`Secretary: ${SECRETARY_NUMBER ? SECRETARY_NUMBER + " recognized" : "NOT set (set SECRETARY_NUMBER)"}`);
 });
+
+// Exported for the local regression test (test-local.js). No effect on the running server.
+module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal };
