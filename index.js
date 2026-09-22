@@ -30,6 +30,11 @@ const PORT = process.env.PORT || 3000;
 const db = require("./db"); // Postgres memory + bookings
 const dates = require("./dates"); // deterministic Derja date/time resolver
 
+// Script detection: patient wrote in Arabic script -> answer in Arabic script ("kif kif").
+// \u0600-\u06FF covers Arabic letters. \b doesn't work on them, so Arabic matching
+// elsewhere in this file uses space-padded includes(), never \b.
+const isAr = (s) => /[\u0600-\u06FF]/.test(s || "");
+
 // Track last webhook for status checks (bypasses slow Render logs)
 let lastWebhook = { at: null, from: null, text: null, reply: null };
 app.get("/status", async (req, res) => {
@@ -43,7 +48,8 @@ const pausedChats = new Map();
 const PAUSE_MS = 10 * 60 * 1000; // 10 minutes
 
 const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi Tounes.
-- Jaweb dima bel derja tounsiya, bel 7rouf el latiniya (arabizi), w b i5tisar (message 9sir).
+- Jaweb dima bel derja tounsiya, w b i5tisar (message 9sir).
+- 9A3DET EL SCRIPT: jewb dima bel script eli kteb bih el patient. Ken el patient kteb bel 7rouf el 3arabiya (مثال: نحب نحجز), jewb bel 7rouf el 3arabiya. Ken kteb bel 7rouf el latiniya (arabizi, مثال: n7eb na7jez), jewb bel latiniya. Ma t5alletch el zouz fi nafs el message.
 - Enti t3awen fel 7ajz, el istefsar 3al wa9t wel blasa wel aswem, w tbadel/fassa5 rendez-vous.
 - El as2la el idariya (wa9t, blasa, aswem/b9adech/prix, 7ajz, tabdil, faskh): jewb 3lihom 3adi.
 - MAMNOU3 bark: dwe, a3radh, tash5is, nasi7a tibbiya. Ken sou2el tibbi 9oul "el sou2elet el tibbiya lel doktor bark — t7eb n7ajzlek rendez-vous?" walla 9oul eli el secretaire bech tkalmou.
@@ -121,6 +127,19 @@ async function aiReply(patientText, history = []) {
 }
 
 function fallbackReply(text) {
+  if (isAr(text)) {
+    if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text))
+      return "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)";
+    if (/(حجز|رونديفو|موعد)/.test(text))
+      return "باش نحجزلك رونديفو — قولي نهار ووقت يساعدك، ونأكدلك مع العيادة 👌";
+    if (/(وين|بلاصة|عنوان|فين)/.test(text))
+      return "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟";
+    if (/(سوم|بقداش|فلوس|prix)/.test(text))
+      return "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. نحجزلك؟";
+    if (/(دواء|دوا|وجيعة|وجع|مريض)/.test(text))
+      return "الأسئلة على الدواء والوجيعة للطبيب برك ⛔ — تحب نحجزلك رونديفو تسألو ديراكت؟";
+    return "ما فهمتش مليح — تنجم تقولي: تحب تحجز رونديفو، تسأل على الوقت، ولا على البلاصة؟";
+  }
   const t = text.toLowerCase();
   if (t.includes("slem") || t.includes("slm") || t.includes("salem") || t.includes("salam") || t.includes("ahla") || t.includes("salut") || t.includes("bonjour") || t.includes("sbe7") || t.includes("mse"))
     return "ahla w sahla! 👋 chnowa tnajem n3awnek? (7ajz rendez-vous, wa9t el 5edma, el blasa...)";
@@ -140,7 +159,9 @@ function fallbackReply(text) {
 // "jem3a 10" alone -> the bot asks "sbe7 walla lil?" and shows "jem3a 25 septembre".
 
 function looksLikeAcceptance(text) {
-  const t = " " + (text || "").toLowerCase().trim() + " ";
+  const raw = (text || "").trim();
+  if (/^(اي|أي|نعم|موافق|احجز|احجزلي|إحجزلي)\s*[.,!؟]*$/.test(raw)) return true;
+  const t = " " + raw.toLowerCase() + " ";
   if (/(^|\s)(le|mouch|man7ebch|faskh|cancel|badal|nbadal)(\s|$)/.test(t)) return false;
   if (/^\s*(ok|ey|na3m|oui|mriguel|d'accord)\b/.test(t)) return true;
   if (t.includes(" a7jezli ") || t.includes(" e7jezli ") || t.includes(" a7jez ") || t.includes(" e7jez ")) return true;
@@ -150,7 +171,9 @@ function looksLikeAcceptance(text) {
 // Pure refusal answering the bot's "T7eb n7ajzlek?" — "le" alone.
 // ("le, jem3a" carries a new slot and is NOT a pure refusal.)
 function looksLikeRefusal(text) {
-  return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test((text || "").toLowerCase().trim());
+  const raw = (text || "").trim();
+  if (/^(لا|لأ|مش|ما نحبش|افسخ|الغي)\s*[.,!؟]*$/.test(raw)) return true;
+  return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test(raw.toLowerCase());
 }
 
 async function say(phone, reply) {
@@ -161,13 +184,18 @@ async function say(phone, reply) {
 async function finishBooking(phone, p) {
   // p: { display, slot_at (ISO), slot_text }
   const dup = await db.findPendingBooking(phone, p.slot_at).catch(() => null);
+  const ar = isAr(p.display); // the slot display carries the patient's script
   let reply;
   if (dup) {
-    reply = `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
+    reply = ar
+      ? `الرونديفو متاعك (${p.display}) مازال يستنى — نأكدلك ونرجعلك.`
+      : `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
   } else {
     const id = await db.saveBooking(phone, p.display, p.slot_at || null);
     console.log(`[booking] #${id} pending: ${phone} -> ${p.display}`);
-    reply = `Mriguel, n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
+    reply = ar
+      ? `مريقل، نأكدلك رونديفو (${p.display}) ونرجعلك.`
+      : `Mriguel, n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
     await notifySecretary(
       `⏳ Rendez-vous jdid mel bot:\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
     );
@@ -181,9 +209,9 @@ async function finishBooking(phone, p) {
 // Answer from the DB's real status — never let the AI guess.
 function looksLikeStatusQuestion(text) {
   const t = " " + (text || "").toLowerCase().trim() + " ";
-  return /(ca y est|t2akked|t2akad|win wsol|el 7ajz|7ajzi|rendez[ -]?vous mte3i|mon rendez|statut|el wa9t mte3i|est confir|confirm)/i.test(
-    t
-  );
+  if (/(ca y est|t2akked|t2akad|win wsol|el 7ajz|7ajzi|rendez[ -]?vous mte3i|mon rendez|statut|el wa9t mte3i|est confir|confirm)/i.test(t))
+    return true;
+  return /(تأكد|تاكد|وين وصل|الحجز متاعي|حجزي|تم الحجز)/.test(text || "");
 }
 
 async function handleStatusQuestion(phone, text) {
@@ -194,14 +222,21 @@ async function handleStatusQuestion(phone, text) {
   } catch (e) {}
   const b = await db.getLatestBooking(phone).catch(() => null);
   if (!b) return { handled: false }; // no booking -> let normal flow / AI answer
+  const ar = isAr(text) || isAr(b.slot);
   const when = b.slot || "";
   let reply;
   if (b.status === "confirmed") {
-    reply = `Ey, t2akked! ✅ Rendez-vous mte3ek (${when}) m2akked. Nestennewk!`;
+    reply = ar
+      ? `اي، تأكد! ✅ الرونديفو متاعك (${when}) مؤكد. نستناوك!`
+      : `Ey, t2akked! ✅ Rendez-vous mte3ek (${when}) m2akked. Nestennewk!`;
   } else if (b.status === "cancelled") {
-    reply = `Sme7na, el wa9t ${when} ma 3adech disponible. T7eb na9tar7oulek wa9t e5er?`;
+    reply = ar
+      ? `سامحنا، الوقت ${when} ما عادش متاح. تحب وقت آخر؟`
+      : `Sme7na, el wa9t ${when} ma 3adech disponible. T7eb na9tar7oulek wa9t e5er?`;
   } else {
-    reply = `El rendez-vous mte3ek (${when}) mazel pending — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
+    reply = ar
+      ? `الرونديفو متاعك (${when}) مازال يستنى — نستناو في التأكيد من العيادة. نأكدلك ونرجعلك. ⏳`
+      : `El rendez-vous mte3ek (${when}) mazel pending — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
   }
   return say(phone, reply);
 }
@@ -214,13 +249,16 @@ async function handleBookingTurn(phone, text, history) {
   if (st.handled) return st;
 
   const proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
+  const ar = isAr(text) || isAr(proposal && proposal.slot_text); // script sticks to the patient's own words
   let r = dates.resolveSlot(text);
   let slotText = text; // the phrase the proposal remembers — grows as follow-ups merge
   if ((!r.found || !r.date) && proposal && proposal.slot_text) {
     // R) pure refusal ("le") -> drop the proposal, don't glue it to the old slot
     if (looksLikeRefusal(text)) {
       await db.clearProposal(phone).catch(() => {});
-      return say(phone, "Mriguel, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+      return say(phone, ar
+        ? "مريقل، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
+        : "Mriguel, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
     }
     // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
     // New text first, so a changed hour wins over the old one.
@@ -251,24 +289,34 @@ async function handleBookingTurn(phone, text, history) {
   // B) Slot information (new request or clarification answer).
   if (!r.found) return { handled: false };
   if (!r.date) {
-    return say(phone, "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)");
+    return say(phone, ar
+      ? "أنهو نهار بالضبط؟ (اكتب كيما: الجمعة، غدوة، 21 سبتمبر...)"
+      : "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)");
   }
   if (r.past) {
-    return say(phone, "El wa9t hedha fet — a3tini wa9t e5er.");
+    return say(phone, ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.");
   }
   if (r.needs === "time") {
     await db.saveProposal(phone, slotText, null, r.dateDisplay);
     // If the patient already said sbe7/l3chiya/lil, ask for the hour only —
     // not "sbe7 walla lil?" again.
-    const period = r.morning ? "mta3 sbe7" : r.afternoon ? "mta3 l3chiya" : r.night ? "mta3 lil" : null;
-    const q = period
-      ? `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`
-      : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`;
+    const period = r.morning ? (ar ? "متاع الصباح" : "mta3 sbe7")
+      : r.afternoon ? (ar ? "متاع العشية" : "mta3 l3chiya")
+      : r.night ? (ar ? "متاع الليل" : "mta3 lil") : null;
+    const q = ar
+      ? (period
+        ? `${r.dateDisplay} ${period} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`
+        : `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع الليل؟ (ولا اكتب الوقت كيما 10:30)`)
+      : (period
+        ? `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`
+        : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`);
     return say(phone, q);
   }
   // concrete date+time -> propose it back, wait for "ey"
   await db.saveProposal(phone, slotText, r.iso, r.display);
-  return say(phone, `Mriguel — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
+  return say(phone, ar
+    ? `مريقل — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
+    : `Mriguel — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
 
 // Shared by the WhatsApp webhook and the /test page.
@@ -304,9 +352,10 @@ async function settleBooking(id, approve) {
   if (!b) return `Ma l9it 7atta rendez-vous b numero ${id}.`;
   if (b.status !== "pending") return `Rendez-vous ${id} deja: ${b.status}.`;
   await db.setBookingStatus(id, approve ? "confirmed" : "cancelled");
+  const ar = isAr(b.slot); // the slot display carries the patient's script
   const patientMsg = approve
-    ? `T2akked rendez-vous mte3ek: ${b.slot}. Nestennewk! 🌸`
-    : `Sme7na, el wa9t ${b.slot} ma 3adech disponible. T7eb wa9t e5er?`;
+    ? (ar ? `تأكد الرونديفو متاعك: ${b.slot}. نستناوك! 🌸` : `T2akked rendez-vous mte3ek: ${b.slot}. Nestennewk! 🌸`)
+    : (ar ? `سامحنا، الوقت ${b.slot} ما عادش متاح. تحب وقت آخر؟` : `Sme7na, el wa9t ${b.slot} ma 3adech disponible. T7eb wa9t e5er?`);
   await db.saveMessage(b.phone, "assistant", patientMsg);
   await sendWhatsApp(b.phone, patientMsg);
   console.log(`[booking] #${id} ${approve ? "CONFIRMED" : "CANCELLED"}`);
@@ -512,4 +561,4 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal };
+module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr };

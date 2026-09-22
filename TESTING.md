@@ -15,6 +15,12 @@ node index.js
 - POST /webhook patient text -> Derja reply generated (fallback keywords, no AI key needed)
 - smb_message_echoes (staff replies from Business app) -> bot auto-pauses 30 min for that chat
 - Message while paused -> bot stays silent
+
+## Browser test chat (added 2026-09-19)
+- GET /test -> chat page (password = VERIFY_TOKEN). POST /test/chat {password, text} -> {reply, ai}
+- Uses the exact same aiReply() as the WhatsApp webhook: stateless, no history.
+- Badge shows "AI" when AI_API_KEY is set, "fallback" otherwise.
+- Staff-takeover pause is now 10 min (was 30).
 - Outbound HTTPS to graph.facebook.com works (send path will work once token set)
 
 ## Still needed for live sandbox test
