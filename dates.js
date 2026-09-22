@@ -25,6 +25,24 @@ function norm(s) {
     .trim();
 }
 
+// Derja number words -> digits, so "khamsa mte3 l3chiya" reads as 5pm.
+// Applied to the time search only, AFTER the weekday word is blanked,
+// so "ethnin" (Tuesday) is never misread as "2 o'clock".
+const NUM_WORDS = [
+  ["thenach", 12], ["thnach", 12], ["tnach", 12],
+  ["7dach", 11], ["7dech", 11],
+  ["3achra", 10], ["3echra", 10],
+  ["tes3a", 9], ["tis3a", 9],
+  ["thmenya", 8], ["tmenya", 8],
+  ["seb3a", 7], ["sab3a", 7],
+  ["setta", 6], ["satta", 6],
+  ["khamsa", 5],
+  ["arb3a", 4], ["arba3a", 4],
+  ["tletha", 3], ["tlata", 3], ["theltha", 3],
+  ["zouz", 2], ["thnin", 2], ["tnin", 2], ["ethnin", 2],
+  ["wa7ed", 1], ["wa7da", 1], ["wahed", 1],
+];
+
 // weekday name -> JS day number (0 = Sunday)
 const DAYS = [
   ["la7ad", 0], ["l7ad", 0], ["dimanche", 0],
@@ -75,10 +93,11 @@ function resolveSlot(rawText) {
   }
 
   // ---- 2) weekday / relative day ----
+  let dayWord = null; // matched weekday name — blanked before number-word -> digit
   if (dateUTC === null) {
     let dow = null;
     for (const [name, d] of DAYS) {
-      if (t.includes(" " + name + " ")) { dow = d; break; }
+      if (t.includes(" " + name + " ")) { dow = d; dayWord = name; break; }
     }
     if (dow !== null) {
       const diff = (dow - now.getUTCDay() + 7) % 7; // 0 = today
@@ -101,12 +120,19 @@ function resolveSlot(rawText) {
   }
 
   // ---- 3) time ----
+  // Number words -> digits for the time search ("khamsa" -> 5).
+  // The weekday word is blanked first so "ethnin" (Tuesday) isn't read as 2.
+  let restTime = rest;
+  if (dayWord) restTime = restTime.split(" " + dayWord + " ").join(" ");
+  for (const [w, d] of NUM_WORDS) {
+    restTime = restTime.split(" " + w + " ").join(" " + d + " ");
+  }
   let hour = null;
   let minute = 0;
   if (/\bnos\s+(el\s+)?nhar\b/.test(t)) { hour = 12; minute = 0; }
   else if (/\bnos\s+(el\s+)?lil\b/.test(t)) { hour = 0; minute = 0; }
   else {
-    const tm = rest.match(/(\d{1,2})\s*[:h]\s*(\d{2})/) || rest.match(/\b(\d{1,2})\b/);
+    const tm = restTime.match(/(\d{1,2})\s*[:h]\s*(\d{2})/) || restTime.match(/\b(\d{1,2})\b/);
     if (tm) {
       hour = parseInt(tm[1], 10);
       minute = tm[2] ? parseInt(tm[2], 10) : 0;
@@ -115,7 +141,7 @@ function resolveSlot(rawText) {
   }
 
   const morning = /\bsbe7\b|\bsbah\b/.test(t);
-  const afternoon = /\b3chiya\b|\bl3chiya\b/.test(t);
+  const afternoon = /\b3chiya\b|\bl3chiya\b|\b3chwa\b|\bl3chwa\b/.test(t);
   const night = /\blil\b/.test(t);
 
   let needs = null; // 'time' when the hour is ambiguous (e.g. bare "10")
@@ -126,7 +152,8 @@ function resolveSlot(rawText) {
     // concrete: midnight, noon, or 24h time
   } else if (hour >= 1 && hour <= 11) {
     if (morning) { /* AM as-is */ }
-    else if (afternoon || night) { finalHour = hour + 12; }
+    else if (afternoon) { finalHour = hour + 12; }
+    else if (night) { finalHour = hour <= 5 ? hour : hour + 12; } // 1-5 = after midnight
     else { needs = "time"; } // "10" alone — sbe7 walla lil?
   } else {
     hour = null;
