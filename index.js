@@ -28,6 +28,7 @@ const SECRETARY_NUMBER = (process.env.SECRETARY_NUMBER || "").replace(/\D/g, "")
 const PORT = process.env.PORT || 3000;
 
 const db = require("./db"); // Postgres memory + bookings
+const dates = require("./dates"); // deterministic Derja date/time resolver
 
 // Track last webhook for status checks (bypasses slow Render logs)
 let lastWebhook = { at: null, from: null, text: null, reply: null };
@@ -49,6 +50,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - Ken el patient ye7ki 3la wji3a wala a3radh, ibda b "nchalah labes" (empathie) 9bal ma t9oul eli el sou2elet el tibbiya lel doktor bark.
 - Ken ma fhemtch el message, 9oul b wdhuh w i9tira7 chnowa tnajem t3awen fih.
 - 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "mriguel, n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
+- Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".`;
 
 // ---------- Meta: send a WhatsApp text message ----------
@@ -133,20 +135,121 @@ function fallbackReply(text) {
   return "ma fhemtch mli7 — tnajem t9olli: t7eb te7jez rendez-vous, tes2el 3al wa9t, walla 3al blasa?";
 }
 
-// ---------- Booking flow (Phase 2) ----------
-
-// Pull a slot phrase like "ba3d ghodwa 10", "ethnin 9", "jem3a 15:30" out of a text.
-function extractSlot(text) {
-  const m = (text || "").match(
-    /((ba3d\s+)?ghodwa|lyoum|lila|ethnin|thletha|tlata|erb3a|khmis|jem3a|sebt|a7ad)(\s+\d{1,2}([:.]\d{2})?)?/i
-  );
-  return m ? m[0].trim().replace(/\s+/g, " ") : null;
-}
+// ---------- Booking flow (Phase 2 + deterministic Derja dates) ----------
+// A slot is only booked when it resolves to a CONCRETE date+time.
+// "jem3a 10" alone -> the bot asks "sbe7 walla lil?" and shows "jem3a 25 septembre".
 
 function looksLikeAcceptance(text) {
-  const t = (text || "").toLowerCase();
-  if (/(le\b|mouch|faskh|cancel|badal)/.test(t)) return false; // rejection/change, not acceptance
-  return /(a7jez|e7jez|\bok\b|mriguel|\bey\b|na3m|d'accord|\boui\b|n7eb na7jez|bch nji|n7eb)/i.test(text);
+  const t = " " + (text || "").toLowerCase().trim() + " ";
+  if (/(^|\s)(le|mouch|man7ebch|faskh|cancel|badal|nbadal)(\s|$)/.test(t)) return false;
+  if (/^\s*(ok|ey|na3m|oui|mriguel|d'accord)\b/.test(t)) return true;
+  if (t.includes(" a7jezli ") || t.includes(" e7jezli ") || t.includes(" a7jez ") || t.includes(" e7jez ")) return true;
+  return false;
+}
+
+async function say(phone, reply) {
+  await db.saveMessage(phone, "assistant", reply);
+  return { handled: true, reply };
+}
+
+async function finishBooking(phone, p) {
+  // p: { display, slot_at (ISO), slot_text }
+  const dup = await db.findPendingBooking(phone, p.display).catch(() => null);
+  let reply;
+  if (dup) {
+    reply = `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
+  } else {
+    const id = await db.saveBooking(phone, p.display, p.slot_at || null);
+    console.log(`[booking] #${id} pending: ${phone} -> ${p.display}`);
+    reply = `Mriguel, n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
+    await notifySecretary(
+      `⏳ Rendez-vous jdid mel bot:\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
+    );
+  }
+  await db.clearProposal(phone).catch(() => {});
+  await db.saveMessage(phone, "assistant", reply);
+  return { handled: true, reply };
+}
+
+// The patient asks about THEIR booking status ("ca y est?", "t2akked?").
+// Answer from the DB's real status — never let the AI guess.
+function looksLikeStatusQuestion(text) {
+  const t = " " + (text || "").toLowerCase().trim() + " ";
+  return /(ca y est|t2akked|t2akad|win wsol|el 7ajz|7ajzi|rendez[ -]?vous mte3i|mon rendez|statut|el wa9t mte3i|est confir|confirm)/i.test(
+    t
+  );
+}
+
+async function handleStatusQuestion(phone, text) {
+  if (!looksLikeStatusQuestion(text)) return { handled: false };
+  // "t2akkedli ghodwa 10" = new booking request, not a status question.
+  try {
+    if (dates.resolveSlot(text).found) return { handled: false };
+  } catch (e) {}
+  const b = await db.getLatestBooking(phone).catch(() => null);
+  if (!b) return { handled: false }; // no booking -> let normal flow / AI answer
+  const when = b.slot || "";
+  let reply;
+  if (b.status === "confirmed") {
+    reply = `Ey, t2akked! ✅ Rendez-vous mte3ek (${when}) m2akked. Nestennewk!`;
+  } else if (b.status === "cancelled") {
+    reply = `Sme7na, el wa9t ${when} ma 3adech disponible. T7eb na9tar7oulek wa9t e5er?`;
+  } else {
+    reply = `El rendez-vous mte3ek (${when}) mazel pending — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
+  }
+  return say(phone, reply);
+}
+
+// Deterministic booking turn. Returns { handled, reply } or { handled: false }
+// to let the AI answer normally.
+async function handleBookingTurn(phone, text, history) {
+  // A0) Status question first — real DB status beats AI guessing.
+  const st = await handleStatusQuestion(phone, text);
+  if (st.handled) return st;
+
+  const proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
+  let r = dates.resolveSlot(text);
+  if (!r.found && proposal && proposal.slot_text) {
+    // follow-up like "sbe7" -> merge with the previous slot phrase
+    const merged = dates.resolveSlot(proposal.slot_text + " " + text);
+    if (merged.found) r = merged;
+  }
+
+  // A) The patient accepts.
+  if (looksLikeAcceptance(text)) {
+    if (proposal && proposal.slot_at && proposal.display && !r.date) {
+      return finishBooking(phone, proposal); // pure "ey" / "ok"
+    }
+    if (r.found && r.date && !r.needs && !r.past) {
+      return finishBooking(phone, { display: r.display, slot_at: r.iso, slot_text: text });
+    }
+    if (proposal && proposal.slot_at && proposal.display) {
+      return finishBooking(phone, proposal);
+    }
+    // last resort: a concrete slot inside the bot's previous message
+    const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
+    const r2 = lastAsst ? dates.resolveSlot(lastAsst.text) : null;
+    if (r2 && r2.found && r2.date && !r2.needs && !r2.past) {
+      return finishBooking(phone, { display: r2.display, slot_at: r2.iso, slot_text: lastAsst.text });
+    }
+    return { handled: false }; // let the AI answer
+  }
+
+  // B) Slot information (new request or clarification answer).
+  if (!r.found) return { handled: false };
+  if (!r.date) {
+    return say(phone, "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)");
+  }
+  if (r.past) {
+    return say(phone, "El wa9t hedha fet — a3tini wa9t e5er.");
+  }
+  if (r.needs === "time") {
+    await db.saveProposal(phone, text, null, r.dateDisplay);
+    return say(phone, `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`);
+  }
+  // concrete date+time -> propose it back, wait for "ey"
+  await db.saveProposal(phone, text, r.iso, r.display);
+  return say(phone, `Mriguel — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
 
 // Shared by the WhatsApp webhook and the /test page.
@@ -154,30 +257,8 @@ async function processPatientText(phone, text) {
   const history = await db.getHistory(phone); // last 15 messages
   await db.saveMessage(phone, "user", text);
 
-  // Did the patient just accept a proposed slot? -> create a PENDING booking.
-  if (looksLikeAcceptance(text)) {
-    let slot = extractSlot(text);
-    if (!slot) {
-      const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
-      slot = lastAsst ? extractSlot(lastAsst.text) : null;
-    }
-    if (slot) {
-      const existing = await db.findPendingBooking(phone, slot).catch(() => null);
-      if (existing) {
-        const reply = `El rendez-vous mte3ek (${slot}) deja pending — n2akkedlek w narja3lek.`;
-        await db.saveMessage(phone, "assistant", reply);
-        return reply;
-      }
-      const id = await db.saveBooking(phone, slot);
-      console.log(`[booking] #${id} pending: ${phone} -> ${slot}`);
-      const reply = `Mriguel, n2akkedlek rendez-vous (${slot}) w narja3lek.`;
-      await db.saveMessage(phone, "assistant", reply);
-      await notifySecretary(
-        `⏳ Rendez-vous jdid mel bot:\nMel: ${phone}\nWa9t: ${slot}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
-      );
-      return reply;
-    }
-  }
+  const booking = await handleBookingTurn(phone, text, history);
+  if (booking.handled) return booking.reply;
 
   const reply = await aiReply(text, history);
   await db.saveMessage(phone, "assistant", reply);
@@ -322,15 +403,17 @@ a{color:#0b7}
 </style></head><body>
 <h2>Bot test <span id="badge">...</span></h2>
 <div id="pwrow"><input id="pw" type="password" placeholder="password (verify token)"><button onclick="unlock()">OK</button></div>
+<div id="whorow" style="display:flex;gap:6px;margin-bottom:8px"><input id="who" placeholder="chkoun enti? (ex: ahmed) — badlou bech tjareb patient e5er"></div>
 <div id="log"></div>
 <div id="row"><input id="msg" placeholder="ekteb houni..." onkeydown="if(event.key==='Enter')send()"><button onclick="send()">Send</button></div>
-<p class="hint">Patient: ekteb 3adi. Secretaire: ibda b <b>admin:</b> (ex: <b>admin: ok 1</b>). <a href="/bookings">/bookings</a> tchouf el pending.</p>
+<p class="hint">Patient: ekteb 3adi. Secretaire: ibda b <b>admin:</b> (ex: <b>admin: ok 1</b>). Bech tjareb akther men patient: badel el esm fi el 5ana el fou9aniya w kamel. El wa9t lezem date 7a9i9iya (jem3a = 25 septembre). <a href="/bookings">/bookings</a> tchouf el pending.</p>
 <script>
 let pw="";
 function unlock(){pw=document.getElementById('pw').value;document.getElementById('pwrow').style.display='none';add('bot','mriguel! Ekteb ay message bech tjareb el bot.');}
 function add(w,t){const d=document.createElement('div');d.className=w;const s=document.createElement('span');s.textContent=t;d.appendChild(s);document.getElementById('log').appendChild(d);document.getElementById('log').scrollTop=1e9;}
 async function send(){const i=document.getElementById('msg');const t=i.value.trim();if(!t)return;i.value='';add('me',t);
-try{const r=await fetch('/test/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,text:t})});
+const w=(document.getElementById('who').value.trim().toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,20))||'x';
+try{const r=await fetch('/test/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,text:t,who:w})});
 const j=await r.json();
 if(!r.ok){add('bot','⚠️ '+(j.error||'error'));return;}
 document.getElementById('badge').textContent=j.ai?'AI':'fallback';document.getElementById('badge').style.background=j.ai?'#bfe8bf':'#f0d090';
@@ -340,7 +423,7 @@ add('bot',j.reply);}catch(e){add('bot','⚠️ mochkla fel connexion');}}
 app.get("/test", (req, res) => res.send(TEST_PAGE));
 
 app.post("/test/chat", async (req, res) => {
-  const { password, text } = req.body || {};
+  const { password, text, who } = req.body || {};
   if (password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
   const clean = (text || "").trim().slice(0, 500);
   if (!clean) return res.status(400).json({ error: "empty message" });
@@ -349,7 +432,8 @@ app.post("/test/chat", async (req, res) => {
     const reply = await processSecretaryText(clean.replace(/^admin:/i, "").trim());
     return res.json({ reply, ai: !!AI_API_KEY });
   }
-  const reply = await processPatientText("webtest", clean);
+  const ident = "webtest-" + (String(who || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 20) || "x");
+  const reply = await processPatientText(ident, clean);
   res.json({ reply, ai: !!AI_API_KEY });
 });
 

@@ -44,6 +44,14 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status, id);
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS slot_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS proposals (
+      phone TEXT PRIMARY KEY,
+      slot_text TEXT NOT NULL,
+      slot_at TIMESTAMPTZ,
+      display TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -81,12 +89,12 @@ async function getHistory(phone, limit = 15) {
 
 // ---------- Bookings (stage 2) ----------
 
-async function saveBooking(phone, slot) {
+async function saveBooking(phone, slot, slot_at = null) {
   const p = getPool();
   if (!p) return null;
   const r = await p.query(
-    "INSERT INTO bookings(phone, slot) VALUES($1,$2) RETURNING id",
-    [phone, slot]
+    "INSERT INTO bookings(phone, slot, slot_at) VALUES($1,$2,$3) RETURNING id",
+    [phone, slot, slot_at]
   );
   return r.rows[0].id;
 }
@@ -108,6 +116,16 @@ async function getBooking(id) {
   return r.rows[0] || null;
 }
 
+async function getLatestBooking(phone) {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query(
+    "SELECT * FROM bookings WHERE phone=$1 ORDER BY created_at DESC LIMIT 1",
+    [phone]
+  );
+  return r.rows[0] || null;
+}
+
 async function getPendingBookings() {
   const p = getPool();
   if (!p) return [];
@@ -123,6 +141,49 @@ async function setBookingStatus(id, status) {
   await p.query("UPDATE bookings SET status=$1 WHERE id=$2", [status, id]);
 }
 
+// ---------- Proposals: the concrete slot the bot offered, awaiting "ey" ----------
+async function saveProposal(phone, slot_text, slot_at, display) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      `INSERT INTO proposals(phone, slot_text, slot_at, display, updated_at)
+       VALUES($1,$2,$3,$4,NOW())
+       ON CONFLICT (phone) DO UPDATE
+       SET slot_text=$2, slot_at=$3, display=$4, updated_at=NOW()`,
+      [phone, slot_text, slot_at, display]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] proposal:", e.message);
+  }
+}
+
+// A proposal older than 30 minutes is forgotten (stale context).
+async function getProposal(phone) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query(
+      "SELECT slot_text, slot_at, display FROM proposals WHERE phone=$1 AND updated_at > NOW() - INTERVAL '30 minutes'",
+      [phone]
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error("[db:ERROR] proposal:", e.message);
+    return null;
+  }
+}
+
+async function clearProposal(phone) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query("DELETE FROM proposals WHERE phone=$1", [phone]);
+  } catch (e) {
+    console.error("[db:ERROR] proposal:", e.message);
+  }
+}
+
 module.exports = {
   initDb,
   saveMessage,
@@ -130,7 +191,11 @@ module.exports = {
   saveBooking,
   findPendingBooking,
   getBooking,
+  getLatestBooking,
   getPendingBookings,
   setBookingStatus,
+  saveProposal,
+  getProposal,
+  clearProposal,
   hasDb: () => !!DATABASE_URL,
 };
