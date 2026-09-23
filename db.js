@@ -61,6 +61,16 @@ async function initDb() {
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS patient_name TEXT;
     ALTER TABLE proposals ADD COLUMN IF NOT EXISTS awaiting_name BOOLEAN DEFAULT FALSE;
     ALTER TABLE proposals ADD COLUMN IF NOT EXISTS partial_name TEXT;
+    -- Signup form: doctors who fill the /formulaire page.
+    CREATE TABLE IF NOT EXISTS signups (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      clinic_name TEXT NOT NULL,
+      city TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_signups_created ON signups(created_at DESC);
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -261,6 +271,42 @@ async function savePatientName(phone, name) {
   }
 }
 
+// ---------- Signup form: doctors who filled the /formulaire page ----------
+async function saveSignup(name, phone, clinic_name, city) {
+  const p = getPool();
+  if (!p) return null;
+  const r = await p.query(
+    "INSERT INTO signups(name, phone, clinic_name, city) VALUES($1,$2,$3,$4) RETURNING id",
+    [name, phone, clinic_name, city]
+  );
+  return r.rows[0].id;
+}
+
+// Newest first.
+async function getSignups() {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = await p.query("SELECT * FROM signups ORDER BY created_at DESC");
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] signups:", e.message);
+    return [];
+  }
+}
+
+async function deleteSignup(id) {
+  const p = getPool();
+  if (!p) return 0;
+  try {
+    const r = await p.query("DELETE FROM signups WHERE id=$1", [id]);
+    return r.rowCount;
+  } catch (e) {
+    console.error("[db:ERROR] deleteSignup:", e.message);
+    return 0;
+  }
+}
+
 module.exports = {
   initDb,
   saveMessage,
@@ -279,5 +325,8 @@ module.exports = {
   clearProposal,
   getPatientName,
   savePatientName,
+  saveSignup,
+  getSignups,
+  deleteSignup,
   hasDb: () => !!DATABASE_URL,
 };

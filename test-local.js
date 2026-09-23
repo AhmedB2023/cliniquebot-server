@@ -12,6 +12,7 @@ function makeStubDb() {
   const bookings = [];
   const proposals = new Map();
   const patients = new Map();
+  const signups = [];
   let seq = 1;
   return {
     initDb: async () => true,
@@ -58,6 +59,17 @@ function makeStubDb() {
     clearProposal: async (phone) => { proposals.delete(phone); },
     getPatientName: async (phone) => patients.get(phone) || null,
     savePatientName: async (phone, name) => { patients.set(phone, name); },
+    saveSignup: async (name, phone, clinic_name, city) => {
+      const s = { id: seq++, name, phone, clinic_name, city, created_at: "test" };
+      signups.push(s);
+      return s.id;
+    },
+    getSignups: async () => [...signups].reverse(),
+    deleteSignup: async (id) => {
+      const i = signups.findIndex((s) => s.id === id);
+      if (i >= 0) { signups.splice(i, 1); return 1; }
+      return 0;
+    },
     hasDb: () => true,
     _inspect: () => ({ messages, bookings, proposals }),
   };
@@ -547,6 +559,63 @@ async function run() {
     has("flow24: proposal again", r1, "ghodwa 23 septembre, 10:00");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow24: asks name again", r2, "esm wel la9ab");
+  }
+
+  // ---------- PART C: signup form (/formulaire + /signups) ----------
+  // The server from index.js listens on 127.0.0.1:43117 during this test,
+  // so we drive the real HTTP routes end-to-end with the stub db.
+  {
+    const base = "http://127.0.0.1:43117";
+    const TEST_PW = "clinic-bot-verify-123"; // VERIFY_TOKEN default (env not set in test)
+
+    const page = await fetch(base + "/formulaire");
+    ok("signup: /formulaire is 200", page.status === 200, `status=${page.status}`);
+    const html = await page.text();
+    has("signup: /formulaire has submit button", html, "جرّب — ابعث");
+    has("signup: /formulaire mentions price", html, "2 دينار");
+
+    const valid = { name: "Ahmed Ben Salah", phone: "21650123456", clinic_name: "3yedet Ennour", city: "Tunis" };
+    const r1 = await fetch(base + "/api/signups", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(valid),
+    });
+    ok("signup: valid POST is 200", r1.status === 200, `status=${r1.status}`);
+    const j1 = await r1.json();
+    ok("signup: valid POST returns ok", j1.ok === true, JSON.stringify(j1));
+
+    const missing = { name: "X", phone: "21650123456", clinic_name: "Y" }; // no city
+    const r2 = await fetch(base + "/api/signups", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(missing),
+    });
+    ok("signup: missing field is 400", r2.status === 400, `status=${r2.status}`);
+
+    const badPhone = { name: "X", phone: "abc", clinic_name: "Y", city: "Z" };
+    const r3 = await fetch(base + "/api/signups", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(badPhone),
+    });
+    ok("signup: bad phone is 400", r3.status === 400, `status=${r3.status}`);
+
+    const noPw = await fetch(base + "/api/signups");
+    ok("signup: /api/signups without password is 403", noPw.status === 403, `status=${noPw.status}`);
+
+    const list = await fetch(base + "/api/signups?password=" + TEST_PW);
+    const lj = await list.json();
+    ok("signup: /api/signups with password is 200", list.status === 200, `status=${list.status}`);
+    ok("signup: saved entry visible in list", lj.signups && lj.signups.some((s) => s.name === "Ahmed Ben Salah" && s.clinic_name === "3yedet Ennour"), JSON.stringify(lj));
+
+    const id = lj.signups.find((s) => s.name === "Ahmed Ben Salah").id;
+    const del = await fetch(base + "/api/signups/" + id + "/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: TEST_PW }),
+    });
+    const dj = await del.json();
+    ok("signup: delete works", del.status === 200 && dj.deleted === 1, `status=${del.status} ${JSON.stringify(dj)}`);
+    const after = await (await fetch(base + "/api/signups?password=" + TEST_PW)).json();
+    ok("signup: deleted entry gone", !after.signups.some((s) => s.id === id), "");
+
+    // validateSignup unit checks
+    const v1 = bot.validateSignup({ name: "  Ali  ", phone: " +216 50 123 456 ", clinic_name: "C", city: "T" });
+    ok("signup: validator trims + strips phone", v1.name === "Ali" && v1.phone === "+216 50 123 456", JSON.stringify(v1));
+    ok("signup: validator rejects empty", !!bot.validateSignup({ name: "", phone: "21650123456", clinic_name: "C", city: "T" }).error, "");
+    ok("signup: validator rejects short phone", !!bot.validateSignup({ name: "A", phone: "123", clinic_name: "C", city: "T" }).error, "");
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

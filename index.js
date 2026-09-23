@@ -760,6 +760,128 @@ app.post("/api/conversations/:phone/delete", async (req, res) => {
   res.json({ deleted });
 });
 
+// ---------- /formulaire: public signup page for doctors ----------
+function validateSignup(d) {
+  const clean = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const name = clean(d.name, 100);
+  const phone = clean(d.phone, 30);
+  const clinic_name = clean(d.clinic_name, 150);
+  const city = clean(d.city, 100);
+  if (!name || !phone || !clinic_name || !city) return { error: "3ammer el 5anet el kol." };
+  if (!/^\d{8,15}$/.test(phone.replace(/\D/g, "")))
+    return { error: "Numero el telephone ghalet." };
+  return { name, phone, clinic_name, city };
+}
+
+const FORMULAIRE_PAGE = `<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>مساعد الاستقبال الذكي لعيادتك</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:16px;background:#f4f4f4;color:#222}
+.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:18px;margin-bottom:14px}
+h1{font-size:22px;margin:4px 0 10px}
+ul{padding-right:18px;line-height:1.9;font-size:15px}
+label{display:block;font-size:14px;margin:12px 0 4px;font-weight:600}
+input{width:100%;padding:12px;border-radius:8px;border:1px solid #ccc;font-size:16px;box-sizing:border-box}
+button{width:100%;padding:14px;border-radius:10px;border:0;background:#0b7;color:#fff;font-size:18px;font-weight:700;margin-top:16px;cursor:pointer}
+button:disabled{background:#999}
+#msg{margin-top:12px;font-size:15px;text-align:center}
+.ok-msg{color:#0b7;font-weight:700}.err-msg{color:#c33;font-weight:700}
+.price{color:#0b7;font-weight:700}
+</style></head><body>
+<div class="card">
+<h1>مساعد الاستقبال الذكي 🤖</h1>
+<p>عيادتك تخدم وحدها حتى كي تكون مسكّرة:</p>
+<ul>
+<li>يجاوب على رسائل المرضى بالدارجة التونسية، 24/7</li>
+<li>يحجز المواعيد حتى كي تكون العيادة مسكّرة</li>
+<li>السكرتيرة تبقى هي الي تقرّر الحجز النهائي</li>
+<li>التركيب في 5 دقايق، والمريض يستعمل واتساب عادي</li>
+<li>الشهر الأول <span class="price">بلاش</span>، وبعد <span class="price">2 دينار فقط</span> على كل مريض يوصل</li>
+</ul>
+</div>
+<div class="card">
+<label for="name">الاسم الكامل</label>
+<input id="name" placeholder="مثال: أحمد بركاتي" autocomplete="name">
+<label for="phone">رقم الهاتف</label>
+<input id="phone" placeholder="مثال: 21650123456" inputmode="tel" autocomplete="tel">
+<label for="clinic_name">اسم العيادة</label>
+<input id="clinic_name" placeholder="مثال: عيادة النور">
+<label for="city">المدينة</label>
+<input id="city" placeholder="مثال: تونس">
+<button id="btn" onclick="send()">جرّب — ابعث</button>
+<div id="msg"></div>
+</div>
+<script>
+async function send(){const b=document.getElementById('btn');b.disabled=true;
+const m=document.getElementById('msg');m.className='';m.textContent='...';
+const data={name:document.getElementById('name').value,phone:document.getElementById('phone').value,clinic_name:document.getElementById('clinic_name').value,city:document.getElementById('city').value};
+try{const r=await fetch('/api/signups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+const j=await r.json();
+if(r.ok&&j.ok){m.className='ok-msg';m.textContent='تمّ! وصلنا طلبك، باش نتّصلو بيك قريب. 👍';b.textContent='تبعث ✅';}
+else{m.className='err-msg';m.textContent=j.error||'صار خطأ، جرّب مرة أخرى.';b.disabled=false;}
+}catch(e){m.className='err-msg';m.textContent='مشكلة في الاتصال، جرّب مرة أخرى.';b.disabled=false;}}
+</script></body></html>`;
+
+app.get("/formulaire", (req, res) => res.send(FORMULAIRE_PAGE));
+
+app.post("/api/signups", async (req, res) => {
+  const v = validateSignup(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  try {
+    const id = await db.saveSignup(v.name, v.phone, v.clinic_name, v.city);
+    console.log(`[signup] #${id} ${v.name} — ${v.clinic_name} (${v.city}) ${v.phone}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[signup:ERROR]", e.message);
+    res.status(500).json({ error: "ma najjemtech nsajjel taw. 3awed ba3d chwaya." });
+  }
+});
+
+// ---------- /signups: admin list of doctors who filled the form ----------
+const SIGNUPS_PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signups</title>
+<style>body{font-family:sans-serif;max-width:560px;margin:0 auto;padding:12px;background:#f5f5f5}
+.card{background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;margin:8px 0}
+.row{display:flex;gap:6px;margin-top:8px}
+button{padding:8px 12px;border-radius:8px;border:0;font-size:14px;color:#fff;cursor:pointer}
+.ok{background:#0b7}.no{background:#c33}
+#pwrow{display:flex;gap:6px;margin-bottom:8px}
+input{flex:1;padding:10px;border-radius:8px;border:1px solid #ccc;font-size:16px}
+</style></head><body>
+<h2>📝 Signups</h2>
+<div id="pwrow"><input id="pw" type="password" placeholder="password (verify token)"><button class="ok" onclick="load()">Load</button></div>
+<div id="list"></div>
+<script>
+let pw="";
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+async function load(){pw=document.getElementById('pw').value;
+const r=await fetch('/api/signups?password='+encodeURIComponent(pw));const j=await r.json();
+const el=document.getElementById('list');
+if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
+if(!j.signups.length){el.innerHTML='<p>Ma fama 7atta wa7ed 3ammer. 👍</p>';return;}
+el.innerHTML=j.signups.map(s=>'<div class="card"><b>'+esc(s.name)+'</b> — '+esc(s.phone)+'<br>🏥 '+esc(s.clinic_name)+' — '+esc(s.city)+'<br><small>'+esc(s.created_at||'')+'</small><div class="row"><button class="no" onclick="del('+s.id+')">Fassa5</button></div></div>').join('');}
+async function del(id){if(!confirm('Tfassa5 el signup #'+id+'?'))return;
+const r=await fetch('/api/signups/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+const j=await r.json();if(!r.ok)alert(j.error||'error');load();}
+</script></body></html>`;
+
+app.get("/signups", (req, res) => res.send(SIGNUPS_PAGE));
+
+app.get("/api/signups", async (req, res) => {
+  if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const signups = await db.getSignups().catch(() => []);
+  res.json({ signups });
+});
+
+app.post("/api/signups/:id/delete", async (req, res) => {
+  if ((req.body || {}).password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "bad id" });
+  const deleted = await db.deleteSignup(id).catch(() => 0);
+  res.json({ deleted });
+});
+
 app.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
   db.initDb(); // create tables if needed (memory + bookings)
@@ -769,4 +891,4 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr };
+module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, validateSignup };
