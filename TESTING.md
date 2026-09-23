@@ -41,3 +41,13 @@ This dev VM sits behind an HTTP proxy that breaks tunnel services:
 Meta requires a public HTTPS webhook URL. Options when testing live:
   a) Deploy server to Render/Railway (public URL included) — recommended for pilot anyway
   b) Run tunnel from a machine without the proxy
+
+## Vendor (sales) mode — added 2026-09-23
+Dentists who saw the demo video write "جرّب" (exact word) to the bot number.
+The bot switches that sender into vendor mode — a fixed 3-step pitch, no AI:
+1. "جرّب" -> pitch (2 TND / first month free / secretary stays judge) + asks clinic name
+2. clinic name -> notifies SALES_NOTIFY_NUMBER, asks for a 10-min call time
+3. time -> confirms the callback, notifies SALES_NOTIFY_NUMBER, stage = done
+Vendor mode is sticky per number (secretary "fassa5 <numero>" resets it).
+Env: SALES_NOTIFY_NUMBER = WhatsApp number that receives lead notifications.
+Regression: node test-local.js (PART D) — 208/208 green.

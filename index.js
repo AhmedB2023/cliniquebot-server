@@ -25,6 +25,7 @@ const AI_API_KEY = process.env.AI_API_KEY || "";
 const AI_BASE_URL = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const SECRETARY_NUMBER = (process.env.SECRETARY_NUMBER || "").replace(/\D/g, "");
+const SALES_NOTIFY_NUMBER = (process.env.SALES_NOTIFY_NUMBER || "").replace(/\D/g, "");
 const PORT = process.env.PORT || 3000;
 
 const db = require("./db"); // Postgres memory + bookings
@@ -97,6 +98,15 @@ async function notifySecretary(text) {
     return;
   }
   await sendWhatsApp(SECRETARY_NUMBER, text);
+}
+
+// Sales lead from the demo video ("جرّب"): ping the partner so she calls back.
+async function notifySales(text) {
+  if (!SALES_NOTIFY_NUMBER) {
+    console.log("[sales:SKIP] no SALES_NOTIFY_NUMBER set — lead:", text);
+    return;
+  }
+  await sendWhatsApp(SALES_NOTIFY_NUMBER, text);
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
@@ -455,10 +465,80 @@ async function handleBookingTurn(phone, text, history) {
     : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
 
+// ---------- Vendor (sales) mode: dentist wrote "جرّب" from the demo video ----------
+// Exact trigger only — a patient never writes a bare "جرّب", so the booking
+// flow is untouched. Once triggered, the sender stays in vendor mode until
+// the handoff is done (secretary "fassa5 <numero>" resets it too).
+function looksLikeVendorTrigger(text) {
+  const t = (text || "").trim().replace(/[«»"']/g, "");
+  return /^(جرّب|جرب|jareb|jarreb)$/i.test(t);
+}
+
+async function handleVendorTurn(phone, text, lead) {
+  const ar = isAr(text);
+
+  // Fresh trigger (or re-trigger after done): restart the pitch.
+  if (!lead || (lead.stage === "done" && looksLikeVendorTrigger(text))) {
+    await db.saveVendorLead(phone, "asked_clinic", null);
+    return say(phone, ar
+      ? "أهلا وسهلا! 👋 المساعد متاعنا يجاوب على واتساب العيادة بالدارجة التونسية، يحجز الـ rendez-vous وحدو حتى كي العيادة مسكّرة، والسكرتيرة متاعك تبقى هي اللي تقرّر الحجز النهائي. ما فمّاش اشتراك — تخلّص كان 2 دنانير على كل مريض يوصل، والشهر الأول بلاش. شنوّا اسم العيادة متاعك؟"
+      : "Ahla w sahla! 👋 El assistant mte3na yjawb 3la WhatsApp el 3iyada b derja tounsiya, ya7jez el rendez-vous wa7dou 7atta ki el 3iyada msakra, w el secretaire mte3ek teb9a hiya eli t9arer el 7ajz el nihe2i. Ma fammech ichtirak — t5alles ken 2 dinars 3la kol mridh yousel, w el chhar elowel blech. Chnowa esm el 3iyada mte3ek?");
+  }
+
+  if (lead.stage === "asked_clinic") {
+    const clinic = (text || "").trim().slice(0, 80) || "—";
+    await db.saveVendorLead(phone, "asked_call", clinic);
+    await notifySales(`🔔 Lead jdid (جرّب): 3iyada "${clinic}" — numero ${phone}`);
+    return say(phone, ar
+      ? `ممتاز، عيادة ${clinic}! 🎉 تحب نحكيو 10 دقايق باش نورّيك كيفاش يخدم على عيادتك؟ أنهو وقت يساعدك — اليوم ولا غدوة؟`
+      : `Momtez, 3iyedet ${clinic}! 🎉 T7eb na7kiw 10 d9aye9 bech nwarik kifech ye5dem 3la 3iyedtek? Anhou wa9t yse3dek — lyoum walla ghodwa?`);
+  }
+
+  if (lead.stage === "asked_call") {
+    const when = (text || "").trim().slice(0, 80) || "—";
+    await db.saveVendorLead(phone, "done", lead.clinic_name);
+    await notifySales(`📞 "${lead.clinic_name || "—"}" (${phone}) y7eb appel: "${when}"`);
+    return say(phone, ar
+      ? `داكور! ✅ باش نتصلو بيك ${when}. كان عندك أي سؤال اكتب هوني.`
+      : `D'accord! ✅ Bech nettaslou bik ${when}. Ken 3andek ay sou2el ekteb houni.`);
+  }
+
+  // stage "done": handoff already made, stay quiet-ish.
+  return say(phone, ar
+    ? "شريكتنا باش تتصل بيك قريب. كان عندك سؤال آخر اكتب هوني."
+    : "El charika bech tetassel bik 9rib. Ken 3andek sou2el e5er ekteb houni.");
+}
+
+// Bare greeting ("slm", "bonjour", "عسلامة") -> neutral reply only, no steering.
+// The NEXT message decides: "جرّب" -> vendeur, booking talk -> réceptionniste.
+// Pure greetings only — "sbe7"/"mse" stay out (ambiguous with time-of-day).
+function looksLikePureGreeting(text) {
+  const t = (text || "").trim().toLowerCase().replace(/[.,!؟?]/g, "");
+  if (/^(سلام|عسلامة|صباح الخير|مساء الخير|اهلا|أهلا|مرحبا)$/.test(t)) return true;
+  return /^(slm|slem|salem|salam|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)$/.test(t);
+}
+
 // Shared by the WhatsApp webhook and the /test page.
 async function processPatientText(phone, text) {
   const history = await db.getHistory(phone); // last 15 messages
   await db.saveMessage(phone, "user", text);
+
+  // Vendor (sales) mode first: exact "جرّب" trigger, or an ongoing vendor lead.
+  // Sticky: once a dentist, always vendor for that number (fassa5 resets).
+  const vlead = await db.getVendorLead(phone).catch(() => null);
+  if (looksLikeVendorTrigger(text) || vlead) {
+    const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead);
+    if (v.handled) return v.reply;
+  }
+
+  // Neutral greeting: no vendeur pitch, no réceptionniste steering.
+  // The next message decides the mode.
+  if (looksLikePureGreeting(text)) {
+    const g = await say(phone, isAr(text)
+      ? "وعليكم السلام! كيفاش نجم نعاونك؟"
+      : "3alikom salam! Kifech n3awnek?");
+    return g.reply;
+  }
 
   const booking = await handleBookingTurn(phone, text, history);
   if (booking.handled) return booking.reply;

@@ -12,6 +12,7 @@ function makeStubDb() {
   const bookings = [];
   const proposals = new Map();
   const patients = new Map();
+  const vendorLeads = new Map();
   const signups = [];
   let seq = 1;
   return {
@@ -33,6 +34,7 @@ function makeStubDb() {
         if (messages[i].phone === phone) { messages.splice(i, 1); n++; }
       proposals.delete(phone);
       patients.delete(phone);
+      vendorLeads.delete(phone);
       return n;
     },
     saveBooking: async (phone, slot, slot_at = null, patient_name = null) => {
@@ -59,6 +61,9 @@ function makeStubDb() {
     clearProposal: async (phone) => { proposals.delete(phone); },
     getPatientName: async (phone) => patients.get(phone) || null,
     savePatientName: async (phone, name) => { patients.set(phone, name); },
+    getVendorLead: async (phone) => vendorLeads.get(phone) || null,
+    saveVendorLead: async (phone, stage, clinic_name = null) => { vendorLeads.set(phone, { phone, stage, clinic_name }); },
+    clearVendorLead: async (phone) => { vendorLeads.delete(phone); },
     saveSignup: async (name, phone, clinic_name, city) => {
       const s = { id: seq++, name, phone, clinic_name, city, created_at: "test" };
       signups.push(s);
@@ -281,7 +286,7 @@ async function run() {
   {
     const p = "21600000007";
     const r1 = await bot.processPatientText(p, "salem");
-    has("flow7: salem greeting", r1, "ahla w sahla");
+    has("flow7: neutral greeting", r1, "Kifech n3awnek");
     const r2 = await bot.processPatientText(p, "3andi wji3a, chnowa el dwe?");
     has("flow7: medical redirect", r2, "doktor");
     const r3 = await bot.processPatientText(p, "n7eb na7jez");
@@ -332,7 +337,7 @@ async function run() {
     has("flow9b: delete empty -> not found", del2, "Ma l9it");
     // patient starts fresh, no old memory
     const r = await bot.processPatientText(p, "slm");
-    has("flow9b: fresh start after delete", r, "ahla w sahla");
+    has("flow9b: fresh start after delete", r, "Kifech n3awnek");
   }
 
   // Flow 10 — past slot is refused clearly
@@ -616,6 +621,77 @@ async function run() {
     ok("signup: validator trims + strips phone", v1.name === "Ali" && v1.phone === "+216 50 123 456", JSON.stringify(v1));
     ok("signup: validator rejects empty", !!bot.validateSignup({ name: "", phone: "21650123456", clinic_name: "C", city: "T" }).error, "");
     ok("signup: validator rejects short phone", !!bot.validateSignup({ name: "A", phone: "123", clinic_name: "C", city: "T" }).error, "");
+  }
+
+  // ---------- PART D: vendor (sales) mode — dentist wrote "جرّب" ----------
+  {
+    // D1: Arabic trigger -> Arabic pitch asking for the clinic name
+    const p1 = "vendor1";
+    const d1 = await bot.processPatientText(p1, "جرّب");
+    has("vendor: AR trigger pitches the offer", d1, "2 دنانير");
+    has("vendor: AR trigger asks clinic name", d1, "اسم العيادة");
+
+    // D2: Arabizi trigger -> Arabizi pitch
+    const p2 = "vendor2";
+    const d2 = await bot.processPatientText(p2, "jareb");
+    has("vendor: arabizi trigger pitches the offer", d2, "2 dinars");
+    has("vendor: arabizi trigger asks clinic name", d2, "esm el 3iyada");
+
+    // D3: quoted trigger «جرّب» also works
+    const d3 = await bot.processPatientText("vendor3", "«جرّب»");
+    has("vendor: quoted trigger works", d3, "اسم العيادة");
+
+    // D4: clinic name -> asks for a call time, lead saved at asked_call
+    const d4 = await bot.processPatientText(p1, "عيادة النور");
+    has("vendor: clinic name -> asks call time", d4, "10 دقايق");
+
+    // D5: time answer -> confirmation, stage done, further msgs get quiet fallback
+    const d5 = await bot.processPatientText(p1, "غدوة العشية");
+    has("vendor: time -> confirms callback", d5, "باش نتصلو بيك");
+    const d6 = await bot.processPatientText(p1, "أوك");
+    has("vendor: after done -> quiet fallback", d6, "باش تتصل بيك");
+
+    // D6: re-trigger after done restarts the pitch
+    const d7 = await bot.processPatientText(p1, "جرّب");
+    has("vendor: re-trigger restarts pitch", d7, "اسم العيادة");
+
+    // D7: non-exact "n7eb njareb" does NOT trigger vendor mode (booking flow intact)
+    const p7 = "vendor7";
+    const d8 = await bot.processPatientText(p7, "n7eb njareb ghodwa m3a 10");
+    ok("vendor: 'n7eb njareb ghodwa m3a 10' stays in booking flow", /ghodwa 23 septembre, 10:00/.test(d8), `reply was: ${JSON.stringify(d8)}`);
+
+    // D8: normal patient booking still works on the same server (no interference)
+    const p8 = "vendor8";
+    const d9 = await bot.processPatientText(p8, "ghodwa m3a 10 mta3 sbe7");
+    ok("vendor: patient booking unaffected", /T7eb n7ajzlek/.test(d9), `reply was: ${JSON.stringify(d9)}`);
+
+    // D9: fassa5 clears the vendor lead -> fresh trigger restarts
+    await bot.processPatientText("vendor9", "جرّب");
+    const n = await stubDb.deleteConversation("vendor9");
+    ok("vendor: fassa5 clears conversation", n > 0, "");
+    const leadGone = await stubDb.getVendorLead("vendor9");
+    ok("vendor: fassa5 clears vendor lead", leadGone === null, JSON.stringify(leadGone));
+
+    // D10: neutral greeting — no vendeur pitch, no receptionist steering
+    const n1 = await bot.processPatientText("neut1", "slm");
+    has("vendor: 'slm' -> neutral greeting", n1, "Kifech n3awnek");
+    ok("vendor: neutral greeting steers nothing", !/jareb|rendez-vous|7ajz/i.test(n1), `reply was: ${JSON.stringify(n1)}`);
+    const n2 = await bot.processPatientText("neut2", "عسلامة");
+    has("vendor: AR greeting -> neutral", n2, "كيفاش نجم نعاونك");
+
+    // D11: next message decides — dentist path
+    await bot.processPatientText("neut3", "salut");
+    const n3 = await bot.processPatientText("neut3", "jareb");
+    has("vendor: greeting -> jareb -> pitch", n3, "2 dinars");
+
+    // D12: next message decides — patient path
+    await bot.processPatientText("neut4", "bonjour");
+    const n4 = await bot.processPatientText("neut4", "n7eb na7jez ghodwa m3a 10");
+    ok("vendor: greeting -> booking still proposes", /T7eb n7ajzlek/.test(n4), `reply was: ${JSON.stringify(n4)}`);
+
+    // D13: "sbe7" alone is NOT a pure greeting (time-of-day ambiguity) — old flow intact
+    const n5 = await bot.processPatientText("neut5", "sbe7");
+    ok("vendor: 'sbe7' not treated as greeting", !/Kifech n3awnek/.test(n5), `reply was: ${JSON.stringify(n5)}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

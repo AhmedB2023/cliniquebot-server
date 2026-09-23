@@ -71,6 +71,13 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_signups_created ON signups(created_at DESC);
+    -- Vendor (sales) leads: dentists who wrote "جرّب" — staged pitch flow per phone.
+    CREATE TABLE IF NOT EXISTS vendor_leads (
+      phone TEXT PRIMARY KEY,
+      stage TEXT NOT NULL,              -- asked_clinic | asked_call | done
+      clinic_name TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -136,6 +143,7 @@ async function deleteConversation(phone) {
     const r = await p.query("DELETE FROM messages WHERE phone=$1", [phone]);
     await p.query("DELETE FROM proposals WHERE phone=$1", [phone]);
     await p.query("DELETE FROM patients WHERE phone=$1", [phone]);
+    await p.query("DELETE FROM vendor_leads WHERE phone=$1", [phone]);
     return r.rowCount;
   } catch (e) {
     console.error("[db:ERROR] delete:", e.message);
@@ -307,6 +315,44 @@ async function deleteSignup(id) {
   }
 }
 
+// ---------- Vendor (sales) leads: dentists who wrote "جرّب" ----------
+
+async function getVendorLead(phone) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query("SELECT phone, stage, clinic_name FROM vendor_leads WHERE phone=$1", [phone]);
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error("[db:ERROR] getVendorLead:", e.message);
+    return null;
+  }
+}
+
+async function saveVendorLead(phone, stage, clinic_name = null) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      `INSERT INTO vendor_leads(phone, stage, clinic_name, updated_at) VALUES($1,$2,$3,NOW())
+       ON CONFLICT (phone) DO UPDATE SET stage=$2, clinic_name=$3, updated_at=NOW()`,
+      [phone, stage, clinic_name]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] saveVendorLead:", e.message);
+  }
+}
+
+async function clearVendorLead(phone) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query("DELETE FROM vendor_leads WHERE phone=$1", [phone]);
+  } catch (e) {
+    console.error("[db:ERROR] clearVendorLead:", e.message);
+  }
+}
+
 module.exports = {
   initDb,
   saveMessage,
@@ -328,5 +374,8 @@ module.exports = {
   saveSignup,
   getSignups,
   deleteSignup,
+  getVendorLead,
+  saveVendorLead,
+  clearVendorLead,
   hasDb: () => !!DATABASE_URL,
 };
