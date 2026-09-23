@@ -55,7 +55,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - MAMNOU3 bark: dwe, a3radh, tash5is, nasi7a tibbiya. Ken sou2el tibbi 9oul "el sou2elet el tibbiya lel doktor bark — t7eb n7ajzlek rendez-vous?" walla 9oul eli el secretaire bech tkalmou.
 - Ken el patient ye7ki 3la wji3a wala a3radh, ibda b "nchalah labes" (empathie) 9bal ma t9oul eli el sou2elet el tibbiya lel doktor bark.
 - Ken ma fhemtch el message, 9oul b wdhuh w i9tira7 chnowa tnajem t3awen fih.
-- 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "mriguel, n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
+- 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "d'accord, merhba bik! n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".`;
 
@@ -194,8 +194,8 @@ async function finishBooking(phone, p) {
     const id = await db.saveBooking(phone, p.display, p.slot_at || null);
     console.log(`[booking] #${id} pending: ${phone} -> ${p.display}`);
     reply = ar
-      ? `مريقل، نأكدلك رونديفو (${p.display}) ونرجعلك.`
-      : `Mriguel, n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
+      ? `داكور، مرحبا بيك! نأكدلك رونديفو (${p.display}) ونرجعلك.`
+      : `D'accord, merhba bik! n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
     await notifySecretary(
       `⏳ Rendez-vous jdid mel bot:\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
     );
@@ -257,8 +257,8 @@ async function handleBookingTurn(phone, text, history) {
     if (looksLikeRefusal(text)) {
       await db.clearProposal(phone).catch(() => {});
       return say(phone, ar
-        ? "مريقل، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-        : "Mriguel, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+        ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
+        : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
     }
     // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
     // New text first, so a changed hour wins over the old one.
@@ -315,8 +315,8 @@ async function handleBookingTurn(phone, text, history) {
   // concrete date+time -> propose it back, wait for "ey"
   await db.saveProposal(phone, slotText, r.iso, r.display);
   return say(phone, ar
-    ? `مريقل — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
-    : `Mriguel — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
+    ? `داكور — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
+    : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
 
 // Shared by the WhatsApp webhook and the /test page.

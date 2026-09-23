@@ -155,6 +155,8 @@ async function run() {
     has("flow1: asks ey", r1, "ey");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow1: booked", r2, "n2akkedlek");
+    has("flow1: d'accord wording", r2, "D'accord");
+    has("flow1: merhba bik", r2, "merhba bik");
     const b = await stubDb.getLatestBooking(p);
     ok("flow1: pending in db", b && b.status === "pending" && b.slot === "ghodwa 23 septembre, 17:00", JSON.stringify(b));
     // double "ey" must NOT create a duplicate
@@ -278,10 +280,12 @@ async function run() {
     const r1 = await bot.processPatientText(p, "نحب نحجز");
     has("flow11: ar booking invite", r1, "باش نحجزلك");
     const r2 = await bot.processPatientText(p, "غدوة مع الخمسة متاع العشية");
-    has("flow11: ar proposal", r2, "مريقل — غدوة 23 سبتمبر، 17:00");
+    has("flow11: ar proposal", r2, "داكور — غدوة 23 سبتمبر، 17:00");
     has("flow11: ar proposal says ey", r2, "اي");
     const r3 = await bot.processPatientText(p, "اي");
     has("flow11: ar booked", r3, "نأكدلك رونديفو (غدوة 23 سبتمبر، 17:00)");
+    has("flow11: ar d'accord wording", r3, "داكور");
+    has("flow11: ar merhba bik", r3, "مرحبا بيك");
     const b = await stubDb.getLatestBooking(p);
     ok("flow11: ar slot in db", b && b.slot === "غدوة 23 سبتمبر، 17:00", JSON.stringify(b));
     const r4 = await bot.processPatientText(p, "تأكد الحجز؟");
