@@ -1,7 +1,7 @@
 // dates.js — deterministic Derja date/time resolver (no AI, pure rules).
 // Tunisia wall time (UTC+1 all year, no DST).
 //
-// resolveSlot("jem3a 10")           -> date found, time ambiguous -> asks "sbe7 walla lil?"
+// resolveSlot("jem3a 10")           -> date found, hour ambiguous only for bare 7 -> asks "sbe7 walla 3chiya?"
 // resolveSlot("jem3a 10 mta3 sbe7") -> { display: "jem3a 25 septembre, 10:00", iso }
 // resolveSlot("21 septembre 15:30") -> { display: "21 septembre, 15:30", iso }
 // resolveSlot("sbe7")               -> { found: false }
@@ -223,7 +223,11 @@ function resolveSlot(rawText) {
     if (morning) { /* AM as-is */ }
     else if (afternoon) { finalHour = hour + 12; }
     else if (night) { finalHour = hour <= 5 ? hour : hour + 12; } // 1-5 = after midnight
-    else { needs = "time"; } // "10" alone — sbe7 walla lil?
+    // Clinic hours: 8-12 bare = morning, 1-6 bare = afternoon. Only 7 is
+    // ambiguous (7am vs 7pm), so only it asks "sbe7 walla 3chiya?".
+    else if (hour === 7) { needs = "time"; }
+    else if (hour >= 8) { /* 8-11: morning, AM as-is */ }
+    else { finalHour = hour + 12; } // 1-6: afternoon
   } else {
     hour = null;
     needs = dateUTC !== null ? "time" : null;

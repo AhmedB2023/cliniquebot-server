@@ -323,18 +323,44 @@ async function handleBookingTurn(phone, text, history) {
   }
   if (r.needs === "time") {
     await db.saveProposal(phone, slotText, null, r.dateDisplay);
-    // If the patient already said sbe7/l3chiya/lil, ask for the hour only —
-    // not "sbe7 walla lil?" again.
+    // If the patient already said sbe7/l3chiya/lil, ask for the hour only.
     const period = r.morning ? (ar ? "متاع الصباح" : "mta3 sbe7")
       : r.afternoon ? (ar ? "متاع العشية" : "mta3 l3chiya")
       : r.night ? (ar ? "متاع الليل" : "mta3 lil") : null;
+    // If the patient gave a bare hour ("10") with no period, ask about THAT
+    // hour specifically — never repeat the generic question verbatim.
+    // (Hours >= 13 never reach this branch: the resolver treats them as PM.)
+    let hourStr = null;
+    const hourCands = text.match(/\b\d{1,2}(?::\d{2})?\b/g) || [];
+    if (hourCands.length) {
+      const last = hourCands[hourCands.length - 1];
+      const h = parseInt(last.split(":")[0], 10);
+      if (h >= 1 && h <= 12) hourStr = last;
+    }
     const q = ar
       ? (period
         ? `${r.dateDisplay} ${period} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`
-        : `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع الليل؟ (ولا اكتب الوقت كيما 10:30)`)
+        : hourStr
+        ? `${r.dateDisplay} — الـ${hourStr} هاذي متاع الصباح ولا متاع العشية؟`
+        : `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع العشية؟ (ولا اكتب الوقت كيما 10:30)`)
       : (period
         ? `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`
-        : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 lil? (walla ekteb el wa9t kima 10:30)`);
+        : hourStr
+        ? `${r.dateDisplay} — el ${hourStr} hethi mta3 sbe7 walla mta3 l3chiya?`
+        : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`);
+    // Memory: never send the identical question twice in a row — if the
+    // patient just repeated the hour, rephrase with concrete 24h options.
+    const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
+    if (lastAsst && lastAsst.text === q && hourStr) {
+      const parts = hourStr.split(":");
+      const hh = parseInt(parts[0], 10);
+      const mm = parts[1] || "00";
+      const am = `${String(hh).padStart(2, "0")}:${mm}`;
+      const pm = `${String(hh + 12).padStart(2, "0")}:${mm}`;
+      return say(phone, ar
+        ? `${r.dateDisplay} — باش نتأكد: الـ${hourStr} هاذي ${am} متاع الصباح ولا ${pm} متاع العشية؟`
+        : `${r.dateDisplay} — bech net2akked: el ${hourStr} hethi ${am} mta3 sbe7 walla ${pm} mta3 l3chiya?`);
+    }
     return say(phone, q);
   }
   // concrete date+time -> propose it back, wait for "ey"

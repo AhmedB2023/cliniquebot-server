@@ -84,21 +84,25 @@ const dateCases = [
   ["Ghodwa m3a khamsa mte3 l3chwa", "ghodwa 23 septembre, 17:00"], // the reported bug
   ["ghodwa m3a 5 mte3 l3chiya", "ghodwa 23 septembre, 17:00"],
   ["ghodwa 10 mta3 sbe7", "ghodwa 23 septembre, 10:00"],
-  ["ghodwa m3a 10", "needs:ghodwa 23 septembre"],
+  ["ghodwa m3a 10", "ghodwa 23 septembre, 10:00"], // 8-12 bare = morning
   ["ghodwa sbe7", "needs:ghodwa 23 septembre"],
   ["ghodwa", "needs:ghodwa 23 septembre"],
   ["ba3d ghodwa", "needs:ba3d ghodwa 24 septembre"],
   ["ba3d ghodwa m3a 4 mte3 l3chiya", "ba3d ghodwa 24 septembre, 16:00"],
   ["jem3a", "needs:jem3a 25 septembre"],
-  ["jem3a 10", "needs:jem3a 25 septembre"],
+  ["jem3a 10", "jem3a 25 septembre, 10:00"], // 8-12 bare = morning
+  ["jem3a 3", "jem3a 25 septembre, 15:00"], // 1-6 bare = afternoon
+  ["jem3a 6", "jem3a 25 septembre, 18:00"],
+  ["jem3a 12", "jem3a 25 septembre, 12:00"],
+  ["jem3a 7", "needs:jem3a 25 septembre"], // only bare 7 is ambiguous
   ["jem3a el khamsa mte3 l3chiya", "jem3a 25 septembre, 17:00"],
   ["sibt", "needs:sebt 26 septembre"], // canonical spelling
   ["sebt m3a 11 mta3 sbe7", "sebt 26 septembre, 11:00"],
   ["la7ad", "needs:l7ad 27 septembre"], // canonical spelling
   ["ethnin", "needs:ethnin 28 septembre"],
   ["thnin m3a 9 mta3 sbe7", "ethnin 28 septembre, 09:00"], // canonical spelling
-  ["ethnin el 10", "needs:ethnin 28 septembre"], // Tuesday must NOT read as "2 o'clock"
-  ["ethnin m3a zouz", "needs:ethnin 28 septembre"],
+  ["ethnin el 10", "ethnin 28 septembre, 10:00"], // Monday must NOT read as "2 o'clock"
+  ["ethnin m3a zouz", "ethnin 28 septembre, 14:00"], // 1-6 bare = afternoon
   ["khmis", "needs:khmis 24 septembre"],
   ["erb3a", "needs:erb3a 23 septembre"],
   ["21 septembre", "needs:21 septembre"],
@@ -112,8 +116,8 @@ const dateCases = [
   ["ghodwa nos el lil", "ghodwa 23 septembre, 00:00"],
   ["ghodwa m3a 12", "ghodwa 23 septembre, 12:00"],
   ["ghodwa m3a 12 mte3 lil", "ghodwa 23 septembre, 00:00"],
-  ["ghodwa m3a zouz", "needs:ghodwa 23 septembre"], // 2 alone is ambiguous
-  ["ghodwa khamsa", "needs:ghodwa 23 septembre"],   // 5 alone is ambiguous
+  ["ghodwa m3a zouz", "ghodwa 23 septembre, 14:00"], // 2 bare = afternoon
+  ["ghodwa khamsa", "ghodwa 23 septembre, 17:00"],   // 5 bare = afternoon
   ["lyoum m3a el wa7da mte3 lil", "PAST"],          // 01:00 today < 19:30 now
   ["lyoum m3a 8 mta3 sbe7", "PAST"],
   ["lyoum m3a 9 mte3 lil", "lyoum 22 septembre, 21:00"], // 21:00 > 19:30, future
@@ -124,7 +128,7 @@ const dateCases = [
   // Arabic-script dates
   ["غدوة مع الخمسة متاع العشية", "غدوة 23 سبتمبر، 17:00"],
   ["غدوة مع خمسة متاع العشية", "غدوة 23 سبتمبر، 17:00"],
-  ["الجمعة 10", "needs:الجمعة 25 سبتمبر"],
+  ["الجمعة 10", "الجمعة 25 سبتمبر، 10:00"],
   ["الجمعة مع العشرة متاع الصباح", "الجمعة 25 سبتمبر، 10:00"],
   ["اليوم", "needs:اليوم 22 سبتمبر"],
   ["غدوة", "needs:غدوة 23 سبتمبر"],
@@ -157,7 +161,7 @@ for (const [input, expected] of dateCases) {
   const r = dates.resolveSlot("ghodwa sbe7");
   ok("dates: ghodwa sbe7 -> morning flag", r.found && r.morning === true && r.needs === "time");
   const r2 = dates.resolveSlot("ghodwa m3a 5");
-  ok("dates: ghodwa m3a 5 -> no period flag", r2.found && !r2.morning && !r2.afternoon && !r2.night && r2.needs === "time");
+  ok("dates: ghodwa m3a 5 -> afternoon by default", r2.found && !r2.morning && !r2.afternoon && !r2.night && r2.display === "ghodwa 23 septembre, 17:00");
 }
 
 // ---------- PART B: full conversation flows (real processPatientText) ----------
@@ -181,17 +185,17 @@ async function run() {
     ok("flow1: exactly 1 pending", n === 1, `n=${n}`);
   }
 
-  // Flow 2 — ambiguous time, clarify with an evening word, then accept
+  // Flow 2 — ambiguous hour (bare 7), clarify with an evening word, then accept
   {
     const p = "21600000002";
-    const r1 = await bot.processPatientText(p, "jem3a 10");
-    has("flow2: asks sbe7 walla lil", r1, "mta3 sbe7 walla mta3 lil");
+    const r1 = await bot.processPatientText(p, "jem3a 7");
+    has("flow2: asks sbe7 walla 3chiya", r1, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
     const r2 = await bot.processPatientText(p, "l3chiya");
-    has("flow2: merged to 22:00", r2, "jem3a 25 septembre, 22:00"); // 10 + l3chiya = 22:00
+    has("flow2: merged to 19:00", r2, "jem3a 25 septembre, 19:00"); // 7 + l3chiya = 19:00
     const r3 = await bot.processPatientText(p, "ey");
     has("flow2: booked", r3, "n2akkedlek");
     const b = await stubDb.getLatestBooking(p);
-    ok("flow2: slot in db", b && b.slot === "jem3a 25 septembre, 22:00", JSON.stringify(b));
+    ok("flow2: slot in db", b && b.slot === "jem3a 25 septembre, 19:00", JSON.stringify(b));
   }
 
   // Flow 3 — number word + morning
@@ -206,8 +210,8 @@ async function run() {
   // Flow 4 — pure refusal clears the proposal
   {
     const p = "21600000004";
-    const r1 = await bot.processPatientText(p, "ghodwa 10");
-    has("flow4: asks time", r1, "mta3 sbe7 walla mta3 lil");
+    const r1 = await bot.processPatientText(p, "ghodwa 7");
+    has("flow4: asks time", r1, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
     const r2 = await bot.processPatientText(p, "le");
     has("flow4: refusal acknowledged", r2, "l4it el i9tira7");
     const prop = await stubDb.getProposal(p);
@@ -222,11 +226,11 @@ async function run() {
     const p = "21600000005";
     const r1 = await bot.processPatientText(p, "jem3a");
     has("flow5: date kept, asks time", r1, "jem3a 25 septembre");
-    const r2 = await bot.processPatientText(p, "10");
-    has("flow5: hour merged, asks period", r2, "mta3 sbe7 walla mta3 lil");
+    const r2 = await bot.processPatientText(p, "7");
+    has("flow5: hour merged, asks period", r2, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
     ok("flow5: date not lost", r2.includes("jem3a 25 septembre"), `reply was: ${JSON.stringify(r2)}`);
     const r3 = await bot.processPatientText(p, "sbe7");
-    has("flow5: concrete 10:00", r3, "jem3a 25 septembre, 10:00");
+    has("flow5: concrete 07:00", r3, "jem3a 25 septembre, 07:00");
     const r4 = await bot.processPatientText(p, "ey");
     has("flow5: booked", r4, "n2akkedlek");
   }
@@ -260,12 +264,12 @@ async function run() {
   // Flow 8 — two patients never mix memories/proposals
   {
     const a = "21600000008", b2 = "21600000009";
-    await bot.processPatientText(a, "ghodwa 10");
-    await bot.processPatientText(b2, "jem3a 10");
+    await bot.processPatientText(a, "ghodwa 7");
+    await bot.processPatientText(b2, "jem3a 7");
     const ra = await bot.processPatientText(a, "sbe7");
-    has("flow8: patient A keeps ghodwa", ra, "ghodwa 23 septembre, 10:00");
+    has("flow8: patient A keeps ghodwa", ra, "ghodwa 23 septembre, 07:00");
     const rb = await bot.processPatientText(b2, "l3chiya");
-    has("flow8: patient B keeps jem3a", rb, "jem3a 25 septembre, 22:00");
+    has("flow8: patient B keeps jem3a", rb, "jem3a 25 septembre, 19:00");
   }
 
   // Flow 9 — secretary list / reject / unknown id
@@ -307,15 +311,16 @@ async function run() {
     has("flow11: ar status pending", r4, "مازال يستنى");
   }
 
-  // Flow 12 — Arabic script sticks across Latin follow-ups ("10")
+  // Flow 12 — Arabic script sticks across Latin follow-ups ("7")
   {
     const p = "21600000012";
-    const r1 = await bot.processPatientText(p, "غدوة 10");
-    has("flow12: ar asks time", r1, "متاع الصباح ولا متاع الليل");
-    const r2 = await bot.processPatientText(p, "10");
-    has("flow12: still ar after '10'", r2, "متاع الصباح ولا متاع الليل");
+    const r1 = await bot.processPatientText(p, "غدوة 7");
+    has("flow12: ar asks time", r1, "الـ7 هاذي متاع الصباح ولا متاع العشية");
+    const r2 = await bot.processPatientText(p, "7");
+    has("flow12: rephrased, not repeated", r2, "باش نتأكد");
+    ok("flow12: not verbatim repeat", r2 !== r1, r2);
     const r3 = await bot.processPatientText(p, "متاع الصباح");
-    has("flow12: ar proposal 10:00", r3, "غدوة 23 سبتمبر، 10:00");
+    has("flow12: ar proposal 07:00", r3, "غدوة 23 سبتمبر، 07:00");
   }
 
   // Flow 13 — Arabic refusal + Arabic fallback greeting
@@ -379,6 +384,31 @@ async function run() {
     ok("flow16: proposal cleared", (await stubDb.getProposal(p)) === null);
     const convs2 = await stubDb.getConversations();
     ok("flow16: gone from list", !convs2.some((c) => c.phone === p), JSON.stringify(convs2.map((c) => c.phone)));
+  }
+
+  // Flow 17 — bare 7 after the sbe7/3chiya question: ask about THAT hour,
+  // never repeat the generic question verbatim (live bug 2026-09-22 21:07).
+  // (Bare 8-12 = morning, 1-6 = afternoon, only 7 is ambiguous.)
+  {
+    const p = "21600000021";
+    const r1 = await bot.processPatientText(p, "nhar jem3a");
+    has("flow17: asks sbe7/3chiya", r1, "mta3 sbe7 walla mta3 l3chiya");
+    const r2 = await bot.processPatientText(p, "7");
+    has("flow17: asks about 7", r2, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
+    ok("flow17: not verbatim repeat", r2 !== r1, r2);
+    const r3 = await bot.processPatientText(p, "mta3 sbe7");
+    has("flow17: proposes 07:00", r3, "07:00");
+    // 10 bare now resolves straight to morning — no question at all
+    const r4 = await bot.processPatientText("21600000023", "jem3a 10");
+    has("flow17: bare 10 = morning", r4, "jem3a 25 septembre, 10:00");
+    const r5 = await bot.processPatientText("21600000024", "jem3a 3");
+    has("flow17: bare 3 = afternoon", r5, "jem3a 25 septembre, 15:00");
+    // Arabic version
+    const pa = "21600000022";
+    const a1 = await bot.processPatientText(pa, "نهار الجمعة");
+    const a2 = await bot.processPatientText(pa, "7");
+    has("flow17: ar asks about 7", a2, "الـ7 هاذي");
+    ok("flow17: ar not verbatim repeat", a2 !== a1, a2);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
