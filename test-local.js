@@ -11,6 +11,7 @@ function makeStubDb() {
   const messages = [];
   const bookings = [];
   const proposals = new Map();
+  const patients = new Map();
   let seq = 1;
   return {
     initDb: async () => true,
@@ -30,10 +31,11 @@ function makeStubDb() {
       for (let i = messages.length - 1; i >= 0; i--)
         if (messages[i].phone === phone) { messages.splice(i, 1); n++; }
       proposals.delete(phone);
+      patients.delete(phone);
       return n;
     },
-    saveBooking: async (phone, slot, slot_at = null) => {
-      const b = { id: seq++, phone, slot, slot_at, status: "pending" };
+    saveBooking: async (phone, slot, slot_at = null, patient_name = null) => {
+      const b = { id: seq++, phone, slot, slot_at, patient_name, status: "pending" };
       bookings.push(b);
       return b.id;
     },
@@ -49,11 +51,13 @@ function makeStubDb() {
       const b = bookings.find((b) => b.id === id);
       if (b) b.status = status;
     },
-    saveProposal: async (phone, slot_text, slot_at, display) => {
-      proposals.set(phone, { slot_text, slot_at, display });
+    saveProposal: async (phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) => {
+      proposals.set(phone, { slot_text, slot_at, display, awaiting_name, partial_name });
     },
     getProposal: async (phone) => proposals.get(phone) || null,
     clearProposal: async (phone) => { proposals.delete(phone); },
+    getPatientName: async (phone) => patients.get(phone) || null,
+    savePatientName: async (phone, name) => { patients.set(phone, name); },
     hasDb: () => true,
     _inspect: () => ({ messages, bookings, proposals }),
   };
@@ -166,21 +170,29 @@ for (const [input, expected] of dateCases) {
 
 // ---------- PART B: full conversation flows (real processPatientText) ----------
 async function run() {
-  // Flow 1 — the exact reported bug, then accept
+  // Flow 1 — the exact reported bug, then accept -> name gate -> booked with name
   {
     const p = "21600000001";
     const r1 = await bot.processPatientText(p, "Ghodwa m3a khamsa mte3 l3chwa");
     has("flow1: direct proposal 17:00", r1, "ghodwa 23 septembre, 17:00");
     has("flow1: asks ey", r1, "ey");
     const r2 = await bot.processPatientText(p, "ey");
-    has("flow1: booked", r2, "n2akkedlek");
-    has("flow1: d'accord wording", r2, "D'accord");
-    has("flow1: merhba bik", r2, "merhba bik");
+    has("flow1: asks for name", r2, "esm wel la9ab");
+    has("flow1: name question keeps slot", r2, "ghodwa 23 septembre, 17:00");
+    const b0 = await stubDb.getLatestBooking(p);
+    ok("flow1: no booking before name", !b0, JSON.stringify(b0));
+    const r3 = await bot.processPatientText(p, "ahmed ben salah");
+    has("flow1: booked", r3, "n2akkedlek");
+    has("flow1: d'accord wording", r3, "D'accord");
+    has("flow1: uses first name", r3, "D'accord Ahmed");
     const b = await stubDb.getLatestBooking(p);
     ok("flow1: pending in db", b && b.status === "pending" && b.slot === "ghodwa 23 septembre, 17:00", JSON.stringify(b));
+    ok("flow1: name on booking", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
+    const saved = await stubDb.getPatientName(p);
+    ok("flow1: name remembered", saved === "ahmed ben salah", saved);
     // double "ey" must NOT create a duplicate
-    const r3 = await bot.processPatientText(p, "ey");
-    has("flow1: no duplicate on 2nd ey", r3, "deja pending");
+    const r4 = await bot.processPatientText(p, "ey");
+    has("flow1: no duplicate on 2nd ey", r4, "deja pending");
     const n = (await stubDb.getPendingBookings()).filter((x) => x.phone === p).length;
     ok("flow1: exactly 1 pending", n === 1, `n=${n}`);
   }
@@ -192,6 +204,7 @@ async function run() {
     has("flow2: asks sbe7 walla 3chiya", r1, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
     const r2 = await bot.processPatientText(p, "l3chiya");
     has("flow2: merged to 19:00", r2, "jem3a 25 septembre, 19:00"); // 7 + l3chiya = 19:00
+    await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r3 = await bot.processPatientText(p, "ey");
     has("flow2: booked", r3, "n2akkedlek");
     const b = await stubDb.getLatestBooking(p);
@@ -203,6 +216,7 @@ async function run() {
     const p = "21600000003";
     const r1 = await bot.processPatientText(p, "ghodwa m3a 10 mta3 sbe7");
     has("flow3: 10:00", r1, "ghodwa 23 septembre, 10:00");
+    await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r2 = await bot.processPatientText(p, "ey");
     has("flow3: booked", r2, "n2akkedlek");
   }
@@ -231,6 +245,7 @@ async function run() {
     ok("flow5: date not lost", r2.includes("jem3a 25 septembre"), `reply was: ${JSON.stringify(r2)}`);
     const r3 = await bot.processPatientText(p, "sbe7");
     has("flow5: concrete 07:00", r3, "jem3a 25 septembre, 07:00");
+    await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r4 = await bot.processPatientText(p, "ey");
     has("flow5: booked", r4, "n2akkedlek");
   }
@@ -286,6 +301,28 @@ async function run() {
     has("flow9: unknown id", unk, "Ma l9it");
   }
 
+  // Flow 9b — secretary deletes a conversation by message
+  {
+    const p = "21600000019";
+    await bot.processPatientText(p, "slm, n7eb na7jez rendez-vous");
+    await bot.processPatientText(p, "ghodwa 10");
+    const before = await stubDb.getHistory(p);
+    ok("flow9b: conversation exists", before.length > 0, `n=${before.length}`);
+    const propBefore = await stubDb.getProposal(p);
+    ok("flow9b: proposal exists", !!propBefore, "has proposal");
+    const del = await bot.processSecretaryText(`fassa5 ${p}`);
+    has("flow9b: delete confirms", del, "Tfass5et");
+    const after = await stubDb.getHistory(p);
+    ok("flow9b: history cleared", after.length === 0, `n=${after.length}`);
+    const propAfter = await stubDb.getProposal(p);
+    ok("flow9b: proposal cleared", !propAfter, "no proposal");
+    const del2 = await bot.processSecretaryText(`fassa5 ${p}`);
+    has("flow9b: delete empty -> not found", del2, "Ma l9it");
+    // patient starts fresh, no old memory
+    const r = await bot.processPatientText(p, "slm");
+    has("flow9b: fresh start after delete", r, "ahla w sahla");
+  }
+
   // Flow 10 — past slot is refused clearly
   {
     const p = "21600000010";
@@ -302,9 +339,11 @@ async function run() {
     has("flow11: ar proposal", r2, "داكور — غدوة 23 سبتمبر، 17:00");
     has("flow11: ar proposal says ey", r2, "اي");
     const r3 = await bot.processPatientText(p, "اي");
-    has("flow11: ar booked", r3, "نأكدلك رونديفو (غدوة 23 سبتمبر، 17:00)");
-    has("flow11: ar d'accord wording", r3, "داكور");
-    has("flow11: ar merhba bik", r3, "مرحبا بيك");
+    has("flow11: ar asks name", r3, "الاسم واللقب");
+    const r3b = await bot.processPatientText(p, "أحمد بن صالح");
+    has("flow11: ar booked", r3b, "نأكدلك رونديفو (غدوة 23 سبتمبر، 17:00)");
+    has("flow11: ar d'accord wording", r3b, "داكور");
+    has("flow11: ar merhba bik", r3b, "مرحبا بيك");
     const b = await stubDb.getLatestBooking(p);
     ok("flow11: ar slot in db", b && b.slot === "غدوة 23 سبتمبر، 17:00", JSON.stringify(b));
     const r4 = await bot.processPatientText(p, "تأكد الحجز؟");
@@ -409,6 +448,105 @@ async function run() {
     const a2 = await bot.processPatientText(pa, "7");
     has("flow17: ar asks about 7", a2, "الـ7 هاذي");
     ok("flow17: ar not verbatim repeat", a2 !== a1, a2);
+  }
+
+  // Flow 18 — name gate: "ey" asks nom+prenom, no booking before the name
+  {
+    const p = "21600000030";
+    const r1 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    has("flow18: proposal", r1, "ghodwa 23 septembre, 10:00");
+    const r2 = await bot.processPatientText(p, "ey");
+    has("flow18: asks name", r2, "esm wel la9ab");
+    has("flow18: name question keeps slot", r2, "ghodwa 23 septembre, 10:00");
+    const b0 = await stubDb.getLatestBooking(p);
+    ok("flow18: no booking before name", !b0, JSON.stringify(b0));
+    const r3 = await bot.processPatientText(p, "ahmed ben salah");
+    has("flow18: booked with first name", r3, "D'accord Ahmed");
+    has("flow18: booked", r3, "n2akkedlek");
+    const b = await stubDb.getLatestBooking(p);
+    ok("flow18: name on booking", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
+    ok("flow18: name remembered", (await stubDb.getPatientName(p)) === "ahmed ben salah", "");
+  }
+
+  // Flow 19 — single word -> asks family name, then completes
+  {
+    const p = "21600000031";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey");
+    const r = await bot.processPatientText(p, "ahmed");
+    has("flow19: asks family name", r, "la9ab");
+    const r2 = await bot.processPatientText(p, "ben salah");
+    has("flow19: booked", r2, "n2akkedlek");
+    const b = await stubDb.getLatestBooking(p);
+    ok("flow19: full name assembled", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
+  }
+
+  // Flow 20 — "esmi" prefix stripped; Arabic script name
+  {
+    const p = "21600000032";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey");
+    const r = await bot.processPatientText(p, "esmi ahmed ben salah");
+    has("flow20: booked", r, "D'accord Ahmed");
+    const b = await stubDb.getLatestBooking(p);
+    ok("flow20: prefix stripped", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
+
+    const pa = "21600000033";
+    const a1 = await bot.processPatientText(pa, "غدوة 10 متاع الصباح");
+    has("flow20: ar proposal", a1, "غدوة");
+    const a2 = await bot.processPatientText(pa, "اي");
+    has("flow20: ar asks name", a2, "الاسم واللقب");
+    const a3 = await bot.processPatientText(pa, "أحمد بن صالح");
+    has("flow20: ar confirmation", a3, "داكور");
+    const ba = await stubDb.getLatestBooking(pa);
+    ok("flow20: ar name saved", ba && ba.patient_name === "أحمد بن صالح", JSON.stringify(ba));
+  }
+
+  // Flow 21 — refusal while awaiting name cancels the proposal
+  {
+    const p = "21600000034";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey");
+    const r = await bot.processPatientText(p, "le");
+    has("flow21: refusal cancels", r, "l4it el i9tira7");
+    ok("flow21: proposal cleared", (await stubDb.getProposal(p)) === null, "");
+    ok("flow21: no booking", !(await stubDb.getLatestBooking(p)), "");
+  }
+
+  // Flow 22 — known name: next booking skips the name question
+  {
+    const p = "21600000030"; // booked in flow 18, name known
+    const r1 = await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
+    has("flow22: proposal", r1, "jem3a 25 septembre, 10:00");
+    const r2 = await bot.processPatientText(p, "ey");
+    has("flow22: booked directly", r2, "D'accord Ahmed");
+    ok("flow22: no name question", !r2.includes("esm wel la9ab"), r2);
+    const b = await stubDb.getLatestBooking(p);
+    ok("flow22: name on 2nd booking", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
+  }
+
+  // Flow 23 — non-name while awaiting (a question) -> AI answers, still waiting
+  {
+    const p = "21600000035";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey");
+    const r = await bot.processPatientText(p, "b9adech el consultation?");
+    has("flow23: price answered", r, "aswem"); // fallback reply, booking still open
+    ok("flow23: still no booking", !(await stubDb.getLatestBooking(p)), "");
+    const r2 = await bot.processPatientText(p, "ahmed ben salah");
+    has("flow23: books after answer", r2, "n2akkedlek");
+  }
+
+  // Flow 24 — fassa5 forgets the remembered name too
+  {
+    const p = "21600000030"; // has a remembered name from flow 18
+    const del = await bot.processSecretaryText(`fassa5 ${p}`);
+    has("flow24: delete confirms", del, "Tfass5et");
+    ok("flow24: name forgotten", (await stubDb.getPatientName(p)) === null, "");
+    const r1 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    has("flow24: proposal again", r1, "ghodwa 23 septembre, 10:00");
+    const r2 = await bot.processPatientText(p, "ey");
+    has("flow24: asks name again", r2, "esm wel la9ab");
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

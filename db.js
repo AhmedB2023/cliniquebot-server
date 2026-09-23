@@ -52,6 +52,15 @@ async function initDb() {
       display TEXT,
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Patient identity: nom + prenom, remembered per phone number.
+    CREATE TABLE IF NOT EXISTS patients (
+      phone TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS patient_name TEXT;
+    ALTER TABLE proposals ADD COLUMN IF NOT EXISTS awaiting_name BOOLEAN DEFAULT FALSE;
+    ALTER TABLE proposals ADD COLUMN IF NOT EXISTS partial_name TEXT;
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -108,7 +117,7 @@ async function getFullHistory(phone) {
   return getHistory(phone, 500);
 }
 
-// Forget everything about one phone: messages + pending slot proposal.
+// Forget everything about one phone: messages + pending slot proposal + remembered name.
 // After this the bot has no memory of that conversation.
 async function deleteConversation(phone) {
   const p = getPool();
@@ -116,6 +125,7 @@ async function deleteConversation(phone) {
   try {
     const r = await p.query("DELETE FROM messages WHERE phone=$1", [phone]);
     await p.query("DELETE FROM proposals WHERE phone=$1", [phone]);
+    await p.query("DELETE FROM patients WHERE phone=$1", [phone]);
     return r.rowCount;
   } catch (e) {
     console.error("[db:ERROR] delete:", e.message);
@@ -125,12 +135,12 @@ async function deleteConversation(phone) {
 
 // ---------- Bookings (stage 2) ----------
 
-async function saveBooking(phone, slot, slot_at = null) {
+async function saveBooking(phone, slot, slot_at = null, patient_name = null) {
   const p = getPool();
   if (!p) return null;
   const r = await p.query(
-    "INSERT INTO bookings(phone, slot, slot_at) VALUES($1,$2,$3) RETURNING id",
-    [phone, slot, slot_at]
+    "INSERT INTO bookings(phone, slot, slot_at, patient_name) VALUES($1,$2,$3,$4) RETURNING id",
+    [phone, slot, slot_at, patient_name]
   );
   return r.rows[0].id;
 }
@@ -181,16 +191,16 @@ async function setBookingStatus(id, status) {
 }
 
 // ---------- Proposals: the concrete slot the bot offered, awaiting "ey" ----------
-async function saveProposal(phone, slot_text, slot_at, display) {
+async function saveProposal(phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) {
   const p = getPool();
   if (!p) return;
   try {
     await p.query(
-      `INSERT INTO proposals(phone, slot_text, slot_at, display, updated_at)
-       VALUES($1,$2,$3,$4,NOW())
+      `INSERT INTO proposals(phone, slot_text, slot_at, display, awaiting_name, partial_name, updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,NOW())
        ON CONFLICT (phone) DO UPDATE
-       SET slot_text=$2, slot_at=$3, display=$4, updated_at=NOW()`,
-      [phone, slot_text, slot_at, display]
+       SET slot_text=$2, slot_at=$3, display=$4, awaiting_name=$5, partial_name=$6, updated_at=NOW()`,
+      [phone, slot_text, slot_at, display, awaiting_name, partial_name]
     );
   } catch (e) {
     console.error("[db:ERROR] proposal:", e.message);
@@ -203,7 +213,7 @@ async function getProposal(phone) {
   if (!p) return null;
   try {
     const r = await p.query(
-      "SELECT slot_text, slot_at, display FROM proposals WHERE phone=$1 AND updated_at > NOW() - INTERVAL '30 minutes'",
+      "SELECT slot_text, slot_at, display, awaiting_name, partial_name FROM proposals WHERE phone=$1 AND updated_at > NOW() - INTERVAL '30 minutes'",
       [phone]
     );
     return r.rows[0] || null;
@@ -223,6 +233,34 @@ async function clearProposal(phone) {
   }
 }
 
+// ---------- Patient identity: nom + prenom, remembered per phone ----------
+
+async function getPatientName(phone) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query("SELECT name FROM patients WHERE phone=$1", [phone]);
+    return (r.rows[0] && r.rows[0].name) || null;
+  } catch (e) {
+    console.error("[db:ERROR] getPatientName:", e.message);
+    return null;
+  }
+}
+
+async function savePatientName(phone, name) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      `INSERT INTO patients(phone, name, updated_at) VALUES($1,$2,NOW())
+       ON CONFLICT (phone) DO UPDATE SET name=$2, updated_at=NOW()`,
+      [phone, name]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] savePatientName:", e.message);
+  }
+}
+
 module.exports = {
   initDb,
   saveMessage,
@@ -239,5 +277,7 @@ module.exports = {
   saveProposal,
   getProposal,
   clearProposal,
+  getPatientName,
+  savePatientName,
   hasDb: () => !!DATABASE_URL,
 };
