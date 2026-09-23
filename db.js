@@ -87,6 +87,42 @@ async function getHistory(phone, limit = 15) {
   }
 }
 
+// All conversations: phone + message count + last message time, most recent first.
+async function getConversations() {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = await p.query(
+      `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at
+       FROM messages GROUP BY phone ORDER BY last_at DESC`
+    );
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] conversations:", e.message);
+    return [];
+  }
+}
+
+// Full conversation for one phone, oldest first (for the dashboard).
+async function getFullHistory(phone) {
+  return getHistory(phone, 500);
+}
+
+// Forget everything about one phone: messages + pending slot proposal.
+// After this the bot has no memory of that conversation.
+async function deleteConversation(phone) {
+  const p = getPool();
+  if (!p) return 0;
+  try {
+    const r = await p.query("DELETE FROM messages WHERE phone=$1", [phone]);
+    await p.query("DELETE FROM proposals WHERE phone=$1", [phone]);
+    return r.rowCount;
+  } catch (e) {
+    console.error("[db:ERROR] delete:", e.message);
+    return 0;
+  }
+}
+
 // ---------- Bookings (stage 2) ----------
 
 async function saveBooking(phone, slot, slot_at = null) {
@@ -191,6 +227,9 @@ module.exports = {
   initDb,
   saveMessage,
   getHistory,
+  getConversations,
+  getFullHistory,
+  deleteConversation,
   saveBooking,
   findPendingBooking,
   getBooking,

@@ -57,6 +57,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - Ken ma fhemtch el message, 9oul b wdhuh w i9tira7 chnowa tnajem t3awen fih.
 - 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "d'accord, merhba bik! n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
+- 3andek el conversation el 9dima (history) — 9bal ma tjewb chouf chnowa t9al 9balek. MAMNOU3 t3awed nafs el sou2el 7arfiyan: ken s2elt el patient 3la 7aja w ma jewbch 3liha b wdhuh, ma t3awedch nafs el sou2el — fassrou b tari9a o5ra w a3tih mthel wadh7 (kima "jem3a 10 mta3 sbe7").
 - Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".`;
 
 // ---------- Meta: send a WhatsApp text message ----------
@@ -176,6 +177,17 @@ function looksLikeRefusal(text) {
   return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test(raw.toLowerCase());
 }
 
+// Booking intent without any date/time ("n7eb na7jez", "nheb na5jez rendez vous", "نحب نحجز").
+function looksLikeBookingIntent(text) {
+  const raw = (text || "").trim();
+  if (/نحب\s*(نحجز|ناخذ)/.test(raw)) return true;
+  if (/(احجز|احجزلي|حجز|موعد)/.test(raw)) return true;
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(na7jez|na5jez|nahjez|e7jezli|a7jezli|e7jez|a7jez)/.test(t)) return true;
+  if (/(n7eb|nheb)/.test(t) && /(rendez|rdv|7ajz|hajz|reservation)/.test(t)) return true;
+  return false;
+}
+
 async function say(phone, reply) {
   await db.saveMessage(phone, "assistant", reply);
   return { handled: true, reply };
@@ -284,6 +296,19 @@ async function handleBookingTurn(phone, text, history) {
       return finishBooking(phone, { display: r2.display, slot_at: r2.iso, slot_text: lastAsst.text });
     }
     return { handled: false }; // let the AI answer
+  }
+
+  // B0) Booking intent but no date/time — and we ALREADY asked for day/time.
+  // Don't fall through to the AI just to repeat the same question: nudge
+  // with a rephrased ask + a concrete example (conversation memory).
+  if (!r.found && looksLikeBookingIntent(text)) {
+    const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
+    if (lastAsst && /(nhar w anhou wa9t|anhou nhar|wa9t yse3dek|أنهو نهار|وقت يساعدك)/i.test(lastAsst.text)) {
+      return say(phone, ar
+        ? "فهمتك تحب تحجز — قولي أنهو نهار وأنهو وقت، كيما: الجمعة 10 متاع الصباح."
+        : "Fhemtek t7eb ta7jez — 9olli anhou nhar w anhou wa9t, kima: jem3a 10 mta3 sbe7.");
+    }
+    return { handled: false }; // first time asking: let the AI do it
   }
 
   // B) Slot information (new request or clarification answer).
@@ -550,6 +575,69 @@ app.post("/api/bookings/:id/:action", async (req, res) => {
     return res.status(400).json({ error: "bad request" });
   const reply = await settleBooking(id, approve);
   res.json({ reply });
+});
+
+// ---------- Conversations dashboard: view + forget ----------
+const MESSAGES_PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conversations</title>
+<style>body{font-family:sans-serif;max-width:700px;margin:0 auto;padding:12px;background:#f5f5f5}
+.card{background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;margin:8px 0}
+.row{display:flex;gap:6px;margin-top:8px}
+button{padding:8px 12px;border-radius:8px;border:0;font-size:14px;color:#fff;cursor:pointer}
+.ok{background:#0b7}.no{background:#c33}.back{background:#888}
+#pwrow{display:flex;gap:6px;margin-bottom:8px}
+input{flex:1;padding:10px;border-radius:8px;border:1px solid #ccc;font-size:16px}
+.msg{padding:6px 10px;border-radius:10px;margin:4px 0;max-width:85%;font-size:14px;overflow-wrap:break-word}
+.user{background:#dcf8c6;margin-left:auto;text-align:right}
+.assistant{background:#fff;border:1px solid #ddd}
+.who{font-size:11px;color:#888}
+</style></head><body>
+<h2>💬 Conversations</h2>
+<div id="pwrow"><input id="pw" type="password" placeholder="password (verify token)"><button class="ok" onclick="load()">Load</button></div>
+<div id="list"></div>
+<div id="conv" style="display:none"></div>
+<script>
+let pw="";
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+async function load(){pw=document.getElementById('pw').value;
+const r=await fetch('/api/conversations?password='+encodeURIComponent(pw));const j=await r.json();
+const el=document.getElementById('list');document.getElementById('conv').style.display='none';
+if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
+if(!j.conversations.length){el.innerHTML='<p>Ma fama 7atta conversation. 👍</p>';return;}
+el.innerHTML=j.conversations.map(c=>'<div class="card"><b>'+esc(c.phone)+'</b> — '+c.count+' messages<br><small>'+esc(c.last_at||'')+'</small><div class="row"><button class="ok" onclick="viewConv(\\''+esc(c.phone)+'\\')">Chouf</button><button class="no" onclick="delConv(\\''+esc(c.phone)+'\\')">Fassa5</button></div></div>').join('');}
+async function viewConv(phone){const r=await fetch('/api/conversations/'+encodeURIComponent(phone)+'?password='+encodeURIComponent(pw));const j=await r.json();
+const el=document.getElementById('conv');el.style.display='block';
+if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
+el.innerHTML='<div class="row"><button class="back" onclick="back()">← Erja3</button><button class="no" onclick="delConv(\\''+esc(phone)+'\\')">Fassa5 el conversation</button></div><h3>'+esc(phone)+'</h3>'+
+(j.messages.map(m=>'<div class="msg '+m.role+'"><span class="who">'+(m.role==='user'?'Patient':'Bot')+'</span><br>'+esc(m.text)+'</div>').join('')||'<p>Faragh.</p>');}
+function back(){document.getElementById('conv').style.display='none';}
+async function delConv(phone){if(!confirm('Tfassa5 el conversation mta3 '+phone+'? El bot bech yenseha jemla.'))return;
+const r=await fetch('/api/conversations/'+encodeURIComponent(phone)+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+const j=await r.json();alert(j.deleted!=null?('Tfass5et ('+j.deleted+' messages). El bot nseh jemla. 👍'):(j.error||'error'));load();}
+</script></body></html>`;
+
+app.get("/messages", (req, res) => res.send(MESSAGES_PAGE));
+
+app.get("/api/conversations", async (req, res) => {
+  if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const conversations = await db.getConversations().catch(() => []);
+  res.json({ conversations });
+});
+
+app.get("/api/conversations/:phone", async (req, res) => {
+  if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const phone = (req.params.phone || "").replace(/\D/g, "");
+  if (!phone) return res.status(400).json({ error: "bad phone" });
+  const messages = await db.getFullHistory(phone).catch(() => []);
+  res.json({ messages });
+});
+
+app.post("/api/conversations/:phone/delete", async (req, res) => {
+  if ((req.body || {}).password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const phone = (req.params.phone || "").replace(/\D/g, "");
+  if (!phone) return res.status(400).json({ error: "bad phone" });
+  const deleted = await db.deleteConversation(phone).catch(() => 0);
+  console.log(`[conversations] deleted ${deleted} messages for ${phone} (forgotten)`);
+  res.json({ deleted });
 });
 
 app.listen(PORT, () => {

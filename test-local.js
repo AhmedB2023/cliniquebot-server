@@ -17,6 +17,21 @@ function makeStubDb() {
     saveMessage: async (phone, role, text) => { messages.push({ phone, role, text }); },
     getHistory: async (phone, limit = 15) =>
       messages.filter((m) => m.phone === phone).slice(-limit).map((m) => ({ role: m.role, text: m.text })),
+    getConversations: async () =>
+      [...new Set(messages.map((m) => m.phone))].map((phone) => ({
+        phone,
+        count: messages.filter((m) => m.phone === phone).length,
+        last_at: "test",
+      })),
+    getFullHistory: async (phone) =>
+      messages.filter((m) => m.phone === phone).map((m) => ({ role: m.role, text: m.text })),
+    deleteConversation: async (phone) => {
+      let n = 0;
+      for (let i = messages.length - 1; i >= 0; i--)
+        if (messages[i].phone === phone) { messages.splice(i, 1); n++; }
+      proposals.delete(phone);
+      return n;
+    },
     saveBooking: async (phone, slot, slot_at = null) => {
       const b = { id: seq++, phone, slot, slot_at, status: "pending" };
       bookings.push(b);
@@ -320,6 +335,50 @@ async function run() {
     has("flow14: prompt has script rule", bot.SYSTEM_PROMPT, "script");
     has("flow14: prompt mentions arabic script", bot.SYSTEM_PROMPT, "3arabiya");
     ok("flow14: isAr helper", bot.isAr("نحب نحجز") === true && bot.isAr("n7eb na7jez") === false);
+  }
+
+  // Flow 15 — conversation memory: never repeat the day/time question.
+  // (the exact bug from the live demo: "n7eb na7jez" twice -> same question twice)
+  {
+    const p = "21600000015";
+    await stubDb.saveMessage(p, "user", "slm, n7eb na7jez 3and el dentiste");
+    await stubDb.saveMessage(p, "assistant", "D'accord! anhou nhar w anhou wa9t yse3dek?");
+    const r = await bot.processPatientText(p, "nheb na5jez rendez vous");
+    has("flow15: rephrased nudge", r, "Fhemtek t7eb ta7jez");
+    has("flow15: nudge has example", r, "jem3a 10 mta3 sbe7");
+    ok("flow15: no repeated question", !/anhou nhar w anhou wa9t yse3dek/.test(r), r);
+    // first-time ask (no prior question in history) still goes to the AI
+    const p2 = "21600000017";
+    const r2 = await bot.processPatientText(p2, "n7eb na7jez");
+    ok("flow15: first ask goes to AI", !/Fhemtek t7eb ta7jez/.test(r2), r2);
+    // Arabic version
+    const pa = "21600000016";
+    await stubDb.saveMessage(pa, "user", "سلام، نحب نحجز");
+    await stubDb.saveMessage(pa, "assistant", "داكور! أنهو نهار وأنهو وقت يساعدك؟");
+    const ra = await bot.processPatientText(pa, "نحب نحجز رونديفو");
+    has("flow15: ar rephrased nudge", ra, "فهمتك تحب تحجز");
+    ok("flow15: ar no repeated question", ra !== "داكور! أنهو نهار وأنهو وقت يساعدك؟", ra);
+    // prompt carries the no-repeat memory rule
+    has("flow15: prompt has memory rule", bot.SYSTEM_PROMPT, "MAMNOU3 t3awed nafs el sou2el");
+  }
+
+  // Flow 16 — dashboard: list conversations, view one, delete (forget) it
+  {
+    const p = "21600000020";
+    await bot.processPatientText(p, "slm");
+    await bot.processPatientText(p, "n7eb na7jez ghodwa 10 mta3 sbe7");
+    const convs = await stubDb.getConversations();
+    ok("flow16: conversation listed", convs.some((c) => c.phone === p && c.count >= 2), JSON.stringify(convs));
+    const full = await stubDb.getFullHistory(p);
+    ok("flow16: full history oldest-first", full.length >= 2 && full[0].role === "user", String(full.length));
+    ok("flow16: proposal exists before delete", (await stubDb.getProposal(p)) !== null);
+    const n = await stubDb.deleteConversation(p);
+    ok("flow16: deleted count", n >= 2, String(n));
+    const after = await stubDb.getFullHistory(p);
+    ok("flow16: forgotten", after.length === 0, String(after.length));
+    ok("flow16: proposal cleared", (await stubDb.getProposal(p)) === null);
+    const convs2 = await stubDb.getConversations();
+    ok("flow16: gone from list", !convs2.some((c) => c.phone === p), JSON.stringify(convs2.map((c) => c.phone)));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
