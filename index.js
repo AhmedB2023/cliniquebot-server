@@ -912,7 +912,7 @@ button:disabled{background:#999}
 </div>
 <div class="card">
 <label for="name">الاسم الكامل</label>
-<input id="name" placeholder="مثال: أحمد بركاتي" autocomplete="name">
+<input id="name" placeholder="مثال: محمد بن علي" autocomplete="name">
 <label for="phone">رقم الهاتف</label>
 <input id="phone" placeholder="مثال: 21650123456" inputmode="tel" autocomplete="tel">
 <button id="btn" onclick="send()">اطلب تجربة بلاش</button>
