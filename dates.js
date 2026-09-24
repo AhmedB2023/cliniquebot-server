@@ -43,7 +43,7 @@ const NUM_WORDS = [
   ["seb3a", 7], ["sab3a", 7],
   ["setta", 6], ["satta", 6],
   ["khamsa", 5],
-  ["arb3a", 4], ["arba3a", 4],
+  ["arb3a", 4], ["arba3a", 4], ["larb3a", 4], // "larb3a" after a day = 4 o'clock ("thleth larb3a"); the weekday word is blanked first, so bare "larb3a" still = Wednesday
   ["tletha", 3], ["tlata", 3], ["theltha", 3],
   ["zouz", 2], ["thnin", 2], ["tnin", 2], ["ethnin", 2],
   ["wa7ed", 1], ["wa7da", 1], ["wahed", 1],
@@ -154,11 +154,15 @@ function resolveSlot(rawText) {
   }
 
   // ---- 2) weekday / relative day ----
+  // The FIRST weekday word in the TEXT wins (not the first in the DAYS list):
+  // in "jem3a larb3a", "jem3a" is the day and "larb3a" may be 4 o'clock.
   let dayWord = null; // matched weekday name — blanked before number-word -> digit
   if (dateUTC === null) {
     let dow = null;
+    let dayPos = -1;
     for (const [name, d] of DAYS) {
-      if (t.includes(" " + name + " ")) { dow = d; dayWord = name; break; }
+      const p = t.indexOf(" " + name + " ");
+      if (p !== -1 && (dayPos === -1 || p < dayPos)) { dow = d; dayWord = name; dayPos = p; }
     }
     if (dow !== null) {
       const diff = (dow - now.getUTCDay() + 7) % 7; // 0 = today
@@ -208,7 +212,7 @@ function resolveSlot(rawText) {
 
   // \b doesn't work on Arabic letters (non-\w), so Arabic period words use includes().
   const morning = /\bsbe7\b|\bsbah\b/.test(t) || t.includes(" صباح ") || t.includes(" الصباح ");
-  const afternoon = /\b3chiya\b|\bl3chiya\b|\b3chwa\b|\bl3chwa\b/.test(t) || t.includes(" عشية ") || t.includes(" العشية ");
+  const afternoon = /\b3chiya\b|\bl3chiya\b|\bla3chiya\b|\b3chya\b|\bl3chya\b|\bla3chya\b|\b3achiya\b|\b3vhiya\b|\bl3vhiya\b|\bla3vhiya\b|\b3chwa\b|\bl3chwa\b|\bla3chwa\b/.test(t) || t.includes(" عشية ") || t.includes(" العشية ");
   const night = /\blil\b/.test(t) || t.includes(" ليل ") || t.includes(" الليل ");
 
   let needs = null; // 'time' when the hour is ambiguous (e.g. bare "10")

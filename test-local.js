@@ -117,6 +117,12 @@ const dateCases = [
   ["jem3a 12", "jem3a 25 septembre, 12:00"],
   ["jem3a 7", "needs:jem3a 25 septembre"], // only bare 7 is ambiguous
   ["jem3a el khamsa mte3 l3chiya", "jem3a 25 septembre, 17:00"],
+  // word-hour "larb3a" = 4 o'clock (the live case); bare "larb3a" stays Wednesday
+  ["jem3a larb3a mte3 la3vhiya", "jem3a 25 septembre, 16:00"],
+  ["khmis larb3a", "khmis 24 septembre, 16:00"], // bare 4 = afternoon (clinic hours)
+  ["jem3a 4 mte3 la3vhiya", "jem3a 25 septembre, 16:00"],
+  ["larb3a", "needs:erb3a 23 septembre"], // Wednesday, NOT 4 o'clock
+  ["larb3a m3a 10 mta3 sbe7", "erb3a 23 septembre, 10:00"],
   ["sibt", "needs:sebt 26 septembre"], // canonical spelling
   ["sebt m3a 11 mta3 sbe7", "sebt 26 septembre, 11:00"],
   ["la7ad", "needs:l7ad 27 septembre"], // canonical spelling
@@ -265,6 +271,19 @@ async function run() {
     await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r4 = await bot.processPatientText(p, "ey");
     has("flow5: booked", r4, "n2akkedlek");
+  }
+
+  // Flow 5b — word-hour "larb3a" + "la3vhiya": auto 16:00, no sbe7/l3chiya question
+  {
+    const p = "21600000006";
+    const r1 = await bot.processPatientText(p, "jem3a larb3a mte3 la3vhiya");
+    has("flow5b: proposes 16:00 directly", r1, "jem3a 25 septembre, 16:00");
+    ok("flow5b: no sbe7/l3chiya question", !r1.includes("sbe7 walla"), `reply was: ${JSON.stringify(r1)}`);
+    await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
+    const r2 = await bot.processPatientText(p, "ey");
+    has("flow5b: booked", r2, "n2akkedlek");
+    const b = await stubDb.getLatestBooking(p);
+    ok("flow5b: slot in db", b && b.slot === "jem3a 25 septembre, 16:00", JSON.stringify(b));
   }
 
   // Flow 6 — status question reads the REAL db status + secretary validates
