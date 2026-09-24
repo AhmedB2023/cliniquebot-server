@@ -937,6 +937,7 @@ app.post("/api/signups", async (req, res) => {
   try {
     const id = await db.saveSignup(v.name, v.phone, v.clinic_name, v.city);
     console.log(`[signup] #${id} ${v.name} — ${v.clinic_name} (${v.city}) ${v.phone}`);
+    await notifySales(`📝 Formulaire jdid: ${v.name} — ${v.phone}`);
     res.json({ ok: true });
   } catch (e) {
     console.error("[signup:ERROR]", e.message);
