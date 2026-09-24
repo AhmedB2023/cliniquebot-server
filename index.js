@@ -876,7 +876,7 @@ function validateSignup(d) {
   const phone = clean(d.phone, 30);
   const clinic_name = clean(d.clinic_name, 150);
   const city = clean(d.city, 100);
-  if (!name || !phone || !clinic_name || !city) return { error: "3ammer el 5anet el kol." };
+  if (!name || !phone) return { error: "3ammer el esm w numero el telephone." };
   if (!/^\d{8,15}$/.test(phone.replace(/\D/g, "")))
     return { error: "Numero el telephone ghalet." };
   return { name, phone, clinic_name, city };
@@ -915,17 +915,13 @@ button:disabled{background:#999}
 <input id="name" placeholder="مثال: أحمد بركاتي" autocomplete="name">
 <label for="phone">رقم الهاتف</label>
 <input id="phone" placeholder="مثال: 21650123456" inputmode="tel" autocomplete="tel">
-<label for="clinic_name">اسم العيادة</label>
-<input id="clinic_name" placeholder="مثال: عيادة النور">
-<label for="city">المدينة</label>
-<input id="city" placeholder="مثال: تونس">
-<button id="btn" onclick="send()">جرّب — ابعث</button>
+<button id="btn" onclick="send()">اطلب تجربة بلاش</button>
 <div id="msg"></div>
 </div>
 <script>
 async function send(){const b=document.getElementById('btn');b.disabled=true;
 const m=document.getElementById('msg');m.className='';m.textContent='...';
-const data={name:document.getElementById('name').value,phone:document.getElementById('phone').value,clinic_name:document.getElementById('clinic_name').value,city:document.getElementById('city').value};
+const data={name:document.getElementById('name').value,phone:document.getElementById('phone').value};
 try{const r=await fetch('/api/signups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const j=await r.json();
 if(r.ok&&j.ok){m.className='ok-msg';m.textContent='تمّ! وصلنا طلبك، باش نتّصلو بيك قريب. 👍';b.textContent='تبعث ✅';}

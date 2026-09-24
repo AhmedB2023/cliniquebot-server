@@ -595,7 +595,7 @@ async function run() {
     const page = await fetch(base + "/formulaire");
     ok("signup: /formulaire is 200", page.status === 200, `status=${page.status}`);
     const html = await page.text();
-    has("signup: /formulaire has submit button", html, "جرّب — ابعث");
+    has("signup: /formulaire has submit button", html, "اطلب تجربة بلاش");
     has("signup: /formulaire mentions price", html, "2 دينار");
 
     const valid = { name: "Ahmed Ben Salah", phone: "21650123456", clinic_name: "3yedet Ennour", city: "Tunis" };
@@ -606,11 +606,17 @@ async function run() {
     const j1 = await r1.json();
     ok("signup: valid POST returns ok", j1.ok === true, JSON.stringify(j1));
 
-    const missing = { name: "X", phone: "21650123456", clinic_name: "Y" }; // no city
+    const missing = { name: "X" }; // no phone -> still required
     const r2 = await fetch(base + "/api/signups", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(missing),
     });
     ok("signup: missing field is 400", r2.status === 400, `status=${r2.status}`);
+
+    const optionalOnly = { name: "X", phone: "21650123456" }; // clinic/city now optional
+    const r2b = await fetch(base + "/api/signups", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(optionalOnly),
+    });
+    ok("signup: name+phone only is 200", r2b.status === 200, `status=${r2b.status}`);
 
     const badPhone = { name: "X", phone: "abc", clinic_name: "Y", city: "Z" };
     const r3 = await fetch(base + "/api/signups", {
