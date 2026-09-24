@@ -201,6 +201,10 @@ function fallbackReply(text) {
 function looksLikeAcceptance(text) {
   const raw = (text || "").trim();
   if (/^(اي|أي|نعم|موافق|احجز|احجزلي|إحجزلي)\s*[.,!؟]*$/.test(raw)) return true;
+  // Patient-side "ok 5" / "ey 12" is a secretary command shape, never an acceptance —
+  // a patient must never validate a booking (the webhook only routes real
+  // secretary commands from SECRETARY_NUMBER; this is the in-bot safety net).
+  if (/^(ok|ey)\s+\d/.test(raw.toLowerCase())) return false;
   const t = " " + raw.toLowerCase() + " ";
   if (/(^|\s)(le|mouch|man7ebch|faskh|cancel|badal|nbadal)(\s|$)/.test(t)) return false;
   // A question is never an acceptance. "ok nhar thleth mawjoud?" asks about
@@ -231,6 +235,221 @@ function looksLikeBookingIntent(text) {
   if (/(na7jez|na5jez|nahjez|e7jezli|a7jezli|e7jez|a7jez)/.test(t)) return true;
   if (/(n7eb|nheb)/.test(t) && /(rendez|rdv|7ajz|hajz|reservation)/.test(t)) return true;
   return false;
+}
+
+// ---------- Batch fix 2026-09-24: detectors ----------
+
+// Clinic working hours (Tunis time, no DST). Sunday = closed.
+// Ahmed: badal el wa9t 7asb el 3iyada el 7a9i9iya.
+const CLINIC_HOURS = { 0: null, 1: [7, 21], 2: [7, 21], 3: [7, 21], 4: [7, 21], 5: [7, 21], 6: [7, 21] };
+const CLINIC_HOURS_TXT = "7:00 - 21:00";
+
+// F1 — Emergency: red-flag symptoms ONLY (chest pain, can't breathe,
+// heavy bleeding, fainting). A plain "wji3a kbira" (tooth, back...) is a
+// normal booking, NOT an emergency — never turn a real patient away.
+// Never a booking on this path: direct to urgent care, notify the secretary.
+function looksLikeEmergency(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  if (/(fi sedri|fi sadri|sedri youja3|sadri youja3|9albi youja3|9albi ydhor|manajmch netnafes|manajmech netnafes|ma najamch netnafes|n5no9|damm barcha|nazif kbir|dokht|ghmert|urgence|emergency|est3jeli)/.test(t)) return true;
+  return /(في صدري|صدري يوجع|قلبي يوجع|ما نجمش نتنفس|نخنق|دم برشا|دوخت|غمرت|استعجالي|طوارئ)/.test(text || "");
+}
+
+// F6 — Frustrated patient ("ya kalb el bot mte3ek me5demch").
+// Brief acknowledgment with "sama7ni", ask what went wrong, then resume.
+function looksLikeFrustration(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  if (/\b(kalb|7mar|ba9ra|zebel|nik|manyak|t3ebt|faddit)\b/.test(t)) return true;
+  if (/(bot|بوت|روبوت).{0,25}(me5demch|ma ye5demch|ghalet|ma yemchich)/.test(t)) return true;
+  return /(الكلب|الحمار|البوت ما يخدمش|ما يخدمش البوت)/.test(text || "");
+}
+
+// F7 — Cancellation intent ("n7eb nfassakh el rendez-vous mte3i").
+// Checked BEFORE the status question: cancelling beats asking about status.
+function looksLikeCancellation(text) {
+  const raw = (text || "").trim();
+  if (/^(افسخ|أفسخ|الغي|إلغاء)/.test(raw)) return true;
+  const t = " " + raw.toLowerCase() + " ";
+  return /(nfasakh|nfassakh|nfas5|nfass5|nfsakh|fasakh|fassakh|faskh|fas5|nlaghi|nla8i|annuler|cancel)/
+    .test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t);
+}
+
+// F8 — FAQ / identity ("9adech el soum?", "win el 3iyada?", "chkoun enti?").
+// Pure questions only (no date): answered directly, never merged into a proposal.
+function faqKind(text) {
+  if (looksLikeStatusQuestion(text)) return null; // "win wsol el 7ajz" stays a status question
+  const t = " " + (text || "").toLowerCase() + " ";
+  if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
+  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|horaires|وقت الخدمة|وقتاش تحل)/.test(t)) return "hours";
+  if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
+  if (/(win el|win jeya|blasa|3onwen|adresse|وين|بلاصة|عنوان|فين)/.test(t)) return "place";
+  return null;
+}
+
+function faqAnswer(kind, ar) {
+  if (kind === "who") return ar
+    ? "أنا المساعد متاع العيادة — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب."
+    : "Ena el assistant mta3 el 3iyada — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.";
+  if (kind === "hours") return ar
+    ? `نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}. نهار الأحد مسكرين.`
+    : `Ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}. Nhar el 7ad msakrin.`;
+  if (kind === "price") return ar
+    ? "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. تحب نحجزلك رونديفو؟"
+    : "El aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. T7eb n7ajzlek rendez-vous?";
+  return ar // place — the clinic verifies the address
+    ? "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟"
+    : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?";
+}
+
+// F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
+function looksLikeWalkin(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  return /\bnji\b/.test(t) && /\btawa\b/.test(t);
+}
+
+// F4 — Two appointments ("zouz rendez-vous, wa7ed liya w wa7ed l omi").
+// Acknowledged, then processed one at a time — first one first.
+function looksLikeTwoAppointments(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  return /zouz/.test(t) && /(rendez|rdv|7ajz|hajz)/.test(t);
+}
+const multiBooking = new Map(); // phone -> extra appointments still to book after the current one
+
+// Rescheduling: the patient moves an EXISTING booking (no duplicate row).
+function looksLikeReschedule(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  if (/(nbadal|n7eb nbadal|nheb nbadel|nbadal el wa9t|n7eb nghayar|badal el rendez)/.test(t)) return true;
+  return /(نبدل|نحب نبدل|نغير)/.test(text || "");
+}
+const rescheduling = new Map(); // phone -> bookingId being rescheduled
+
+// F13 — Third-party status query ("el rendez-vous mta3 omi wa9tech?").
+// Privacy: only this number's bookings are ever visible — never another number's.
+function looksLikeThirdPartyQuery(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  if (!/(rendez|rdv|7ajz|hajz|موعد|حجز|رونديفو)/.test(t)) return false;
+  if (!/(wa9tech|wakteh|we9tech|win|3and|وقتاش|وين|فين|\?)/.test(t)) return false;
+  // "3and omi ..." (mom has) vs "3andi ..." (I have) — the \s+ matters
+  if (/3and\s+(ommi|omi|o5ti|o5t|marti|rajli|weldi|benti|baba|bouya|sa7bi|sa7ebti|5ouya)/.test(t)) return true;
+  if (/(mta3|mte3|متاع)\s+(omi|ommi|o5ti|o5t|marti|rajli|weldi|benti|baba|bouya|sa7bi|sa7ebti|5ouya)/.test(t)) return true;
+  return /(رونديفو|حجز|موعد).{0,10}(أمي|امي|أختي|اختي|مرتي|راجلي|ولدي|بنتي)/.test(text || "");
+}
+
+// F2 — Correction after "le"/"non": "le, 10 mta3 l3chiya" or "le le, après ghodwa".
+// The new info wins: a new time keeps the old date, a new date keeps the old time.
+// Old conflicting tokens are stripped from the proposal side so they can't win
+// back (e.g. the old "sbe7" must not beat the new "l3chiya").
+function stripCorrectionPrefix(text) {
+  let corr = text || "", hadLe = false, m;
+  // loop: "le le, après ghodwa" -> strip every leading le/la/non
+  while ((m = /^\s*(le|la|non|mouch)\b[,\s.!?]+/i.exec(corr))) {
+    hadLe = true;
+    corr = corr.slice(m[0].length);
+  }
+  return { hadLe, corr };
+}
+
+function hasTimeSignal(s) {
+  const t = " " + (s || "").toLowerCase() + " ";
+  return /\d/.test(t) ||
+    /\b(sbe7|sbah|3chiya|3chya|l3chiya|l3chya|la3chiya|la3chya|3vhiya|lil|nos)\b/.test(t) ||
+    /(صباح|عشية|العشية|ليل|الليل)/.test(s || "");
+}
+
+function stripTimeTokens(s) {
+  return (" " + (s || "").toLowerCase() + " ")
+    .replace(/\b\d{1,2}(?::\d{2})?\b/g, " ")
+    .replace(/\b(sbe7|sbah|3chiya|3chya|l3chiya|l3chya|la3chiya|la3chya|3vhiya|l3vhiya|la3vhiya|lil|nos|mta3|mte3|mt3|ta3|el)\b/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+function stripDateTokens(s) {
+  let out = " " + (s || "").toLowerCase() + " ";
+  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "la7ad", "l7ad", "el 7ad", "dimanche",
+    "ethnin", "thnin", "tnin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
+    "erb3a", "larb3a", "mercredi", "khmis", "5mis", "jeudi", "jem3a", "jom3a", "vendredi",
+    "sebt", "sibt", "samedi", "ghodwa", "ghadwa", "lyoum", "elyoum", "bera7",
+    "الأحد", "الاحد", "الاثنين", "الإثنين", "الثلاثاء", "الأربعاء", "الاربعاء",
+    "الخميس", "الجمعة", "السبت", "غدوة", "غدوا", "بعد غدوة", "اليوم", "البارح", "البارحة"];
+  for (const w of words) out = out.split(" " + w + " ").join(" ");
+  out = out.replace(/\b\d{1,2}\s+(janvier|janfi|fevrier|fev|mars|avril|mai|juin|juillet|juil|aout|septembre|sept|octobre|oct|novembre|nov|decembre|dec)\b/g, " ");
+  out = out.replace(/\b\d{1,2}[\/-]\d{1,2}\b/g, " ");
+  return out.replace(/\s+/g, " ").trim();
+}
+
+// F10 — Clinic-hours gate. A concrete slot outside working hours (or on a closed
+// day) is rejected with the next suitable open slot, saved as the new proposal.
+function hoursCheck(r) {
+  // r: concrete resolved slot (date + time, not past). null = inside hours.
+  const open = CLINIC_HOURS[r.dow];
+  const wall = new Date(Date.parse(r.iso) + 3600000); // Tunis wall time
+  const h = wall.getUTCHours(), m = wall.getUTCMinutes();
+  const inside = open && (h > open[0] || (h === open[0] && m >= 0)) && (h < open[1] || (h === open[1] && m === 0));
+  if (inside) return null;
+  return { reason: open ? "hours" : "closed" };
+}
+
+// Next suitable open slot: same day 09:00 if open and still future, else the
+// next open day at 09:00.
+function suggestOpenSlot(dateUTC, ar) {
+  let d = dateUTC;
+  for (let i = 0; i < 8; i++) {
+    const dow = new Date(d).getUTCDay();
+    if (CLINIC_HOURS[dow]) {
+      const wallMs = d + 9 * 3600000;
+      if (wallMs > dates.tunisNow().getTime()) return dates.slotDisplay(d, 9, 0, ar);
+    }
+    d += 86400000;
+  }
+  return null;
+}
+
+// Next open DAY (for the needs-time branch on a closed day): date text only.
+function suggestOpenDay(dateUTC, ar) {
+  let d = dateUTC;
+  for (let i = 0; i < 8; i++) {
+    const dow = new Date(d).getUTCDay();
+    if (CLINIC_HOURS[dow]) {
+      return { dateUTC: d, dow, dateDisplay: `${dates.dayName(dow, ar)} ${dates.fmtDate(d, ar)}` };
+    }
+    d += 86400000;
+  }
+  return null;
+}
+
+function hoursRejectMsg(ar, reason, sugDisplay) {
+  const hrs = CLINIC_HOURS_TXT;
+  if (reason === "closed") return ar
+    ? `النهار هذا العيادة مسكرة (نخدمو من الاثنين للسبت: ${hrs}). نقترح عليك: ${sugDisplay} — تحب نحجزلك؟ اكتب "اي".`
+    : `El nhar hetha el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${hrs}). Ne9tar7oulek: ${sugDisplay} — t7eb n7ajzlek? Ekteb "ey".`;
+  return ar
+    ? `الوقت هذا خارج وقت الخدمة (${hrs}). نقترح عليك: ${sugDisplay} — تحب نحجزلك؟ اكتب "اي".`
+    : `El wa9t hetha 5arej wa9t el 5edma (${hrs}). Ne9tar7oulek: ${sugDisplay} — t7eb n7ajzlek? Ekteb "ey".`;
+}
+
+// Bare hour in the patient's text ("10", "10:30") — for the time question.
+function bareHour(text) {
+  const cands = (text || "").match(/\b\d{1,2}(?::\d{2})?\b/g) || [];
+  if (!cands.length) return null;
+  const last = cands[cands.length - 1];
+  const h = parseInt(last.split(":")[0], 10);
+  return (h >= 1 && h <= 12) ? last : null;
+}
+
+// The "which hour?" question, shared by the slot branch and the bare-"ey"
+// clarification repeat (F9) so both ask identically.
+function timeQuestionMsg(ar, r, text) {
+  const period = r.morning ? (ar ? "متاع الصباح" : "mta3 sbe7")
+    : r.afternoon ? (ar ? "متاع العشية" : "mta3 l3chiya")
+    : r.night ? (ar ? "متاع الليل" : "mta3 lil") : null;
+  const hourStr = bareHour(text);
+  if (ar) {
+    if (period) return `${r.dateDisplay} ${period} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`;
+    if (hourStr) return `${r.dateDisplay} — الـ${hourStr} هاذي متاع الصباح ولا متاع العشية؟`;
+    return `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع العشية؟ (ولا اكتب الوقت كيما 10:30)`;
+  }
+  if (period) return `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`;
+  if (hourStr) return `${r.dateDisplay} — el ${hourStr} hethi mta3 sbe7 walla mta3 l3chiya?`;
+  return `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`;
 }
 
 // ---------- Patient name capture (nom + prenom, asked AFTER slot acceptance) ----------
@@ -325,6 +544,12 @@ async function finishBooking(phone, p, name) {
       `⏳ Rendez-vous jdid mel bot:\nEsm: ${shownName || "(ma 3tach esmou)"}\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
     );
   }
+  // F4) two appointments: the first is booked — prompt for the second one.
+  const extra = multiBooking.get(phone) || 0;
+  if (extra > 0 && !dup) {
+    if (extra <= 1) multiBooking.delete(phone); else multiBooking.set(phone, extra - 1);
+    reply += ar ? "\nTawa ethani: anhou nhar w wa9t?" : "\nTawa ethani: anhou nhar w wa9t?";
+  }
   await db.clearProposal(phone).catch(() => {});
   await db.saveMessage(phone, "assistant", reply);
   return { handled: true, reply };
@@ -366,60 +591,210 @@ async function handleStatusQuestion(phone, text) {
   return say(phone, reply);
 }
 
+// F7 — Cancel the patient's own booking (pending or confirmed), notify the secretary.
+async function handleCancellation(phone, text, ar) {
+  const b = await db.getLatestBooking(phone).catch(() => null);
+  const active = b && (b.status === "pending" || b.status === "confirmed") ? b : null;
+  await db.clearProposal(phone).catch(() => {});
+  rescheduling.delete(phone);
+  multiBooking.delete(phone);
+  if (!active) {
+    return say(phone, ar
+      ? "ما لقيت حتى رونديفو محجوز بهالرقم. تحب نحجزلك واحد جديد؟"
+      : "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?");
+  }
+  await db.setBookingStatus(active.id, "cancelled").catch(() => {});
+  await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`);
+  return say(phone, ar
+    ? `داكور، فسخت الرونديفو (${active.slot}). تحب وقت آخر؟`
+    : `D'accord, fassakht el rendez-vous (${active.slot}). T7eb wa9t e5er?`);
+}
+
+// Rescheduling: move an EXISTING booking to a new slot — never a duplicate row.
+async function handleRescheduleStart(phone, ar) {
+  const b = await db.getLatestBooking(phone).catch(() => null);
+  const active = b && (b.status === "pending" || b.status === "confirmed") ? b : null;
+  await db.clearProposal(phone).catch(() => {});
+  if (!active) {
+    return say(phone, ar
+      ? "ما لقيت حتى رونديفو باش نبدلوه. تحب نحجزلك واحد جديد؟"
+      : "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?");
+  }
+  rescheduling.set(phone, active.id);
+  return say(phone, ar
+    ? `داكور — باش نبدلو الرونديفو (${active.slot}). قولي النهار والوقت الجديد.`
+    : `D'accord — bech nbadlou el rendez-vous (${active.slot}). 9olli el nhar wel wa9t el jdid.`);
+}
+
+async function finishReschedule(phone, id, target, ar) {
+  await db.updateBookingSlot(id, target.display, target.slot_at).catch(() => {});
+  rescheduling.delete(phone);
+  await db.clearProposal(phone).catch(() => {});
+  const reply = ar
+    ? `تبدل الرونديفو: ${target.display} — نأكدلك ونرجعلك.`
+    : `Tbadal el rendez-vous: ${target.display} — n2akkedlek w narja3lek.`;
+  await notifySecretary(`🔁 Patient badal rendez-vous #${id} (${phone}) -> ${target.display}`);
+  await db.saveMessage(phone, "assistant", reply);
+  return { handled: true, reply };
+}
+
 // Deterministic booking turn. Returns { handled, reply } or { handled: false }
 // to let the AI answer normally.
 async function handleBookingTurn(phone, text, history) {
-  // A0) Status question first — real DB status beats AI guessing.
+  const ar = isAr(text);
+
+  // F1) Emergency — chest pain etc.: never a booking, direct to urgent care.
+  if (looksLikeEmergency(text)) {
+    await notifySecretary(`🚨 URGENCE? patient ${phone}: "${text}"`).catch(() => {});
+    return say(phone, ar
+      ? "الوجيعة هذي تستحق طبيب فيسع — ما تستناش رونديفو: امشي للاستعجالي توا ولا عيط لـ190. البوت ما ينجمش يعاونك في حالة كيما هذي."
+      : "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.");
+  }
+
+  // F6) Frustrated patient — brief "sama7ni", ask what went wrong, resume.
+  if (looksLikeFrustration(text)) {
+    return say(phone, ar
+      ? "سامحني 🙏 شنوة صار بالضبط؟ قولي ونعاونك."
+      : "Sama7ni 🙏 chnowa saret b dhabt? 9olli w n3awnek.");
+  }
+
+  // F7) Cancellation — before the status question: cancelling beats asking.
+  if (looksLikeCancellation(text)) return handleCancellation(phone, text, ar);
+
+  // F8) FAQ / identity — pure questions (no date): answer directly, never
+  // swallowed into a stale proposal.
+  const r0 = dates.resolveSlot(text);
+  const fk = !r0.date && faqKind(text);
+  if (fk) return say(phone, faqAnswer(fk, ar));
+
+  // F11) Walk-in ("n7eb nji tawa") — explain, offer a reserved time, no loop.
+  if (looksLikeWalkin(text)) {
+    await db.clearProposal(phone).catch(() => {});
+    rescheduling.delete(phone);
+    return say(phone, ar
+      ? "تنجم تجي توا، أما الاستناة تنجم تطوال حسب الحالة — الأحسن نحجزلك وقت مضمون باش ما تستناش. تحب نحجزلك؟ قولي أنهو نهار وأنهو وقت."
+      : "Tnjem tji tawa, ama el waiting ynajem ykoun twil 7asb el 7ala — el a7sen n7ajzlek wa9t mathmoun bech ma testa7melch. T7eb n7ajzlek? 9olli anhou nhar w anhou wa9t.");
+  }
+
+  // F4) Two appointments — acknowledge both, one at a time, first one first.
+  if (looksLikeTwoAppointments(text)) {
+    await db.clearProposal(phone).catch(() => {});
+    rescheduling.delete(phone);
+    multiBooking.set(phone, 1);
+    return say(phone, ar
+      ? "فهمتك — زوز رونديفو: واحد ليك وواحد لأمك. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟"
+      : "Fhemtek — zouz rendez-vous: wa7ed lik w wa7ed l ommek. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?");
+  }
+
+  // Reschedule intent — move the existing booking, never duplicate it.
+  if (looksLikeReschedule(text)) return handleRescheduleStart(phone, ar);
+
+  // F13) Third-party query — privacy: only this number's bookings are visible.
+  if (looksLikeThirdPartyQuery(text)) {
+    return say(phone, ar
+      ? "سامحني — نجم نشوف كان الرونديفو المحجوز بالرقم هذا. كان الحجز تسجل باسم آخر، قولي الاسم ونتثبت مع العيادة."
+      : "Sama7ni — najem nchouf ken el rendez-vous el ma7jouz b numero hetha. Ken el 7ajz tsajjel b esm e5er, 9olli el esm w nthabbet m3a el 3iyada.");
+  }
+
+  // A0) Status question — real DB status beats AI guessing.
   const st = await handleStatusQuestion(phone, text);
   if (st.handled) return st;
 
-  const proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
-  const ar = isAr(text) || isAr(proposal && proposal.slot_text); // script sticks to the patient's own words
+  // Patient-side "ok 5" — a secretary-command shape, never a validation.
+  // (The webhook only routes real secretary commands from SECRETARY_NUMBER;
+  // this is the in-bot safety net.)
+  if (/^(ok|le|faskh|cancel)\s+\d+\s*$/.test(text.trim().toLowerCase())) {
+    return say(phone, ar
+      ? "هذي commande متاع العيادة — كان تحب تبدل ولا تفسخ الرونديفو متاعك، قولي."
+      : "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.");
+  }
+
+  let proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
+  const ar2 = ar || isAr(proposal && proposal.slot_text); // script sticks to the patient's own words
 
   // A-1) We asked for the patient's name — this message answers that.
   if (proposal && proposal.awaiting_name) {
-    return handleNameAnswer(phone, text, proposal, ar);
+    return handleNameAnswer(phone, text, proposal, ar2);
   }
 
   let r = dates.resolveSlot(text);
   let slotText = text; // the phrase the proposal remembers — grows as follow-ups merge
-  if ((!r.found || !r.date) && proposal && proposal.slot_text) {
-    // R) pure refusal ("le") -> drop the proposal, don't glue it to the old slot
-    if (looksLikeRefusal(text)) {
-      await db.clearProposal(phone).catch(() => {});
-      return say(phone, ar
-        ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-        : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
-    }
-    // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
-    // New text first, so a changed hour wins over the old one.
-    const merged = dates.resolveSlot(text + " " + proposal.slot_text);
-    if (merged.found && merged.date) { r = merged; slotText = text + " " + proposal.slot_text; }
+
+  // F5) Fresh booking request wipes a stale proposal — never inherit old date/time.
+  // Falls through to B0 below (rephrased nudge if we already asked, AI if first ask).
+  if (!r.date && looksLikeBookingIntent(text)) {
+    if (proposal) await db.clearProposal(phone).catch(() => {});
+    proposal = null;
+    rescheduling.delete(phone);
   }
 
-  // A) The patient accepts -> resolve WHICH slot, then the name gate.
-  if (looksLikeAcceptance(text)) {
-    let target = null;
-    if (proposal && proposal.slot_at && proposal.display && !r.date) {
-      target = proposal; // pure "ey" / "ok"
-    } else if (r.found && r.date && !r.needs && !r.past) {
-      target = { display: r.display, slot_at: r.iso, slot_text: text };
-    } else if (proposal && proposal.slot_at && proposal.display) {
-      target = proposal;
-    } else {
-      // last resort: a concrete slot inside the bot's previous message
-      const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
-      const r2 = lastAsst ? dates.resolveSlot(lastAsst.text) : null;
-      if (r2 && r2.found && r2.date && !r2.needs && !r2.past) {
-        target = { display: r2.display, slot_at: r2.iso, slot_text: lastAsst.text };
+  // R) pure refusal ("le") -> drop the proposal, don't glue it to the old slot.
+  // Before the merge block: a refusal must never be merged into the proposal.
+  if (proposal && proposal.slot_text && looksLikeRefusal(text)) {
+    await db.clearProposal(phone).catch(() => {});
+    return say(phone, ar2
+      ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
+      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+  }
+
+  // Merge follow-ups into a pending proposal — but never a pure acceptance:
+  // "ey" must reach the acceptance branch below.
+  if ((!r.found || !r.date) && proposal && proposal.slot_text && !looksLikeAcceptance(text)) {
+    // F2) correction after "le"/"non": the new info wins — strip the old
+    // conflicting tokens from the proposal side so they can't win back.
+    const { hadLe, corr } = stripCorrectionPrefix(text);
+    if (hadLe) {
+      const rn = dates.resolveSlot(corr);
+      if (rn.found) {
+        let propSide = proposal.slot_text;
+        if (hasTimeSignal(corr)) propSide = stripTimeTokens(propSide);
+        if (rn.date) propSide = stripDateTokens(propSide);
+        const merged = dates.resolveSlot(corr + " " + propSide);
+        if (merged.found && merged.date) { r = merged; slotText = corr + " " + propSide; }
       }
+    } else {
+      // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
+      // New text first, so a changed hour wins over the old one.
+      const merged = dates.resolveSlot(text + " " + proposal.slot_text);
+      if (merged.found && merged.date) { r = merged; slotText = text + " " + proposal.slot_text; }
     }
-    if (!target) return { handled: false }; // let the AI answer
+  }
+
+  // A) Pure acceptance ("ey") -> resolve WHICH slot, then the name gate.
+  // A slot inside the acceptance text itself ("ey, jem3a 10") falls through to B.
+  // Never invents a slot: bare "ey" on an incomplete proposal repeats the
+  // pending clarification (F9); the old assistant-history fallback is gone.
+  if (looksLikeAcceptance(text) && !(r.found && r.date)) {
+    const reschedId = rescheduling.get(phone);
+    let target = (proposal && proposal.slot_at && proposal.display) ? proposal : null;
+    if (!target && proposal && !proposal.slot_at) {
+      // F9) incomplete proposal: repeat the pending clarification, no invention.
+      const rp = dates.resolveSlot(proposal.slot_text || "");
+      if (rp.found && rp.date && !rp.past && rp.needs === "time") {
+        return say(phone, timeQuestionMsg(ar2, rp, proposal.slot_text));
+      }
+      await db.clearProposal(phone).catch(() => {});
+      return say(phone, ar2
+        ? "داكور — أنهو نهار وأنهو وقت تحب؟"
+        : "D'accord — anhou nhar w anhou wa9t t7eb?");
+    }
+    if (!target) {
+      // No pending slot — but a booking may already exist (double "ey"):
+      // remind instead of inventing a new one.
+      const existing = await db.getLatestBooking(phone).catch(() => null);
+      if (existing && (existing.status === "pending" || existing.status === "confirmed")) {
+        return say(phone, ar2
+          ? `عندك رونديفو deja pending: ${existing.slot} — نأكدلك ونرجعلك.`
+          : `3andek rendez-vous deja pending: ${existing.slot} — n2akkedlek w narja3lek.`);
+      }
+      return { handled: false }; // no pending slot: let the AI answer
+    }
+    if (reschedId) return finishReschedule(phone, reschedId, target, ar2);
     // Name gate: nom + prenom are asked AFTER acceptance, remembered per number.
     const known = await db.getPatientName(phone).catch(() => null);
     if (known) return finishBooking(phone, target, known);
     await db.saveProposal(phone, target.slot_text || text, target.slot_at, target.display, true, null);
-    return say(phone, askNameMsg(ar, target.display));
+    return say(phone, askNameMsg(ar2, target.display));
   }
 
   // B0) Booking intent but no date/time — and we ALREADY asked for day/time.
@@ -446,34 +821,20 @@ async function handleBookingTurn(phone, text, history) {
     return say(phone, ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.");
   }
   if (r.needs === "time") {
-    await db.saveProposal(phone, slotText, null, r.dateDisplay);
-    // If the patient already said sbe7/l3chiya/lil, ask for the hour only.
-    const period = r.morning ? (ar ? "متاع الصباح" : "mta3 sbe7")
-      : r.afternoon ? (ar ? "متاع العشية" : "mta3 l3chiya")
-      : r.night ? (ar ? "متاع الليل" : "mta3 lil") : null;
-    // If the patient gave a bare hour ("10") with no period, ask about THAT
-    // hour specifically — never repeat the generic question verbatim.
-    // (Hours >= 13 never reach this branch: the resolver treats them as PM.)
-    let hourStr = null;
-    const hourCands = text.match(/\b\d{1,2}(?::\d{2})?\b/g) || [];
-    if (hourCands.length) {
-      const last = hourCands[hourCands.length - 1];
-      const h = parseInt(last.split(":")[0], 10);
-      if (h >= 1 && h <= 12) hourStr = last;
+    // F10b) closed day (Sunday): redirect to the next open day — never ask a
+    // time for a day the clinic is closed.
+    if (r.dow !== null && !CLINIC_HOURS[r.dow]) {
+      const sug = suggestOpenDay(r.dateUTC, ar2);
+      await db.saveProposal(phone, dates.dayName(sug.dow, ar2), null, sug.dateDisplay);
+      return say(phone, ar2
+        ? `نهار الأحد العيادة مسكرة (نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
+        : `Nhar el 7ad el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`);
     }
-    const q = ar
-      ? (period
-        ? `${r.dateDisplay} ${period} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`
-        : hourStr
-        ? `${r.dateDisplay} — الـ${hourStr} هاذي متاع الصباح ولا متاع العشية؟`
-        : `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع العشية؟ (ولا اكتب الوقت كيما 10:30)`)
-      : (period
-        ? `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`
-        : hourStr
-        ? `${r.dateDisplay} — el ${hourStr} hethi mta3 sbe7 walla mta3 l3chiya?`
-        : `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`);
+    await db.saveProposal(phone, slotText, null, r.dateDisplay);
+    const q = timeQuestionMsg(ar2, r, text);
     // Memory: never send the identical question twice in a row — if the
     // patient just repeated the hour, rephrase with concrete 24h options.
+    const hourStr = bareHour(text);
     const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
     if (lastAsst && lastAsst.text === q && hourStr) {
       const parts = hourStr.split(":");
@@ -481,15 +842,23 @@ async function handleBookingTurn(phone, text, history) {
       const mm = parts[1] || "00";
       const am = `${String(hh).padStart(2, "0")}:${mm}`;
       const pm = `${String(hh + 12).padStart(2, "0")}:${mm}`;
-      return say(phone, ar
+      return say(phone, ar2
         ? `${r.dateDisplay} — باش نتأكد: الـ${hourStr} هاذي ${am} متاع الصباح ولا ${pm} متاع العشية؟`
         : `${r.dateDisplay} — bech net2akked: el ${hourStr} hethi ${am} mta3 sbe7 walla ${pm} mta3 l3chiya?`);
     }
     return say(phone, q);
   }
+  // F10) concrete slot outside clinic hours (or on a closed day): reject it and
+  // offer the next suitable open slot, saved as the new proposal.
+  const hc = hoursCheck(r);
+  if (hc) {
+    const sug = suggestOpenSlot(r.dateUTC, ar2);
+    await db.saveProposal(phone, sug.display, sug.iso, sug.display);
+    return say(phone, hoursRejectMsg(ar2, hc.reason, sug.display));
+  }
   // concrete date+time -> propose it back, wait for "ey"
   await db.saveProposal(phone, slotText, r.iso, r.display);
-  return say(phone, ar
+  return say(phone, ar2
     ? `داكور — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
     : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
 }
@@ -997,4 +1366,8 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup };
+module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+  // batch fix 2026-09-24 detectors (exported for the regression test)
+  looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeWalkin,
+  looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
+  stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS };

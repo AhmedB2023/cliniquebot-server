@@ -54,6 +54,10 @@ function makeStubDb() {
       const b = bookings.find((b) => b.id === id);
       if (b) b.status = status;
     },
+    updateBookingSlot: async (id, slot, slot_at) => {
+      const b = bookings.find((b) => b.id === id);
+      if (b) { b.slot = slot; b.slot_at = slot_at; }
+    },
     saveProposal: async (phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) => {
       proposals.set(phone, { slot_text, slot_at, display, awaiting_name, partial_name });
     },
@@ -163,7 +167,7 @@ const dateCases = [
   ["نحب نحجز", "NONE"],
   ["غدوة مع 12 متاع الليل", "غدوة 23 سبتمبر، 00:00"],
   ["٢٥/٠٩ مع 3 متاع العشية", "25 سبتمبر، 15:00"], // Arabic-Indic digits
-  ["21 سبتمبر 15:30", "21 سبتمبر، 15:30"],
+  ["21 سبتمبر 15:30", "PAST"], // explicit date already passed -> PAST, never next-year
   ["غدوة نص النهار", "غدوة 23 سبتمبر، 12:00"],
 ];
 
@@ -749,6 +753,242 @@ async function run() {
     ok("script: clean latin untouched", same === "3aslema! Kif najem n3awnek?", `got: ${JSON.stringify(same)}`);
     const ar = bot.enforceScript("WhatsApp متاح", "اكتبلي بالعربي");
     ok("script: arabic mode untouched", ar === "WhatsApp متاح", `got: ${JSON.stringify(ar)}`);
+  }
+
+  // ============ PART C: batch fix 2026-09-24 (13 fixes + reschedule + ok5) ============
+
+  // F1 — emergency: chest pain -> urgent care, never a booking
+  {
+    ok("f1: detector", bot.looksLikeEmergency("3andi wji3a kbira fi sedri tawa") === true);
+    ok("f1: plain wji3a not emergency", bot.looksLikeEmergency("3andi wji3a, chnowa el dwe?") === false);
+    ok("f1: t3ebna not emergency", bot.looksLikeEmergency("t3ebna") === false);
+    // False-positive guard (Ahmed 2026-09-24): a bad toothache is a normal
+    // dentist booking, NOT an emergency — red flags only.
+    ok("f1: toothache not emergency", bot.looksLikeEmergency("3andi wji3a kbira fi senni") === false);
+    ok("f1: back pain not emergency", bot.looksLikeEmergency("dhahri youja3 barcha") === false);
+    ok("f1: cant breathe is emergency", bot.looksLikeEmergency("manajmch netnafes") === true);
+    const p = "21600000121";
+    const r = await bot.processPatientText(p, "3andi wji3a kbira fi sedri tawa");
+    has("f1: urgent-care direction", r, "190");
+    ok("f1: no booking created", !(await stubDb.getLatestBooking(p)), "");
+    ok("f1: no rendez-vous offered", !/rendez-vous/i.test(r) || /matestanech rendez-vous/.test(r), `reply was: ${JSON.stringify(r)}`);
+    // toothache -> normal handling, never the ER path
+    const rt = await bot.processPatientText("21600000139", "3andi wji3a kbira fi senni, n7eb na7jez");
+    ok("f1: toothache not sent to ER", !/190/.test(rt), `reply was: ${JSON.stringify(rt)}`);
+  }
+
+  // F2 — correction after "le": new info wins
+  {
+    const c = bot.stripCorrectionPrefix("le, 10 mta3 l3chiya");
+    ok("f2: strip le prefix", c.hadLe === true && c.corr === "10 mta3 l3chiya", JSON.stringify(c));
+    const c2 = bot.stripCorrectionPrefix("le le, après ghodwa");
+    ok("f2: strip double le", c2.hadLe === true && c2.corr === "après ghodwa", JSON.stringify(c2));
+    ok("f2: hasTimeSignal", bot.hasTimeSignal("10 mta3 l3chiya") === true);
+    ok("f2: no time signal in date-only", bot.hasTimeSignal("après ghodwa") === false);
+    const st = bot.stripTimeTokens("ghodwa 10 mta3 sbe7");
+    ok("f2: strip old time", st === "ghodwa", JSON.stringify(st));
+    const sd = bot.stripDateTokens("ghodwa 10 mta3 sbe7");
+    ok("f2: strip old date", sd === "10 mta3 sbe7", JSON.stringify(sd));
+    // time correction: "ghodwa 10 mta3 sbe7" -> "le, 11 mta3 sbe7"
+    const p = "21600000122";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    const r = await bot.processPatientText(p, "le, 11 mta3 sbe7");
+    has("f2: corrected hour wins", r, "ghodwa 23 septembre, 11:00");
+    ok("f2: old hour gone", !r.includes("10:00"), `reply was: ${JSON.stringify(r)}`);
+    // date correction: "ghodwa" -> "le le, après ghodwa"
+    const p2 = "21600000123";
+    await bot.processPatientText(p2, "ghodwa");
+    const r2 = await bot.processPatientText(p2, "le le, après ghodwa");
+    has("f2: corrected day wins", r2, "ba3d ghodwa 24 septembre");
+    ok("f2: old day gone", !r2.includes("ghodwa 23 septembre"), `reply was: ${JSON.stringify(r2)}`);
+  }
+
+  // F3 — past / explicit dates: "el bera7" is past, "10 septembre" is a date not 10:00
+  {
+    const rb = dates.resolveSlot("el bera7");
+    ok("f3: bera7 is past", rb.found && rb.past === true, JSON.stringify(rb.display));
+    const r10 = dates.resolveSlot("10 septembre");
+    ok("f3: 10 septembre is a date", r10.found && r10.date && r10.needs === "time" && r10.past === true,
+      `got display=${JSON.stringify(r10.display)} past=${r10.past}`);
+    ok("f3: no silent 2027", !/2027/.test(r10.display || ""), JSON.stringify(r10.display));
+    const p = "21600000124";
+    const r = await bot.processPatientText(p, "el bera7 la3chiya");
+    has("f3: past -> fet", r, "fet");
+    const r2 = await bot.processPatientText(p, "10 septembre");
+    has("f3: explicit past date -> fet", r2, "fet");
+    ok("f3: not treated as 10:00", !/10:00/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+  }
+
+  // F4 — two appointments: both acknowledged, first one first
+  {
+    const p = "21600000125";
+    ok("f4: detector", bot.looksLikeTwoAppointments("zouz rendez-vous, wa7ed liya w wa7ed l omi") === true);
+    ok("f4: single not two", bot.looksLikeTwoAppointments("n7eb na7jez rendez-vous") === false);
+    const r1 = await bot.processPatientText(p, "zouz rendez-vous, wa7ed liya w wa7ed l omi");
+    has("f4: both acknowledged", r1, "zouz rendez-vous");
+    has("f4: one at a time", r1, "wa7ed b wa7ed");
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey");
+    const rname = await bot.processPatientText(p, "ahmed ben salah");
+    has("f4: first booked, second prompted", rname, "ethani");
+    const b1 = await stubDb.getLatestBooking(p);
+    ok("f4: first slot in db", b1 && b1.slot === "ghodwa 23 septembre, 10:00", JSON.stringify(b1));
+    await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
+    const r2 = await bot.processPatientText(p, "ey"); // name known now
+    has("f4: second booked", r2, "n2akkedlek");
+    ok("f4: no third prompt", !/ethani/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+    const n = (await stubDb.getPendingBookings()).filter((x) => x.phone === p).length;
+    ok("f4: exactly 2 bookings", n === 2, `n=${n}`);
+  }
+
+  // F5 — fresh booking request clears a stale proposal (no inherited time)
+  {
+    const p = "21600000126";
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7"); // concrete proposal 10:00
+    const r = await bot.processPatientText(p, "n7eb jem3a");
+    has("f5: new day asked", r, "jem3a 25 septembre");
+    ok("f5: stale 10:00 not inherited", !r.includes("10:00"), `reply was: ${JSON.stringify(r)}`);
+    const prop = await stubDb.getProposal(p);
+    ok("f5: proposal has no stale time", prop && !/10/.test(prop.slot_text || ""), JSON.stringify(prop));
+  }
+
+  // F6 — frustration: brief "sama7ni", ask what failed
+  {
+    ok("f6: detector", bot.looksLikeFrustration("ya kalb el bot mte3ek me5demch") === true);
+    ok("f6: greeting not frustration", bot.looksLikeFrustration("3aslema") === false);
+    const r = await bot.processPatientText("21600000127", "ya kalb el bot mte3ek me5demch");
+    has("f6: sama7ni", r, "Sama7ni");
+    has("f6: asks what failed", r, "chnowa saret");
+  }
+
+  // F7 — cancellation detected before status: cancels + notifies
+  {
+    ok("f7: detector", bot.looksLikeCancellation("n7eb nfassakh el rendez-vous") === true);
+    ok("f7: reschedule is not cancel", bot.looksLikeCancellation("n7eb nbadal el wa9t") === false);
+    const p = "21600000128";
+    const id = await stubDb.saveBooking(p, "ghodwa 23 septembre, 10:00", "2026-09-23T09:00:00.000Z", "Test Testi");
+    const r = await bot.processPatientText(p, "n7eb nfassakh el rendez-vous mte3i");
+    has("f7: cancelled", r, "fassakht");
+    const b = await stubDb.getBooking(id);
+    ok("f7: status cancelled in db", b && b.status === "cancelled", JSON.stringify(b));
+    // no booking -> honest answer, no crash
+    const r2 = await bot.processPatientText("21600000129", "n7eb nfassakh el rendez-vous");
+    has("f7: no booking to cancel", r2, "Ma l9it 7atta rendez-vous");
+  }
+
+  // F8 — FAQ/identity answered before any stale-proposal merge
+  {
+    ok("f8: price kind", bot.faqKind("9adech el soum?") === "price");
+    ok("f8: hours kind", bot.faqKind("wa9tech t7ellou?") === "hours");
+    ok("f8: who kind", bot.faqKind("chkoun enti?") === "who");
+    ok("f8: greeting not faq", bot.faqKind("3aslema") === null);
+    const p = "21600000130";
+    await bot.processPatientText(p, "ghodwa"); // proposal waiting for a time
+    const r1 = await bot.processPatientText(p, "9adech el soum?");
+    has("f8: price answered", r1, "consultation loula");
+    const prop = await stubDb.getProposal(p);
+    ok("f8: proposal preserved", prop && prop.slot_text === "ghodwa", JSON.stringify(prop));
+    const r2 = await bot.processPatientText(p, "chkoun enti?");
+    has("f8: identity answered", r2, "assistant mta3 el 3iyada");
+    const r3 = await bot.processPatientText(p, "wa9tech t7ellou?");
+    has("f8: hours answered", r3, "el sebt");
+  }
+
+  // F9 — bare "ey" on an incomplete proposal repeats the question, invents nothing
+  {
+    ok("f9: ok 5 not acceptance", bot.looksLikeAcceptance("ok 5") === false);
+    const p = "21600000131";
+    const r1 = await bot.processPatientText(p, "ghodwa");
+    has("f9: asks time", r1, "9olli el wa9t");
+    const r2 = await bot.processPatientText(p, "ey");
+    has("f9: question repeated", r2, "9olli el wa9t");
+    ok("f9: no invented 10:00", !/10:00/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+    ok("f9: no booking invented", !(await stubDb.getLatestBooking(p)), "");
+  }
+
+  // F10 — outside-hours rejected + open slot offered; Sunday closed -> next open day
+  {
+    const hc1 = bot.hoursCheck(dates.resolveSlot("ghodwa 23:00"));
+    ok("f10: 23:00 rejected", hc1 && hc1.reason === "hours", JSON.stringify(hc1));
+    const hc2 = bot.hoursCheck(dates.resolveSlot("el 7ad 10:00"));
+    ok("f10: sunday rejected", hc2 && hc2.reason === "closed", JSON.stringify(hc2));
+    ok("f10: 10:00 wednesday ok", bot.hoursCheck(dates.resolveSlot("ghodwa 10:00")) === null);
+    const p = "21600000132";
+    const r = await bot.processPatientText(p, "lyoum 23:00");
+    has("f10: rejection + suggestion", r, "erb3a 23 septembre, 09:00");
+    ok("f10: 23:00 never proposed", !/23:00/.test(r.split("Najem n9tar7lek")[0] || ""), `reply was: ${JSON.stringify(r)}`);
+    const prop = await stubDb.getProposal(p);
+    ok("f10: proposal is the open slot", prop && prop.display === "erb3a 23 septembre, 09:00", JSON.stringify(prop));
+    // Sunday: must not inherit a stale time, redirects to Monday
+    const p2 = "21600000133";
+    await bot.processPatientText(p2, "ghodwa 10 mta3 sbe7"); // stale 10:00 proposal
+    const r2 = await bot.processPatientText(p2, "n7eb nhar el 7ad");
+    has("f10: sunday closed", r2, "msakra");
+    has("f10: redirected to monday", r2, "ethnin 28 septembre");
+    ok("f10: no stale 10:00", !/10:00/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+  }
+
+  // F11 — walk-in: explained once, offered a reserved time, no question loop
+  {
+    ok("f11: detector", bot.looksLikeWalkin("n7eb nji tawa") === true);
+    ok("f11: booking not walkin", bot.looksLikeWalkin("n7eb na7jez ghodwa") === false);
+    const p = "21600000134";
+    const r1 = await bot.processPatientText(p, "n7eb nji tawa");
+    has("f11: walk-in explained", r1, "mathmoun");
+    const r2 = await bot.processPatientText(p, "n7eb nji tawa");
+    ok("f11: no loop, same answer", r1 === r2, `r1=${JSON.stringify(r1)} r2=${JSON.stringify(r2)}`);
+    const r3 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    has("f11: booking still works", r3, "ghodwa 23 septembre, 10:00");
+  }
+
+  // F12 — religious filler keeps tomorrow
+  {
+    const rr = dates.resolveSlot("ghodwa inchallah ken 7ab rabbi");
+    ok("f12: parser keeps ghodwa", rr.found && rr.date && rr.needs === "time" && rr.dateDisplay === "ghodwa 23 septembre",
+      `got ${JSON.stringify(rr.dateDisplay)} needs=${rr.needs}`);
+    const r = await bot.processPatientText("21600000135", "ghodwa inchallah ken 7ab rabbi");
+    has("f12: tomorrow preserved", r, "ghodwa 23 septembre");
+    has("f12: asks time", r, "9olli el wa9t");
+  }
+
+  // F13 — third-party privacy: only this number's bookings
+  {
+    ok("f13: detector", bot.looksLikeThirdPartyQuery("3and omi rendez-vous lyoum?") === true);
+    ok("f13: own booking not third-party", bot.looksLikeThirdPartyQuery("3andi rendez-vous?") === false);
+    const r = await bot.processPatientText("21600000136", "3and omi rendez-vous lyoum?");
+    has("f13: privacy-safe reply", r, "numero hetha");
+  }
+
+  // Reschedule — updates the existing booking, never a duplicate row
+  {
+    ok("fR: detector", bot.looksLikeReschedule("n7eb nbadal el rendez-vous") === true);
+    ok("fR: cancel is not reschedule", bot.looksLikeReschedule("n7eb nfassakh") === false);
+    const p = "21600000137";
+    await stubDb.savePatientName(p, "Test Testi");
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey"); // booked: ghodwa 10:00
+    const before = await stubDb.getLatestBooking(p);
+    ok("fR: booking exists", before && before.slot === "ghodwa 23 septembre, 10:00", JSON.stringify(before));
+    const r1 = await bot.processPatientText(p, "n7eb nbadal el rendez-vous");
+    has("fR: reschedule acknowledged", r1, "nbadlou");
+    await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
+    const r2 = await bot.processPatientText(p, "ey");
+    has("fR: moved", r2, "Tbadal el rendez-vous: jem3a 25 septembre, 10:00");
+    const all = (await stubDb.getPendingBookings()).filter((x) => x.phone === p);
+    ok("fR: no duplicate row", all.length === 1, `n=${all.length}`);
+    ok("fR: slot updated", all[0].slot === "jem3a 25 septembre, 10:00", JSON.stringify(all[0]));
+  }
+
+  // Patient-side "ok 5" never validates
+  {
+    const p = "21600000138";
+    await stubDb.savePatientName(p, "Test Testi");
+    await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
+    await bot.processPatientText(p, "ey"); // one pending booking
+    const before = (await stubDb.getPendingBookings()).filter((x) => x.phone === p);
+    const r = await bot.processPatientText(p, "ok 5");
+    ok("f5ok: not validated", before[0] && before[0].status === "pending", JSON.stringify(before[0]));
+    ok("f5ok: explained", /commande mta3 el 3iyada/.test(r), `reply was: ${JSON.stringify(r)}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

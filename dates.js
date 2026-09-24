@@ -26,6 +26,10 @@ function norm(s) {
     .replace(/[àâ]/g, "a")
     .replace(/ç/g, "c")
     .replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d)) // Arabic-Indic digits -> 0-9
+    // Religious filler never carries scheduling info ("ghodwa inchallah ken 7ab rabbi"
+    // = tomorrow). Strip it so the date survives.
+    .replace(/\b(inchallah|inchaallah|inshallah|nchallah|inchala)\b/g, " ")
+    .replace(/\bken 7ab (rabbi|rabi|allah)\b/g, " ")
     .replace(/[.,!?;]/g, " ") // NOTE: ":" is kept — it belongs to times like 15:30
     .replace(/\s+/g, " ")
     .trim();
@@ -64,7 +68,7 @@ const NUM_WORDS = [
 
 // weekday name -> JS day number (0 = Sunday)
 const DAYS = [
-  ["la7ad", 0], ["l7ad", 0], ["dimanche", 0],
+  ["la7ad", 0], ["l7ad", 0], ["el 7ad", 0], ["dimanche", 0],
   ["ethnin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["mercredi", 3],
@@ -110,6 +114,9 @@ function resolveSlot(rawText) {
 
   let dateUTC = null;
   let dateDisplay = null;
+  let explicitPast = false; // an explicit date (10 septembre, 21/09...) that already
+  // passed: report it as PAST so the bot asks for a future date — never roll it
+  // silently into next year.
 
   // ---- 1) explicit date: "21 septembre" or "25/09" or "21 سبتمبر" ----
   const dm = t.match(/(\d{1,2})\s+(janvier|janfi|fevrier|fev|mars|avril|mai|juin|juillet|juil|aout|septembre|sept|octobre|oct|novembre|nov|decembre|dec)\b/);
@@ -121,8 +128,8 @@ function resolveSlot(rawText) {
     const mon = MONTHS[dm[2]];
     const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
     if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
-      let dms = Date.UTC(now.getUTCFullYear(), mon, day);
-      if (dms < todayStart) dms = Date.UTC(now.getUTCFullYear() + 1, mon, day); // passed -> next year
+      const dms = Date.UTC(now.getUTCFullYear(), mon, day);
+      explicitPast = dms < todayStart;
       dateUTC = dms;
       dateDisplay = `${day} ${FR_MONTH[mon]}`;
     }
@@ -132,8 +139,8 @@ function resolveSlot(rawText) {
     const mon = MONTHS_AR[dma[2]];
     const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
     if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
-      let dms = Date.UTC(now.getUTCFullYear(), mon, day);
-      if (dms < todayStart) dms = Date.UTC(now.getUTCFullYear() + 1, mon, day);
+      const dms = Date.UTC(now.getUTCFullYear(), mon, day);
+      explicitPast = dms < todayStart;
       dateUTC = dms;
       dateDisplay = `${day} ${AR_MONTH[mon]}`;
     }
@@ -144,8 +151,8 @@ function resolveSlot(rawText) {
     if (mon >= 0 && mon <= 11) {
       const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
       if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
-        let dms = Date.UTC(now.getUTCFullYear(), mon, day);
-        if (dms < todayStart) dms = Date.UTC(now.getUTCFullYear() + 1, mon, day);
+        const dms = Date.UTC(now.getUTCFullYear(), mon, day);
+        explicitPast = dms < todayStart;
         dateUTC = dms;
         dateDisplay = ar ? `${day} ${AR_MONTH[mon]}` : `${day} ${FR_MONTH[mon]}`;
       }
@@ -170,11 +177,19 @@ function resolveSlot(rawText) {
       const dd = new Date(dateUTC);
       const dname = ar ? AR_DAY[dow] : DERJA_DAY[dow];
       dateDisplay = `${dname} ${dd.getUTCDate()} ${ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()]}`;
-    } else if (t.includes(" ba3d ghodwa ") || t.includes(" ba3d ghadwa ") || t.includes(" بعد غدوة ")) {
+    } else if (t.includes(" ba3d ghodwa ") || t.includes(" ba3d ghadwa ") || t.includes(" apres ghodwa ") || t.includes(" بعد غدوة ")) {
       dateUTC = todayStart + 2 * 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = ar ? `بعد غدوة ${dd.getUTCDate()} ${mname}` : `ba3d ghodwa ${dd.getUTCDate()} ${mname}`;
+    } else if (/\bbera7\b/.test(t) || t.includes(" البارح ") || t.includes(" البارحة ")) {
+      // Yesterday — always PAST: the bot must ask for a future date instead of
+      // booking something already gone.
+      dateUTC = todayStart - 86400000;
+      explicitPast = true;
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = ar ? `البارح ${dd.getUTCDate()} ${mname}` : `bera7 ${dd.getUTCDate()} ${mname}`;
     } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ")) {
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
@@ -249,8 +264,37 @@ function resolveSlot(rawText) {
     display = ar ? `${dateDisplay}، ${pad(finalHour)}:${pad(minute)}` : `${dateDisplay}, ${pad(finalHour)}:${pad(minute)}`;
     past = wallMs <= nowMs() + 3600000; // mockable clock (was Date.now(): broke tests after 21:00 Tunis time)
   }
+  // An explicit date that already passed this year ("10 septembre", "el bera7"):
+  // report it as PAST even without a time, so the bot asks for a future date
+  // instead of silently rolling it into next year or inventing a time.
+  if (explicitPast) past = true;
 
-  return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso, morning, afternoon, night, ar };
+  return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso,
+    morning, afternoon, night, ar,
+    dateUTC, // Tunis-midnight ms (null when no date) — for weekday/hours checks
+    dow: dateUTC !== null ? new Date(dateUTC).getUTCDay() : null }; // 0 = Sunday
 }
 
-module.exports = { resolveSlot, tunisNow, setNow };
+// ---------- Formatting helpers for bot-suggested open slots ----------
+
+function fmtDate(dateUTC, ar) {
+  const d = new Date(dateUTC);
+  return `${d.getUTCDate()} ${ar ? AR_MONTH[d.getUTCMonth()] : FR_MONTH[d.getUTCMonth()]}`;
+}
+
+function dayName(dow, ar) {
+  return ar ? AR_DAY[dow] : DERJA_DAY[dow];
+}
+
+// Build display + ISO for a concrete slot the bot suggests (e.g. after a
+// closed-day / outside-hours rejection): "ethneyn 28 septembre, 09:00".
+function slotDisplay(dateUTC, hour, minute, ar) {
+  const dow = new Date(dateUTC).getUTCDay();
+  const datePart = `${dayName(dow, ar)} ${fmtDate(dateUTC, ar)}`;
+  const hm = `${pad(hour)}:${pad(minute)}`;
+  const display = ar ? `${datePart}، ${hm}` : `${datePart}, ${hm}`;
+  const iso = new Date(dateUTC + hour * 3600000 + minute * 60000 - 3600000).toISOString();
+  return { display, iso, dateUTC, dow };
+}
+
+module.exports = { resolveSlot, tunisNow, setNow, fmtDate, dayName, slotDisplay };

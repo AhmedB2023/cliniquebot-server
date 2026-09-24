@@ -208,6 +208,13 @@ async function setBookingStatus(id, status) {
   await p.query("UPDATE bookings SET status=$1 WHERE id=$2", [status, id]);
 }
 
+// Rescheduling moves an EXISTING booking to a new slot (no duplicate row).
+async function updateBookingSlot(id, slot, slot_at) {
+  const p = getPool();
+  if (!p) return;
+  await p.query("UPDATE bookings SET slot=$1, slot_at=$2 WHERE id=$3", [slot, slot_at, id]);
+}
+
 // ---------- Proposals: the concrete slot the bot offered, awaiting "ey" ----------
 async function saveProposal(phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) {
   const p = getPool();
@@ -366,6 +373,7 @@ module.exports = {
   getLatestBooking,
   getPendingBookings,
   setBookingStatus,
+  updateBookingSlot,
   saveProposal,
   getProposal,
   clearProposal,
