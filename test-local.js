@@ -694,6 +694,38 @@ async function run() {
     ok("vendor: 'sbe7' not treated as greeting", !/Kifech n3awnek/.test(n5), `reply was: ${JSON.stringify(n5)}`);
   }
 
+  // Flow 10 — availability question is NEVER an acceptance (live bug 2026-09-23:
+  // "Ok nhar thleth mawjoud?" -> bot wrongly replied "N2akkedlek w narja3lek")
+  {
+    const p = "21600000110";
+    ok("availq: question not acceptance", bot.looksLikeAcceptance("Ok nhar thleth mawjoud?") === false);
+    ok("availq: ey? not acceptance", bot.looksLikeAcceptance("ey?") === false);
+    ok("availq: question words not acceptance", bot.looksLikeAcceptance("ok fama blasa ghodwa") === false);
+    ok("availq: pure ey still acceptance", bot.looksLikeAcceptance("ey") === true);
+    ok("availq: pure ok still acceptance", bot.looksLikeAcceptance("ok") === true);
+    ok("availq: ok+slot still acceptance", bot.looksLikeAcceptance("ok, ghodwa 10 mta3 sbe7") === true);
+    ok("availq: thleth resolves", bot.dates.resolveSlot("nhar thleth").found === true);
+    await bot.processPatientText(p, "Je Veux fixer un rendez-vous");
+    const r = await bot.processPatientText(p, "Ok nhar thleth mawjoud?");
+    ok("availq: no fake confirm", !/n2akkedlek/i.test(r), `reply was: ${JSON.stringify(r)}`);
+    has("availq: asks for the hour instead", r, "9olli el wa9t");
+  }
+
+  // Flow 11 — script safety net: AI must never leak Arabic letters into a Latin reply
+  // (live bug 2026-09-23: "Kif nجم n3awnk elyoum?"), and "3aslema" is a pure greeting
+  {
+    const g = await bot.processPatientText("neut6", "3aslema");
+    has("script: 3aslema -> fixed greeting", g, "Kifech n3awnek");
+    ok("script: greeting has no arabic", !/[\u0600-\u06FF]/.test(g), `reply was: ${JSON.stringify(g)}`);
+    const fixed = bot.enforceScript("3aslema! Kif nجم n3awnk elyoum?", "3aslema");
+    ok("script: no arabic letters left", !/[\u0600-\u06FF]/.test(fixed), `got: ${JSON.stringify(fixed)}`);
+    ok("script: stays readable", fixed.includes("njm"), `got: ${JSON.stringify(fixed)}`);
+    const same = bot.enforceScript("3aslema! Kif najem n3awnek?", "3aslema");
+    ok("script: clean latin untouched", same === "3aslema! Kif najem n3awnek?", `got: ${JSON.stringify(same)}`);
+    const ar = bot.enforceScript("WhatsApp متاح", "اكتبلي بالعربي");
+    ok("script: arabic mode untouched", ar === "WhatsApp متاح", `got: ${JSON.stringify(ar)}`);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

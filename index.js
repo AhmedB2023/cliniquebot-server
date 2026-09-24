@@ -36,6 +36,28 @@ const dates = require("./dates"); // deterministic Derja date/time resolver
 // elsewhere in this file uses space-padded includes(), never \b.
 const isAr = (s) => /[\u0600-\u06FF]/.test(s || "");
 
+// Safety net for AI replies: if the patient wrote in Latin script (arabizi), the
+// reply must not leak Arabic-script letters (observed live: "Kif nجم n3awnk
+// elyoum?" — the prompt forbids mixing but the model still slipped). Any Arabic
+// letter found is transliterated to arabizi so the reply stays readable instead
+// of dropping characters. Arabic-mode replies are left untouched (Latin brand
+// words like "WhatsApp" and numbers are normal there).
+const AR2LAT = {
+  "ا": "a", "أ": "a", "إ": "i", "آ": "a", "ب": "b", "ت": "t", "ث": "th",
+  "ج": "j", "ح": "7", "خ": "5", "د": "d", "ذ": "dh", "ر": "r", "ز": "z",
+  "س": "s", "ش": "ch", "ص": "s", "ض": "d", "ط": "t", "ظ": "dh", "ع": "3",
+  "غ": "gh", "ف": "f", "ق": "9", "ك": "k", "ل": "l", "م": "m", "ن": "n",
+  "ه": "h", "ة": "a", "و": "w", "ؤ": "w", "ي": "y", "ى": "a", "ئ": "y",
+  "ء": "2", "؟": "?", "،": ",", "؛": ";", "٪": "%",
+};
+const AR_DIACRITICS = /[ً-ٰٖ]/g; // U+064B-U+0652, U+0670: strip, don't transliterate
+
+function enforceScript(text, patientText) {
+  if (!text || isAr(patientText)) return text;
+  if (!/[\u0600-\u06FF]/.test(text)) return text;
+  return text.replace(AR_DIACRITICS, "").replace(/[\u0600-\u06FF]/g, (ch) => AR2LAT[ch] || "");
+}
+
 // Track last webhook for status checks (bypasses slow Render logs)
 let lastWebhook = { at: null, from: null, text: null, reply: null };
 app.get("/status", async (req, res) => {
@@ -140,7 +162,8 @@ async function aiReply(patientText, history = [], patientName = null) {
     console.error("[ai:ERROR]", JSON.stringify(data).slice(0, 300));
     return "sme7na, saret mochkla s8ira — najem n3awnek b 7aja o5ra?";
   }
-  return data.choices?.[0]?.message?.content?.trim() || "ma fhemtch, tnajem t3awed b tari9a o5ra?";
+  const out = data.choices?.[0]?.message?.content?.trim() || "ma fhemtch, tnajem t3awed b tari9a o5ra?";
+  return enforceScript(out, patientText);
 }
 
 function fallbackReply(text) {
@@ -180,6 +203,12 @@ function looksLikeAcceptance(text) {
   if (/^(اي|أي|نعم|موافق|احجز|احجزلي|إحجزلي)\s*[.,!؟]*$/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
   if (/(^|\s)(le|mouch|man7ebch|faskh|cancel|badal|nbadal)(\s|$)/.test(t)) return false;
+  // A question is never an acceptance. "ok nhar thleth mawjoud?" asks about
+  // availability — treating it as acceptance confirmed a slot that was never
+  // proposed (observed live). Question words are checked too, for the rare
+  // message without a "?" mark.
+  if (/[?؟]/.test(raw)) return false;
+  if (/(^|\s)(mawjoud|mojoud|mejoud|fama|famech|disponible|possible|est-ce|wa9tech|we9tech|wakteh|9addech|b9adech|kifech|kifach|chneya|chnowa|chkoun|win|ynajem|najem|متاح|موجود|فما|فماش|وقتاش|بقداش|كيفاش|شنوة|شكون|وين|هل)\b/.test(t)) return false;
   if (/^\s*(ok|ey|na3m|oui|mriguel|d'accord)\b/.test(t)) return true;
   if (t.includes(" a7jezli ") || t.includes(" e7jezli ") || t.includes(" a7jez ") || t.includes(" e7jez ")) return true;
   return false;
@@ -515,7 +544,7 @@ async function handleVendorTurn(phone, text, lead) {
 function looksLikePureGreeting(text) {
   const t = (text || "").trim().toLowerCase().replace(/[.,!؟?]/g, "");
   if (/^(سلام|عسلامة|صباح الخير|مساء الخير|اهلا|أهلا|مرحبا)$/.test(t)) return true;
-  return /^(slm|slem|salem|salam|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)$/.test(t);
+  return /^(slm|slem|salem|salam|3aslema|3aslama|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)$/.test(t);
 }
 
 // Shared by the WhatsApp webhook and the /test page.
@@ -971,4 +1000,4 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, validateSignup };
+module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup };
