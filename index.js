@@ -317,7 +317,7 @@ function fallbackReply(text, forceAr) {
 
 // ---------- Booking flow (Phase 2 + deterministic Derja dates) ----------
 // A slot is only booked when it resolves to a CONCRETE date+time.
-// "jem3a 10" alone -> the bot asks "sbe7 walla lil?" and shows "jem3a 25 septembre".
+// "jem3a 10" alone -> the bot asks "sbe7 walla lil?" and shows "25-09-2026".
 
 function looksLikeAcceptance(text) {
   const raw = (text || "").trim();
@@ -548,17 +548,20 @@ function hoursCheck(r) {
   return { reason: open ? "hours" : "closed" };
 }
 
-// Next suitable open slot: same day 09:00 if open and still future, else the
-// next open day at 09:00.
-function suggestOpenSlot(dateUTC, ar) {
-  let d = dateUTC;
+// Next suitable open slot: from the given start day, the first open day
+// whose 09:00 is still in the future (real now, not the start day).
+function suggestOpenSlot(fromDateUTC, ar) {
+  // All timestamps here are shifted so getUTC*() reads Tunis wall time.
+  const DAY = 86400000;
+  const nowMs = dates.tunisNow().getTime();
+  let dayStart = Math.floor(fromDateUTC / DAY) * DAY; // Tunis-wall midnight of the start day
   for (let i = 0; i < 8; i++) {
-    const dow = new Date(d).getUTCDay();
+    const dow = new Date(dayStart).getUTCDay();
     if (CLINIC_HOURS[dow]) {
-      const wallMs = d + 9 * 3600000;
-      if (wallMs > dates.tunisNow().getTime()) return dates.slotDisplay(d, 9, 0, ar);
+      const nineAM = dayStart + 9 * 3600000;
+      if (nineAM > nowMs) return dates.slotDisplay(dayStart, 9, 0, ar);
     }
-    d += 86400000;
+    dayStart += DAY;
   }
   return null;
 }
@@ -569,7 +572,7 @@ function suggestOpenDay(dateUTC, ar) {
   for (let i = 0; i < 8; i++) {
     const dow = new Date(d).getUTCDay();
     if (CLINIC_HOURS[dow]) {
-      return { dateUTC: d, dow, dateDisplay: `${dates.dayName(dow, ar)} ${dates.fmtDate(d, ar)}` };
+      return { dateUTC: d, dow, dateDisplay: dates.fmtDate(d, ar) };
     }
     d += 86400000;
   }
@@ -656,7 +659,7 @@ async function handleNameAnswer(phone, text, proposal, ar, clinic) {
       : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
   }
   // A new concrete slot mid-flow ("le, jem3a 11") -> update the slot, ask the name again.
-  const r = dates.resolveSlot(text);
+  const r = dates.resolveSlot(text, ar);
   if (r.found && r.date && !r.needs && !r.past) {
     await db.saveProposal(phone, text, r.iso, r.display, true, null).catch(() => {});
     return say(phone, askNameMsg(isAr(text) || ar, r.display));
@@ -827,7 +830,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
 
   // F8) FAQ / identity — pure questions (no date): answer directly, never
   // swallowed into a stale proposal.
-  const r0 = dates.resolveSlot(text);
+  const r0 = dates.resolveSlot(text, ar);
   const fk = !r0.date && faqKind(text);
   if (fk) return say(phone, faqAnswer(fk, ar, clinic));
 
@@ -896,7 +899,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     return handleNameAnswer(phone, text, proposal, ar2, clinic);
   }
 
-  let r = dates.resolveSlot(text);
+  let r = dates.resolveSlot(text, ar);
   let slotText = text; // the phrase the proposal remembers — grows as follow-ups merge
 
   // F5) Fresh booking request wipes a stale proposal — never inherit old date/time.
@@ -923,18 +926,18 @@ async function handleBookingTurn(phone, text, history, clinic) {
     // conflicting tokens from the proposal side so they can't win back.
     const { hadLe, corr } = stripCorrectionPrefix(text);
     if (hadLe) {
-      const rn = dates.resolveSlot(corr);
+      const rn = dates.resolveSlot(corr, ar);
       if (rn.found) {
         let propSide = proposal.slot_text;
         if (hasTimeSignal(corr)) propSide = stripTimeTokens(propSide);
         if (rn.date) propSide = stripDateTokens(propSide);
-        const merged = dates.resolveSlot(corr + " " + propSide);
+        const merged = dates.resolveSlot(corr + " " + propSide, ar);
         if (merged.found && merged.date) { r = merged; slotText = corr + " " + propSide; }
       }
     } else {
       // follow-up like "sbe7" or "10" -> merge with the previous slot phrase.
       // New text first, so a changed hour wins over the old one.
-      const merged = dates.resolveSlot(text + " " + proposal.slot_text);
+      const merged = dates.resolveSlot(text + " " + proposal.slot_text, ar);
       if (merged.found && merged.date) { r = merged; slotText = text + " " + proposal.slot_text; }
     }
   }
@@ -948,7 +951,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     let target = (proposal && proposal.slot_at && proposal.display) ? proposal : null;
     if (!target && proposal && !proposal.slot_at) {
       // F9) incomplete proposal: repeat the pending clarification, no invention.
-      const rp = dates.resolveSlot(proposal.slot_text || "");
+      const rp = dates.resolveSlot(proposal.slot_text || "", ar2);
       if (rp.found && rp.date && !rp.past && rp.needs === "time") {
         return say(phone, timeQuestionMsg(ar2, rp, proposal.slot_text));
       }
@@ -992,6 +995,13 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // B) Slot information (new request or clarification answer).
   if (!r.found) return { handled: false };
   if (!r.date) {
+    // "jem3a jeya" = next WEEK (Tunisian usage), no specific day: ask which
+    // day of next week, don't fall through to the generic question.
+    if (r.nextWeek) {
+      return say(phone, ar
+        ? "أوك — الجمعة الجاية. أنهو نهار وأنهو وقت يساعدك؟"
+        : "Ok, jem3a jeya — anhou nhar w anhou wa9t?");
+    }
     // Time but no date, and the time is outside clinic hours ("nos el lil"
     // = midnight): reject it immediately — never ask for a day first.
     if (r.hour !== null && r.hour !== undefined) {
@@ -1017,7 +1027,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     // time for a day the clinic is closed.
     if (r.dow !== null && !CLINIC_HOURS[r.dow]) {
       const sug = suggestOpenDay(r.dateUTC, ar2);
-      await db.saveProposal(phone, dates.dayName(sug.dow, ar2), null, sug.dateDisplay);
+      await db.saveProposal(phone, sug.dateDisplay, null, sug.dateDisplay);
       return say(phone, ar2
         ? `نهار الأحد العيادة مسكرة (نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
         : `Nhar el 7ad el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`);
@@ -1301,7 +1311,7 @@ a{color:#0b7}
 <div id="whorow" style="display:flex;gap:6px;margin-bottom:8px"><input id="who" placeholder="chkoun enti? (ex: ahmed) — badlou bech tjareb patient e5er"></div>
 <div id="log"></div>
 <div id="row"><input id="msg" placeholder="ekteb houni..." onkeydown="if(event.key==='Enter')send()"><button onclick="send()">Send</button></div>
-<p class="hint">Patient: ekteb 3adi. Secretaire: ibda b <b>admin:</b> (ex: <b>admin: ok 1</b>). Bech tjareb akther men patient: badel el esm fi el 5ana el fou9aniya w kamel. El wa9t lezem date 7a9i9iya (jem3a = 25 septembre). <a href="/bookings">/bookings</a> tchouf el pending.</p>
+<p class="hint">Patient: ekteb 3adi. Secretaire: ibda b <b>admin:</b> (ex: <b>admin: ok 1</b>). Bech tjareb akther men patient: badel el esm fi el 5ana el fou9aniya w kamel. El wa9t lezem date 7a9i9iya (jem3a = 25-09-2026). <a href="/bookings">/bookings</a> tchouf el pending.</p>
 <script>
 let pw="";
 function unlock(){pw=document.getElementById('pw').value;document.getElementById('pwrow').style.display='none';add('bot','mriguel! Ekteb ay message bech tjareb el bot.');}

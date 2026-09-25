@@ -73,7 +73,7 @@ const DAYS = [
   ["ethnin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["mercredi", 3],
-  ["khmis", 4], ["5mis", 4], ["jeudi", 4],
+  ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4],
   ["jem3a", 5], ["jom3a", 5], ["vendredi", 5],
   ["sebt", 6], ["sibt", 6], ["samedi", 6],
   // Arabic-script weekday names
@@ -107,11 +107,18 @@ function pad(n) {
   return String(n).padStart(2, "0");
 }
 
-function resolveSlot(rawText) {
+// Numeric date display everywhere: "25-09-2026" (Tunis wall time).
+function fmtNum(d) {
+  return `${pad(d.getUTCDate())}-${pad(d.getUTCMonth() + 1)}-${d.getUTCFullYear()}`;
+}
+
+function resolveSlot(rawText, preferAr) {
   const now = tunisNow();
   const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const t = " " + norm(rawText) + " ";
-  const ar = /[\u0600-\u06FF]/.test(t); // patient wrote in Arabic script -> answer in Arabic script
+  // Script: explicit caller preference (saved "aktebli bel 3arbi") wins;
+  // otherwise Arabic characters in the message -> Arabic-script answer.
+  const ar = !!preferAr || /[\u0600-\u06FF]/.test(t); // patient wrote in Arabic script -> answer in Arabic script
 
   let dateUTC = null;
   let dateDisplay = null;
@@ -132,7 +139,7 @@ function resolveSlot(rawText) {
       const dms = Date.UTC(now.getUTCFullYear(), mon, day);
       explicitPast = dms < todayStart;
       dateUTC = dms;
-      dateDisplay = `${day} ${FR_MONTH[mon]}`;
+      dateDisplay = fmtNum(probe);
     }
     rest = t.replace(dm[0], " ");
   } else if (dma) {
@@ -143,7 +150,7 @@ function resolveSlot(rawText) {
       const dms = Date.UTC(now.getUTCFullYear(), mon, day);
       explicitPast = dms < todayStart;
       dateUTC = dms;
-      dateDisplay = `${day} ${AR_MONTH[mon]}`;
+      dateDisplay = fmtNum(probe);
     }
     rest = t.replace(dma[0], " ");
   } else if (dsl) {
@@ -155,7 +162,7 @@ function resolveSlot(rawText) {
         const dms = Date.UTC(now.getUTCFullYear(), mon, day);
         explicitPast = dms < todayStart;
         dateUTC = dms;
-        dateDisplay = ar ? `${day} ${AR_MONTH[mon]}` : `${day} ${FR_MONTH[mon]}`;
+        dateDisplay = fmtNum(probe);
       }
     }
     rest = t.replace(dsl[0], " ");
@@ -165,7 +172,14 @@ function resolveSlot(rawText) {
   // The FIRST weekday word in the TEXT wins (not the first in the DAYS list):
   // in "jem3a larb3a", "jem3a" is the day and "larb3a" may be 4 o'clock.
   let dayWord = null; // matched weekday name — blanked before number-word -> digit
-  if (dateUTC === null) {
+  // "jem3a jeya" = NEXT WEEK in Tunisian usage (not next Friday) — same for
+  // "semaine/smena/simana jeya" and "osbou3 ejjey". No specific day, so the
+  // bot must ask which day; never let the weekday matcher below read the
+  // "jem3a" inside it as Friday.
+  const nextWeek = dateUTC === null && (
+    /\b(el\s+)?(jem3a(t)?|semaine|smena|simana)\s+e?jj?eya\b/.test(t) || // "jem3a jeya", "el jem3a ejjeya", "semaine jeya"
+    /\b(el\s+)?(osbou3|osbo3)\s+e?jj?ey\b/.test(t));                     // "osbou3 ejjey"
+  if (dateUTC === null && !nextWeek) {
     let dow = null;
     let dayPos = -1;
     for (const [name, d] of DAYS) {
@@ -177,12 +191,12 @@ function resolveSlot(rawText) {
       dateUTC = todayStart + diff * 86400000;
       const dd = new Date(dateUTC);
       const dname = ar ? AR_DAY[dow] : DERJA_DAY[dow];
-      dateDisplay = `${dname} ${dd.getUTCDate()} ${ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()]}`;
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" ba3d ghodwa ") || t.includes(" ba3d ghadwa ") || t.includes(" apres ghodwa ") || t.includes(" بعد غدوة ")) {
       dateUTC = todayStart + 2 * 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `بعد غدوة ${dd.getUTCDate()} ${mname}` : `ba3d ghodwa ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     } else if (/\bbera7\b/.test(t) || t.includes(" البارح ") || t.includes(" البارحة ")) {
       // Yesterday — always PAST: the bot must ask for a future date instead of
       // booking something already gone.
@@ -190,29 +204,29 @@ function resolveSlot(rawText) {
       explicitPast = true;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `البارح ${dd.getUTCDate()} ${mname}` : `bera7 ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" apres demain ")) {
       // French "après demain" (norm() already folded è -> e) = day after tomorrow.
       dateUTC = todayStart + 2 * 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `بعد غدوة ${dd.getUTCDate()} ${mname}` : `ba3d ghodwa ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" demain ") || t.includes(" demin ") || t.includes(" demen ")) {
       // French "demain" = tomorrow.
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `غدوة ${dd.getUTCDate()} ${mname}` : `ghodwa ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ")) {
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `غدوة ${dd.getUTCDate()} ${mname}` : `ghodwa ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" lyoum ") || t.includes(" elyoum ") || t.includes(" اليوم ")) {
       dateUTC = todayStart;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
-      dateDisplay = ar ? `اليوم ${dd.getUTCDate()} ${mname}` : `lyoum ${dd.getUTCDate()} ${mname}`;
+      dateDisplay = fmtNum(dd);
     }
   }
 
@@ -265,7 +279,7 @@ function resolveSlot(rawText) {
     needs = dateUTC !== null ? "time" : null;
   }
 
-  const found = dateUTC !== null || hour !== null;
+  const found = dateUTC !== null || hour !== null || nextWeek;
   if (!found) return { found: false };
 
   let iso = null;
@@ -283,7 +297,7 @@ function resolveSlot(rawText) {
   if (explicitPast) past = true;
 
   return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso,
-    morning, afternoon, night, ar,
+    morning, afternoon, night, ar, nextWeek, // nextWeek: "jem3a jeya" = next week (Tunisian), no specific day
     hour: finalHour, minute, // 24h hour (null when no time parsed) — for the no-date out-of-hours reject
     dateUTC, // Tunis-midnight ms (null when no date) — for weekday/hours checks
     dow: dateUTC !== null ? new Date(dateUTC).getUTCDay() : null }; // 0 = Sunday
@@ -292,8 +306,7 @@ function resolveSlot(rawText) {
 // ---------- Formatting helpers for bot-suggested open slots ----------
 
 function fmtDate(dateUTC, ar) {
-  const d = new Date(dateUTC);
-  return `${d.getUTCDate()} ${ar ? AR_MONTH[d.getUTCMonth()] : FR_MONTH[d.getUTCMonth()]}`;
+  return fmtNum(new Date(dateUTC)); // "25-09-2026" in both scripts
 }
 
 function dayName(dow, ar) {
@@ -301,10 +314,10 @@ function dayName(dow, ar) {
 }
 
 // Build display + ISO for a concrete slot the bot suggests (e.g. after a
-// closed-day / outside-hours rejection): "ethneyn 28 septembre, 09:00".
+// closed-day / outside-hours rejection): "28-09-2026, 09:00".
 function slotDisplay(dateUTC, hour, minute, ar) {
   const dow = new Date(dateUTC).getUTCDay();
-  const datePart = `${dayName(dow, ar)} ${fmtDate(dateUTC, ar)}`;
+  const datePart = fmtNum(new Date(dateUTC));
   const hm = `${pad(hour)}:${pad(minute)}`;
   const display = ar ? `${datePart}، ${hm}` : `${datePart}, ${hm}`;
   const iso = new Date(dateUTC + hour * 3600000 + minute * 60000 - 3600000).toISOString();

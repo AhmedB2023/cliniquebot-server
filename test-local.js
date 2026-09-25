@@ -113,75 +113,78 @@ function has(name, actual, substr) {
 // expected: [display] | "needs:<dateDisplay>" | "PAST" | "NONE"
 const dateCases = [
   // [input, expected]
-  ["Ghodwa m3a khamsa mte3 l3chwa", "ghodwa 23 septembre, 17:00"], // the reported bug
-  ["ghodwa m3a 5 mte3 l3chiya", "ghodwa 23 septembre, 17:00"],
-  ["ghodwa 10 mta3 sbe7", "ghodwa 23 septembre, 10:00"],
-  ["ghodwa m3a 10", "ghodwa 23 septembre, 10:00"], // 8-12 bare = morning
-  ["ghodwa sbe7", "needs:ghodwa 23 septembre"],
-  ["ghodwa", "needs:ghodwa 23 septembre"],
-  ["ba3d ghodwa", "needs:ba3d ghodwa 24 septembre"],
-  ["ba3d ghodwa m3a 4 mte3 l3chiya", "ba3d ghodwa 24 septembre, 16:00"],
-  ["jem3a", "needs:jem3a 25 septembre"],
-  ["jem3a 10", "jem3a 25 septembre, 10:00"], // 8-12 bare = morning
-  ["jem3a 3", "jem3a 25 septembre, 15:00"], // 1-6 bare = afternoon
-  ["jem3a 6", "jem3a 25 septembre, 18:00"],
-  ["jem3a 12", "jem3a 25 septembre, 12:00"],
-  ["jem3a 7", "needs:jem3a 25 septembre"], // only bare 7 is ambiguous
-  ["jem3a el khamsa mte3 l3chiya", "jem3a 25 septembre, 17:00"],
+  ["Ghodwa m3a khamsa mte3 l3chwa", "23-09-2026, 17:00"], // the reported bug
+  ["ghodwa m3a 5 mte3 l3chiya", "23-09-2026, 17:00"],
+  ["ghodwa 10 mta3 sbe7", "23-09-2026, 10:00"],
+  ["ghodwa m3a 10", "23-09-2026, 10:00"], // 8-12 bare = morning
+  ["ghodwa sbe7", "needs:23-09-2026"],
+  ["ghodwa", "needs:23-09-2026"],
+  ["ba3d ghodwa", "needs:24-09-2026"],
+  ["ba3d ghodwa m3a 4 mte3 l3chiya", "24-09-2026, 16:00"],
+  ["jem3a", "needs:25-09-2026"],
+  ["jem3a 10", "25-09-2026, 10:00"], // 8-12 bare = morning
+  ["jem3a 3", "25-09-2026, 15:00"], // 1-6 bare = afternoon
+  ["jem3a 6", "25-09-2026, 18:00"],
+  ["jem3a 12", "25-09-2026, 12:00"],
+  ["jem3a 7", "needs:25-09-2026"], // only bare 7 is ambiguous
+  ["jem3a el khamsa mte3 l3chiya", "25-09-2026, 17:00"],
   // word-hour "larb3a" = 4 o'clock (the live case); bare "larb3a" stays Wednesday
-  ["jem3a larb3a mte3 la3vhiya", "jem3a 25 septembre, 16:00"],
-  ["khmis larb3a", "khmis 24 septembre, 16:00"], // bare 4 = afternoon (clinic hours)
-  ["jem3a 4 mte3 la3vhiya", "jem3a 25 septembre, 16:00"],
-  ["larb3a", "needs:erb3a 23 septembre"], // Wednesday, NOT 4 o'clock
-  ["larb3a m3a 10 mta3 sbe7", "erb3a 23 septembre, 10:00"],
-  ["sibt", "needs:sebt 26 septembre"], // canonical spelling
-  ["sebt m3a 11 mta3 sbe7", "sebt 26 septembre, 11:00"],
-  ["la7ad", "needs:l7ad 27 septembre"], // canonical spelling
-  ["ethnin", "needs:ethnin 28 septembre"],
-  ["thnin m3a 9 mta3 sbe7", "ethnin 28 septembre, 09:00"], // canonical spelling
-  ["ethnin el 10", "ethnin 28 septembre, 10:00"], // Monday must NOT read as "2 o'clock"
-  ["ethnin m3a zouz", "ethnin 28 septembre, 14:00"], // 1-6 bare = afternoon
-  ["khmis", "needs:khmis 24 septembre"],
-  ["erb3a", "needs:erb3a 23 septembre"],
-  ["21 septembre", "needs:21 septembre"],
-  ["25/09 m3a 3 mte3 l3chiya", "25 septembre, 15:00"],
-  ["ghodwa m3a 8 mte3 lil", "ghodwa 23 septembre, 20:00"],
-  ["ghodwa m3a tes3a mte3 lil", "ghodwa 23 septembre, 21:00"],
-  ["ghodwa m3a seb3a mte3 sbe7", "ghodwa 23 septembre, 07:00"],
-  ["ghodwa m3a 5:30 mte3 l3chiya", "ghodwa 23 septembre, 17:30"],
-  ["ghodwa m3a 17:30", "ghodwa 23 septembre, 17:30"],
-  ["ghodwa nos el nhar", "ghodwa 23 septembre, 12:00"],
-  ["ghodwa nos el lil", "ghodwa 23 septembre, 00:00"],
-  ["ghodwa m3a 12", "ghodwa 23 septembre, 12:00"],
-  ["ghodwa m3a 12 mte3 lil", "ghodwa 23 septembre, 00:00"],
-  ["ghodwa m3a zouz", "ghodwa 23 septembre, 14:00"], // 2 bare = afternoon
-  ["ghodwa khamsa", "ghodwa 23 septembre, 17:00"],   // 5 bare = afternoon
+  ["jem3a larb3a mte3 la3vhiya", "25-09-2026, 16:00"],
+  ["khmis larb3a", "24-09-2026, 16:00"], // bare 4 = afternoon (clinic hours)
+  ["jem3a 4 mte3 la3vhiya", "25-09-2026, 16:00"],
+  ["larb3a", "needs:23-09-2026"], // Wednesday, NOT 4 o'clock
+  ["larb3a m3a 10 mta3 sbe7", "23-09-2026, 10:00"],
+  ["sibt", "needs:26-09-2026"], // canonical spelling
+  ["sebt m3a 11 mta3 sbe7", "26-09-2026, 11:00"],
+  ["la7ad", "needs:27-09-2026"], // canonical spelling
+  ["ethnin", "needs:28-09-2026"],
+  ["thnin m3a 9 mta3 sbe7", "28-09-2026, 09:00"], // canonical spelling
+  ["ethnin el 10", "28-09-2026, 10:00"], // Monday must NOT read as "2 o'clock"
+  ["ethnin m3a zouz", "28-09-2026, 14:00"], // 1-6 bare = afternoon
+  ["khmis", "needs:24-09-2026"],
+  ["khemis 10", "24-09-2026, 10:00"], // "khemis" spelling variant of Thursday
+  ["khamis 10", "24-09-2026, 10:00"], // more Thursday spellings patients use
+  ["kmis 10", "24-09-2026, 10:00"],
+  ["erb3a", "needs:23-09-2026"],
+  ["21 septembre", "needs:21-09-2026"],
+  ["25/09 m3a 3 mte3 l3chiya", "25-09-2026, 15:00"],
+  ["ghodwa m3a 8 mte3 lil", "23-09-2026, 20:00"],
+  ["ghodwa m3a tes3a mte3 lil", "23-09-2026, 21:00"],
+  ["ghodwa m3a seb3a mte3 sbe7", "23-09-2026, 07:00"],
+  ["ghodwa m3a 5:30 mte3 l3chiya", "23-09-2026, 17:30"],
+  ["ghodwa m3a 17:30", "23-09-2026, 17:30"],
+  ["ghodwa nos el nhar", "23-09-2026, 12:00"],
+  ["ghodwa nos el lil", "23-09-2026, 00:00"],
+  ["ghodwa m3a 12", "23-09-2026, 12:00"],
+  ["ghodwa m3a 12 mte3 lil", "23-09-2026, 00:00"],
+  ["ghodwa m3a zouz", "23-09-2026, 14:00"], // 2 bare = afternoon
+  ["ghodwa khamsa", "23-09-2026, 17:00"],   // 5 bare = afternoon
   ["lyoum m3a el wa7da mte3 lil", "PAST"],          // 01:00 today < 19:30 now
   ["lyoum m3a 8 mta3 sbe7", "PAST"],
-  ["lyoum m3a 9 mte3 lil", "lyoum 22 septembre, 21:00"], // 21:00 > 19:30, future
+  ["lyoum m3a 9 mte3 lil", "22-09-2026, 21:00"], // 21:00 > 19:30, future
   ["sbe7", "NONE"],
   ["l3chiya", "NONE"],
   ["Khamsa l3chiya", "FOUND-NODATE"], // number words now parse it as a time
   ["10", "FOUND-NODATE"],
   // Arabic-script dates
-  ["غدوة مع الخمسة متاع العشية", "غدوة 23 سبتمبر، 17:00"],
-  ["غدوة مع خمسة متاع العشية", "غدوة 23 سبتمبر، 17:00"],
-  ["الجمعة 10", "الجمعة 25 سبتمبر، 10:00"],
-  ["الجمعة مع العشرة متاع الصباح", "الجمعة 25 سبتمبر، 10:00"],
-  ["اليوم", "needs:اليوم 22 سبتمبر"],
-  ["غدوة", "needs:غدوة 23 سبتمبر"],
-  ["بعد غدوة", "needs:بعد غدوة 24 سبتمبر"],
+  ["غدوة مع الخمسة متاع العشية", "23-09-2026، 17:00"],
+  ["غدوة مع خمسة متاع العشية", "23-09-2026، 17:00"],
+  ["الجمعة 10", "25-09-2026، 10:00"],
+  ["الجمعة مع العشرة متاع الصباح", "25-09-2026، 10:00"],
+  ["اليوم", "needs:22-09-2026"],
+  ["غدوة", "needs:23-09-2026"],
+  ["بعد غدوة", "needs:24-09-2026"],
   ["نحب نحجز", "NONE"],
-  ["غدوة مع 12 متاع الليل", "غدوة 23 سبتمبر، 00:00"],
-  ["٢٥/٠٩ مع 3 متاع العشية", "25 سبتمبر، 15:00"], // Arabic-Indic digits
+  ["غدوة مع 12 متاع الليل", "23-09-2026، 00:00"],
+  ["٢٥/٠٩ مع 3 متاع العشية", "25-09-2026، 15:00"], // Arabic-Indic digits
   ["21 سبتمبر 15:30", "PAST"], // explicit date already passed -> PAST, never next-year
-  ["غدوة نص النهار", "غدوة 23 سبتمبر، 12:00"],
+  ["غدوة نص النهار", "23-09-2026، 12:00"],
   // batch 2026-09-25: Sunday phrase, French demain, filler-tolerant hours
-  ["n7eb rendez-vous nhar lahad", "needs:l7ad 27 septembre"],
-  ["nchallah ghodwa se3tin", "ghodwa 23 septembre, 14:00"],
-  ["demain se3tin", "ghodwa 23 septembre, 14:00"],
-  ["demain", "needs:ghodwa 23 septembre"],
-  ["apres demain", "needs:ba3d ghodwa 24 septembre"],
+  ["n7eb rendez-vous nhar lahad", "needs:27-09-2026"],
+  ["nchallah ghodwa se3tin", "23-09-2026, 14:00"],
+  ["demain se3tin", "23-09-2026, 14:00"],
+  ["demain", "needs:23-09-2026"],
+  ["apres demain", "needs:24-09-2026"],
   ["n7eb rendez-vous nos el lil", "FOUND-NODATE"], // midnight, no date -> out-of-hours branch
 ];
 
@@ -206,7 +209,7 @@ for (const [input, expected] of dateCases) {
   const r = dates.resolveSlot("ghodwa sbe7");
   ok("dates: ghodwa sbe7 -> morning flag", r.found && r.morning === true && r.needs === "time");
   const r2 = dates.resolveSlot("ghodwa m3a 5");
-  ok("dates: ghodwa m3a 5 -> afternoon by default", r2.found && !r2.morning && !r2.afternoon && !r2.night && r2.display === "ghodwa 23 septembre, 17:00");
+  ok("dates: ghodwa m3a 5 -> afternoon by default", r2.found && !r2.morning && !r2.afternoon && !r2.night && r2.display === "23-09-2026, 17:00");
 }
 
 // ---------- PART B: full conversation flows (real processPatientText) ----------
@@ -215,11 +218,11 @@ async function run() {
   {
     const p = "21600000001";
     const r1 = await bot.processPatientText(p, "Ghodwa m3a khamsa mte3 l3chwa");
-    has("flow1: direct proposal 17:00", r1, "ghodwa 23 septembre, 17:00");
+    has("flow1: direct proposal 17:00", r1, "23-09-2026, 17:00");
     has("flow1: asks ey", r1, "ey");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow1: asks for name", r2, "esm wel la9ab");
-    has("flow1: name question keeps slot", r2, "ghodwa 23 septembre, 17:00");
+    has("flow1: name question keeps slot", r2, "23-09-2026, 17:00");
     const b0 = await stubDb.getLatestBooking(p);
     ok("flow1: no booking before name", !b0, JSON.stringify(b0));
     const r3 = await bot.processPatientText(p, "ahmed ben salah");
@@ -227,7 +230,7 @@ async function run() {
     has("flow1: d'accord wording", r3, "D'accord");
     has("flow1: uses first name", r3, "D'accord Ahmed");
     const b = await stubDb.getLatestBooking(p);
-    ok("flow1: pending in db", b && b.status === "pending" && b.slot === "ghodwa 23 septembre, 17:00", JSON.stringify(b));
+    ok("flow1: pending in db", b && b.status === "pending" && b.slot === "23-09-2026, 17:00", JSON.stringify(b));
     ok("flow1: name on booking", b && b.patient_name === "ahmed ben salah", JSON.stringify(b));
     const saved = await stubDb.getPatientName(p);
     ok("flow1: name remembered", saved === "ahmed ben salah", saved);
@@ -244,19 +247,19 @@ async function run() {
     const r1 = await bot.processPatientText(p, "jem3a 7");
     has("flow2: asks sbe7 walla 3chiya", r1, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
     const r2 = await bot.processPatientText(p, "l3chiya");
-    has("flow2: merged to 19:00", r2, "jem3a 25 septembre, 19:00"); // 7 + l3chiya = 19:00
+    has("flow2: merged to 19:00", r2, "25-09-2026, 19:00"); // 7 + l3chiya = 19:00
     await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r3 = await bot.processPatientText(p, "ey");
     has("flow2: booked", r3, "n2akkedlek");
     const b = await stubDb.getLatestBooking(p);
-    ok("flow2: slot in db", b && b.slot === "jem3a 25 septembre, 19:00", JSON.stringify(b));
+    ok("flow2: slot in db", b && b.slot === "25-09-2026, 19:00", JSON.stringify(b));
   }
 
   // Flow 3 — number word + morning
   {
     const p = "21600000003";
     const r1 = await bot.processPatientText(p, "ghodwa m3a 10 mta3 sbe7");
-    has("flow3: 10:00", r1, "ghodwa 23 septembre, 10:00");
+    has("flow3: 10:00", r1, "23-09-2026, 10:00");
     await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r2 = await bot.processPatientText(p, "ey");
     has("flow3: booked", r2, "n2akkedlek");
@@ -273,19 +276,19 @@ async function run() {
     ok("flow4: proposal cleared", prop === null, JSON.stringify(prop));
     // then a fresh request still works
     const r3 = await bot.processPatientText(p, "jem3a 9 mta3 sbe7");
-    has("flow4: fresh request works", r3, "jem3a 25 septembre, 09:00");
+    has("flow4: fresh request works", r3, "25-09-2026, 09:00");
   }
 
   // Flow 5 — hour-only follow-up keeps the proposed date
   {
     const p = "21600000005";
     const r1 = await bot.processPatientText(p, "jem3a");
-    has("flow5: date kept, asks time", r1, "jem3a 25 septembre");
+    has("flow5: date kept, asks time", r1, "25-09-2026");
     const r2 = await bot.processPatientText(p, "7");
     has("flow5: hour merged, asks period", r2, "el 7 hethi mta3 sbe7 walla mta3 l3chiya");
-    ok("flow5: date not lost", r2.includes("jem3a 25 septembre"), `reply was: ${JSON.stringify(r2)}`);
+    ok("flow5: date not lost", r2.includes("25-09-2026"), `reply was: ${JSON.stringify(r2)}`);
     const r3 = await bot.processPatientText(p, "sbe7");
-    has("flow5: concrete 07:00", r3, "jem3a 25 septembre, 07:00");
+    has("flow5: concrete 07:00", r3, "25-09-2026, 07:00");
     await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r4 = await bot.processPatientText(p, "ey");
     has("flow5: booked", r4, "n2akkedlek");
@@ -295,13 +298,13 @@ async function run() {
   {
     const p = "21600000006";
     const r1 = await bot.processPatientText(p, "jem3a larb3a mte3 la3vhiya");
-    has("flow5b: proposes 16:00 directly", r1, "jem3a 25 septembre, 16:00");
+    has("flow5b: proposes 16:00 directly", r1, "25-09-2026, 16:00");
     ok("flow5b: no sbe7/l3chiya question", !r1.includes("sbe7 walla"), `reply was: ${JSON.stringify(r1)}`);
     await stubDb.savePatientName(p, "Test Testi"); // known name -> no name question
     const r2 = await bot.processPatientText(p, "ey");
     has("flow5b: booked", r2, "n2akkedlek");
     const b = await stubDb.getLatestBooking(p);
-    ok("flow5b: slot in db", b && b.slot === "jem3a 25 septembre, 16:00", JSON.stringify(b));
+    ok("flow5b: slot in db", b && b.slot === "25-09-2026, 16:00", JSON.stringify(b));
   }
 
   // Flow 6 — status question reads the REAL db status + secretary validates
@@ -316,7 +319,7 @@ async function run() {
     has("flow6: confirmed status", r2, "t2akked");
     // a NEW booking request that starts with "t2akkedli" is not a status question
     const r3 = await bot.processPatientText(p, "t2akkedli ghodwa 10 mta3 sbe7");
-    has("flow6: t2akkedli+slot = booking flow", r3, "ghodwa 23 septembre, 10:00");
+    has("flow6: t2akkedli+slot = booking flow", r3, "23-09-2026, 10:00");
   }
 
   // Flow 7 — greeting + medical redirect + booking prompt (fallback mode)
@@ -336,9 +339,9 @@ async function run() {
     await bot.processPatientText(a, "ghodwa 7");
     await bot.processPatientText(b2, "jem3a 7");
     const ra = await bot.processPatientText(a, "sbe7");
-    has("flow8: patient A keeps ghodwa", ra, "ghodwa 23 septembre, 07:00");
+    has("flow8: patient A keeps ghodwa", ra, "23-09-2026, 07:00");
     const rb = await bot.processPatientText(b2, "l3chiya");
-    has("flow8: patient B keeps jem3a", rb, "jem3a 25 septembre, 19:00");
+    has("flow8: patient B keeps jem3a", rb, "25-09-2026, 19:00");
   }
 
   // Flow 9 — secretary list / reject / unknown id
@@ -390,16 +393,16 @@ async function run() {
     const r1 = await bot.processPatientText(p, "نحب نحجز");
     has("flow11: ar booking invite", r1, "باش نحجزلك");
     const r2 = await bot.processPatientText(p, "غدوة مع الخمسة متاع العشية");
-    has("flow11: ar proposal", r2, "داكور — غدوة 23 سبتمبر، 17:00");
+    has("flow11: ar proposal", r2, "داكور — 23-09-2026، 17:00");
     has("flow11: ar proposal says ey", r2, "اي");
     const r3 = await bot.processPatientText(p, "اي");
     has("flow11: ar asks name", r3, "الاسم واللقب");
     const r3b = await bot.processPatientText(p, "أحمد بن صالح");
-    has("flow11: ar booked", r3b, "نأكدلك رونديفو (غدوة 23 سبتمبر، 17:00)");
+    has("flow11: ar booked", r3b, "نأكدلك رونديفو (23-09-2026، 17:00)");
     has("flow11: ar d'accord wording", r3b, "داكور");
     has("flow11: ar merhba bik", r3b, "مرحبا بيك");
     const b = await stubDb.getLatestBooking(p);
-    ok("flow11: ar slot in db", b && b.slot === "غدوة 23 سبتمبر، 17:00", JSON.stringify(b));
+    ok("flow11: ar slot in db", b && b.slot === "23-09-2026، 17:00", JSON.stringify(b));
     const r4 = await bot.processPatientText(p, "تأكد الحجز؟");
     has("flow11: ar status pending", r4, "مازال يستنى");
   }
@@ -413,7 +416,7 @@ async function run() {
     has("flow12: rephrased, not repeated", r2, "باش نتأكد");
     ok("flow12: not verbatim repeat", r2 !== r1, r2);
     const r3 = await bot.processPatientText(p, "متاع الصباح");
-    has("flow12: ar proposal 07:00", r3, "غدوة 23 سبتمبر، 07:00");
+    has("flow12: ar proposal 07:00", r3, "23-09-2026، 07:00");
   }
 
   // Flow 13 — Arabic refusal + Arabic fallback greeting
@@ -493,9 +496,9 @@ async function run() {
     has("flow17: proposes 07:00", r3, "07:00");
     // 10 bare now resolves straight to morning — no question at all
     const r4 = await bot.processPatientText("21600000023", "jem3a 10");
-    has("flow17: bare 10 = morning", r4, "jem3a 25 septembre, 10:00");
+    has("flow17: bare 10 = morning", r4, "25-09-2026, 10:00");
     const r5 = await bot.processPatientText("21600000024", "jem3a 3");
-    has("flow17: bare 3 = afternoon", r5, "jem3a 25 septembre, 15:00");
+    has("flow17: bare 3 = afternoon", r5, "25-09-2026, 15:00");
     // Arabic version
     const pa = "21600000022";
     const a1 = await bot.processPatientText(pa, "نهار الجمعة");
@@ -508,10 +511,10 @@ async function run() {
   {
     const p = "21600000030";
     const r1 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
-    has("flow18: proposal", r1, "ghodwa 23 septembre, 10:00");
+    has("flow18: proposal", r1, "23-09-2026, 10:00");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow18: asks name", r2, "esm wel la9ab");
-    has("flow18: name question keeps slot", r2, "ghodwa 23 septembre, 10:00");
+    has("flow18: name question keeps slot", r2, "23-09-2026, 10:00");
     const b0 = await stubDb.getLatestBooking(p);
     ok("flow18: no booking before name", !b0, JSON.stringify(b0));
     const r3 = await bot.processPatientText(p, "ahmed ben salah");
@@ -547,7 +550,7 @@ async function run() {
 
     const pa = "21600000033";
     const a1 = await bot.processPatientText(pa, "غدوة 10 متاع الصباح");
-    has("flow20: ar proposal", a1, "غدوة");
+    has("flow20: ar proposal", a1, "23-09-2026");
     const a2 = await bot.processPatientText(pa, "اي");
     has("flow20: ar asks name", a2, "الاسم واللقب");
     const a3 = await bot.processPatientText(pa, "أحمد بن صالح");
@@ -571,7 +574,7 @@ async function run() {
   {
     const p = "21600000030"; // booked in flow 18, name known
     const r1 = await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
-    has("flow22: proposal", r1, "jem3a 25 septembre, 10:00");
+    has("flow22: proposal", r1, "25-09-2026, 10:00");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow22: booked directly", r2, "D'accord Ahmed");
     ok("flow22: no name question", !r2.includes("esm wel la9ab"), r2);
@@ -598,7 +601,7 @@ async function run() {
     has("flow24: delete confirms", del, "Tfass5et");
     ok("flow24: name forgotten", (await stubDb.getPatientName(p)) === null, "");
     const r1 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
-    has("flow24: proposal again", r1, "ghodwa 23 septembre, 10:00");
+    has("flow24: proposal again", r1, "23-09-2026, 10:00");
     const r2 = await bot.processPatientText(p, "ey");
     has("flow24: asks name again", r2, "esm wel la9ab");
   }
@@ -701,7 +704,7 @@ async function run() {
     // D7: non-exact "n7eb njareb" does NOT trigger vendor mode (booking flow intact)
     const p7 = "vendor7";
     const d8 = await bot.processPatientText(p7, "n7eb njareb ghodwa m3a 10");
-    ok("vendor: 'n7eb njareb ghodwa m3a 10' stays in booking flow", /ghodwa 23 septembre, 10:00/.test(d8), `reply was: ${JSON.stringify(d8)}`);
+    ok("vendor: 'n7eb njareb ghodwa m3a 10' stays in booking flow", /23-09-2026, 10:00/.test(d8), `reply was: ${JSON.stringify(d8)}`);
 
     // D8: normal patient booking still works on the same server (no interference)
     const p8 = "vendor8";
@@ -807,14 +810,14 @@ async function run() {
     const p = "21600000122";
     await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
     const r = await bot.processPatientText(p, "le, 11 mta3 sbe7");
-    has("f2: corrected hour wins", r, "ghodwa 23 septembre, 11:00");
+    has("f2: corrected hour wins", r, "23-09-2026, 11:00");
     ok("f2: old hour gone", !r.includes("10:00"), `reply was: ${JSON.stringify(r)}`);
     // date correction: "ghodwa" -> "le le, après ghodwa"
     const p2 = "21600000123";
     await bot.processPatientText(p2, "ghodwa");
     const r2 = await bot.processPatientText(p2, "le le, après ghodwa");
-    has("f2: corrected day wins", r2, "ba3d ghodwa 24 septembre");
-    ok("f2: old day gone", !r2.includes("ghodwa 23 septembre"), `reply was: ${JSON.stringify(r2)}`);
+    has("f2: corrected day wins", r2, "24-09-2026");
+    ok("f2: old day gone", !r2.includes("23-09-2026"), `reply was: ${JSON.stringify(r2)}`);
   }
 
   // F3 — past / explicit dates: "el bera7" is past, "10 septembre" is a date not 10:00
@@ -846,7 +849,7 @@ async function run() {
     const rname = await bot.processPatientText(p, "ahmed ben salah");
     has("f4: first booked, second prompted", rname, "ethani");
     const b1 = await stubDb.getLatestBooking(p);
-    ok("f4: first slot in db", b1 && b1.slot === "ghodwa 23 septembre, 10:00", JSON.stringify(b1));
+    ok("f4: first slot in db", b1 && b1.slot === "23-09-2026, 10:00", JSON.stringify(b1));
     await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
     const r2 = await bot.processPatientText(p, "ey"); // name known now
     has("f4: second booked", r2, "n2akkedlek");
@@ -860,7 +863,7 @@ async function run() {
     const p = "21600000126";
     await bot.processPatientText(p, "ghodwa 10 mta3 sbe7"); // concrete proposal 10:00
     const r = await bot.processPatientText(p, "n7eb jem3a");
-    has("f5: new day asked", r, "jem3a 25 septembre");
+    has("f5: new day asked", r, "25-09-2026");
     ok("f5: stale 10:00 not inherited", !r.includes("10:00"), `reply was: ${JSON.stringify(r)}`);
     const prop = await stubDb.getProposal(p);
     ok("f5: proposal has no stale time", prop && !/10/.test(prop.slot_text || ""), JSON.stringify(prop));
@@ -880,7 +883,7 @@ async function run() {
     ok("f7: detector", bot.looksLikeCancellation("n7eb nfassakh el rendez-vous") === true);
     ok("f7: reschedule is not cancel", bot.looksLikeCancellation("n7eb nbadal el wa9t") === false);
     const p = "21600000128";
-    const id = await stubDb.saveBooking(p, "ghodwa 23 septembre, 10:00", "2026-09-23T09:00:00.000Z", "Test Testi");
+    const id = await stubDb.saveBooking(p, "23-09-2026, 10:00", "2026-09-23T09:00:00.000Z", "Test Testi");
     const r = await bot.processPatientText(p, "n7eb nfassakh el rendez-vous mte3i");
     has("f7: cancelled", r, "fassakht");
     const b = await stubDb.getBooking(id);
@@ -929,16 +932,16 @@ async function run() {
     ok("f10: 10:00 wednesday ok", bot.hoursCheck(dates.resolveSlot("ghodwa 10:00")) === null);
     const p = "21600000132";
     const r = await bot.processPatientText(p, "lyoum 23:00");
-    has("f10: rejection + suggestion", r, "erb3a 23 septembre, 09:00");
+    has("f10: rejection + suggestion", r, "23-09-2026, 09:00");
     ok("f10: 23:00 never proposed", !/23:00/.test(r.split("Najem n9tar7lek")[0] || ""), `reply was: ${JSON.stringify(r)}`);
     const prop = await stubDb.getProposal(p);
-    ok("f10: proposal is the open slot", prop && prop.display === "erb3a 23 septembre, 09:00", JSON.stringify(prop));
+    ok("f10: proposal is the open slot", prop && prop.display === "23-09-2026, 09:00", JSON.stringify(prop));
     // Sunday: must not inherit a stale time, redirects to Monday
     const p2 = "21600000133";
     await bot.processPatientText(p2, "ghodwa 10 mta3 sbe7"); // stale 10:00 proposal
     const r2 = await bot.processPatientText(p2, "n7eb nhar el 7ad");
     has("f10: sunday closed", r2, "msakra");
-    has("f10: redirected to monday", r2, "ethnin 28 septembre");
+    has("f10: redirected to monday", r2, "28-09-2026");
     ok("f10: no stale 10:00", !/10:00/.test(r2), `reply was: ${JSON.stringify(r2)}`);
   }
 
@@ -952,16 +955,16 @@ async function run() {
     const r2 = await bot.processPatientText(p, "n7eb nji tawa");
     ok("f11: no loop, same answer", r1 === r2, `r1=${JSON.stringify(r1)} r2=${JSON.stringify(r2)}`);
     const r3 = await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
-    has("f11: booking still works", r3, "ghodwa 23 septembre, 10:00");
+    has("f11: booking still works", r3, "23-09-2026, 10:00");
   }
 
   // F12 — religious filler keeps tomorrow
   {
     const rr = dates.resolveSlot("ghodwa inchallah ken 7ab rabbi");
-    ok("f12: parser keeps ghodwa", rr.found && rr.date && rr.needs === "time" && rr.dateDisplay === "ghodwa 23 septembre",
+    ok("f12: parser keeps ghodwa", rr.found && rr.date && rr.needs === "time" && rr.dateDisplay === "23-09-2026",
       `got ${JSON.stringify(rr.dateDisplay)} needs=${rr.needs}`);
     const r = await bot.processPatientText("21600000135", "ghodwa inchallah ken 7ab rabbi");
-    has("f12: tomorrow preserved", r, "ghodwa 23 septembre");
+    has("f12: tomorrow preserved", r, "23-09-2026");
     has("f12: asks time", r, "9olli el wa9t");
   }
 
@@ -982,15 +985,15 @@ async function run() {
     await bot.processPatientText(p, "ghodwa 10 mta3 sbe7");
     await bot.processPatientText(p, "ey"); // booked: ghodwa 10:00
     const before = await stubDb.getLatestBooking(p);
-    ok("fR: booking exists", before && before.slot === "ghodwa 23 septembre, 10:00", JSON.stringify(before));
+    ok("fR: booking exists", before && before.slot === "23-09-2026, 10:00", JSON.stringify(before));
     const r1 = await bot.processPatientText(p, "n7eb nbadal el rendez-vous");
     has("fR: reschedule acknowledged", r1, "nbadlou");
     await bot.processPatientText(p, "jem3a 10 mta3 sbe7");
     const r2 = await bot.processPatientText(p, "ey");
-    has("fR: moved", r2, "Tbadal el rendez-vous: jem3a 25 septembre, 10:00");
+    has("fR: moved", r2, "Tbadal el rendez-vous: 25-09-2026, 10:00");
     const all = (await stubDb.getPendingBookings()).filter((x) => x.phone === p);
     ok("fR: no duplicate row", all.length === 1, `n=${all.length}`);
-    ok("fR: slot updated", all[0].slot === "jem3a 25 septembre, 10:00", JSON.stringify(all[0]));
+    ok("fR: slot updated", all[0].slot === "25-09-2026, 10:00", JSON.stringify(all[0]));
   }
 
   // Patient-side "ok 5" never validates
@@ -1015,7 +1018,7 @@ async function run() {
     ok("f1: invented price detected", bot.aiClaimsBooking("el consultation 50 dt") === true);
     ok("f1: invented secretary msg detected", bot.aiClaimsBooking("el secretaire bech teklmek") === true);
     ok("f1: arabic phantom detected", bot.aiClaimsBooking("حجزتلك رونديفو غدوة") === true);
-    ok("f1: legit proposal text passes", bot.aiClaimsBooking("D'accord — ghodwa 23 septembre, 14:00. T7eb n7ajzlek? Ekteb \"ey\".") === false);
+    ok("f1: legit proposal text passes", bot.aiClaimsBooking("D'accord — 23-09-2026, 14:00. T7eb n7ajzlek? Ekteb \"ey\".") === false);
     ok("f1: safe fallback passes", bot.aiClaimsBooking(bot.AI_SAFE_FALLBACK.latin) === false);
     ok("f1: guard replaces phantom", bot.guardAiOutput("N7ajzlek rendez-vous ghodwa", false, "SAFE") === "SAFE");
     ok("f1: guard passes clean text", bot.guardAiOutput("Ahlan, kifech n3awnek?", false, "SAFE") === "Ahlan, kifech n3awnek?");
@@ -1053,7 +1056,7 @@ async function run() {
   // F4 — slot echo: "demain se3tin" is understood and repeated back
   {
     const r = await bot.processPatientText("21600000203", "demain se3tin");
-    has("f4: repeats the slot", r, "ghodwa 23 septembre, 14:00");
+    has("f4: repeats the slot", r, "23-09-2026, 14:00");
     has("f4: asks ey", r, "ey");
   }
 
@@ -1095,13 +1098,13 @@ async function run() {
     ok("f6: lahad detected as Sunday", r.found && r.date && r.dow === 0 && r.needs === "time", JSON.stringify({ dow: r.dow, display: r.dateDisplay }));
     const r2 = await bot.processPatientText("21600000210", "n7eb rendez-vous nhar lahad");
     has("f6: Sunday-closed redirect", r2, "msakra");
-    ok("f6: no Sunday booking offered", !/l7ad 27 septembre/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+    ok("f6: no Sunday booking offered", !/27-09-2026/.test(r2), `reply was: ${JSON.stringify(r2)}`);
   }
 
   // F7 — filler-tolerant hour: "nchallah ghodwa se3tin" -> 14:00
   {
     const r = await bot.processPatientText("21600000211", "nchallah ghodwa se3tin");
-    has("f7: se3tin understood as 14:00", r, "ghodwa 23 septembre, 14:00");
+    has("f7: se3tin understood as 14:00", r, "23-09-2026, 14:00");
   }
 
   // F8 — explicit script request ("aktebli bel 3arbi") is remembered and honored
@@ -1124,6 +1127,60 @@ async function run() {
     has("f9: rejected as out-of-hours", r, "5arej wa9t el 5edma");
     ok("f9: no day asked", !/anhou nhar/.test(r), `reply was: ${JSON.stringify(r)}`);
     ok("f9: suggests open future slot", /09:00/.test(r), `reply was: ${JSON.stringify(r)}`);
+    // Mocked now = Tue 22 Sept 19:30 Tunis: today's 09:00 already passed, so
+    // the suggestion must be Wed 23 Sept 09:00 — never a past 09:00.
+    ok("f9: suggestion is future-dated", /23-09-2026/.test(r) && !/22-09-2026/.test(r),
+      `reply was: ${JSON.stringify(r)}`);
+  }
+
+  // F9b — when today's 09:00 is still ahead, suggest today (not tomorrow)
+  {
+    dates.setNow(new Date("2026-09-22T06:30:00Z").getTime()); // Tue 07:30 Tunis
+    const r = await bot.processPatientText("21600000214", "n7eb rendez-vous nos el lil");
+    ok("f9b: suggests today 09:00 while still future", /22-09-2026, 09:00/.test(r),
+      `reply was: ${JSON.stringify(r)}`);
+    dates.setNow(new Date("2026-09-22T18:30:00Z").getTime()); // restore suite clock
+  }
+
+  // G1 — numeric date format: "jem3a 21" -> "25-09-2026" in both scripts, no
+  // Latin/French month or weekday words leaking anywhere (Arabic reply uses
+  // the Arabic comma separator).
+  {
+    const arD = dates.resolveSlot("jem3a 21", true).display;
+    ok("g1: preferAr -> numeric Arabic display", arD === "25-09-2026، 21:00",
+      `display was: ${JSON.stringify(arD)}`);
+    const latD = dates.resolveSlot("jem3a 21", false).display;
+    ok("g1: no pref -> numeric Latin display", latD === "25-09-2026, 21:00",
+      `display was: ${JSON.stringify(latD)}`);
+    const p = "21600000215";
+    await bot.processPatientText(p, "aktebli bel 3arbi");
+    const r = await bot.processPatientText(p, "n7eb rendez-vous jem3a 10");
+    ok("g1: booking proposal date numeric, no Latin leak",
+      /25-09-2026/.test(r) && !/septembre|jem3a/i.test(r),
+      `reply was: ${JSON.stringify(r)}`);
+  }
+
+  // G2 — "jem3a jeya" = NEXT WEEK (Tunisian usage), not Friday: the bot must
+  // ask which day AND time, never book Friday.
+  {
+    const u1 = dates.resolveSlot("n7eb rendez-vous jem3a jeya");
+    ok("g2: unit flags nextWeek, no date", u1.found === true && u1.nextWeek === true && u1.date === false,
+      JSON.stringify({ found: u1.found, nextWeek: u1.nextWeek, date: u1.date }));
+    const u2 = dates.resolveSlot("n7eb rendez-vous el jem3a ejjeya");
+    ok("g2: 'el jem3a ejjeya' variant", u2.nextWeek === true && u2.date === false);
+    const u3 = dates.resolveSlot("n7eb rendez-vous jem3a");
+    ok("g2: bare 'jem3a' still means Friday", u3.nextWeek !== true && u3.date === true,
+      JSON.stringify({ nextWeek: u3.nextWeek, dateDisplay: u3.dateDisplay }));
+    const r = await bot.processPatientText("21600000216", "n7eb rendez-vous jem3a jeya");
+    ok("g2: asks day AND time", /anhou nhar w anhou wa9t/.test(r),
+      `reply was: ${JSON.stringify(r)}`);
+    ok("g2: no Friday booked", !/25-09-2026/.test(r),
+      `reply was: ${JSON.stringify(r)}`);
+    const p2 = "21600000217";
+    await bot.processPatientText(p2, "aktebli bel 3arbi");
+    const r2 = await bot.processPatientText(p2, "n7eb rendez-vous jem3a jeya");
+    ok("g2: Arabic reply asks day+time", /أنهو نهار وأنهو وقت/.test(r2),
+      `reply was: ${JSON.stringify(r2)}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
