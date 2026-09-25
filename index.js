@@ -26,6 +26,11 @@ const AI_BASE_URL = (process.env.AI_BASE_URL || "https://api.openai.com/v1").rep
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const SECRETARY_NUMBER = (process.env.SECRETARY_NUMBER || "").replace(/\D/g, "");
 const SALES_NOTIFY_NUMBER = (process.env.SALES_NOTIFY_NUMBER || "").replace(/\D/g, "");
+// Per-number clinic identity (single-number fallback when no per-number config exists).
+const CLINIC_NAME = process.env.CLINIC_NAME || "";
+const CLINIC_ADDRESS = process.env.CLINIC_ADDRESS || "";
+const CLINIC_GREETING = process.env.CLINIC_GREETING || "";
+const CLINIC_HOURS_TXT_ENV = process.env.CLINIC_HOURS_TXT || "";
 const PORT = process.env.PORT || 3000;
 
 const db = require("./db"); // Postgres memory + bookings
@@ -52,8 +57,8 @@ const AR2LAT = {
 };
 const AR_DIACRITICS = /[ً-ٰٖ]/g; // U+064B-U+0652, U+0670: strip, don't transliterate
 
-function enforceScript(text, patientText) {
-  if (!text || isAr(patientText)) return text;
+function enforceScript(text, patientText, forceAr) {
+  if (!text || forceAr || isAr(patientText)) return text;
   if (!/[\u0600-\u06FF]/.test(text)) return text;
   return text.replace(AR_DIACRITICS, "").replace(/[\u0600-\u06FF]/g, (ch) => AR2LAT[ch] || "");
 }
@@ -86,13 +91,17 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
 // ---------- Meta: send a WhatsApp text message ----------
-async function sendWhatsApp(to, text) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+// numberId: which bot number (phone_number_id) sends — defaults to the global
+// PHONE_NUMBER_ID for single-number deployments.
+const DEFAULT_NUMBER_ID = PHONE_NUMBER_ID;
+async function sendWhatsApp(to, text, numberId) {
+  const nid = numberId || DEFAULT_NUMBER_ID;
+  if (!WHATSAPP_TOKEN || !nid) {
     console.log(`[send:SKIP] no token/phone_number_id. Would send to ${to}: ${text}`);
     return;
   }
   try {
-    const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${nid}/messages`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -114,12 +123,15 @@ async function sendWhatsApp(to, text) {
   }
 }
 
-async function notifySecretary(text) {
-  if (!SECRETARY_NUMBER) {
-    console.log("[secretary:SKIP] no SECRETARY_NUMBER set");
+// Notify the secretary of THIS bot number's clinic (per-number config),
+// falling back to the global SECRETARY_NUMBER.
+async function notifySecretary(text, clinic) {
+  const num = (clinic && clinic.secretary) || SECRETARY_NUMBER;
+  if (!num) {
+    console.log("[secretary:SKIP] no secretary number set");
     return;
   }
-  await sendWhatsApp(SECRETARY_NUMBER, text);
+  await sendWhatsApp(num, text, clinic && clinic.id);
 }
 
 // Sales lead from the demo video ("جرّب"): ping the partner so she calls back.
@@ -131,43 +143,152 @@ async function notifySales(text) {
   await sendWhatsApp(SALES_NOTIFY_NUMBER, text);
 }
 
+// ---------------------------------------------------------------------------
+// Per-number clinic configuration
+// Every bot number (phone_number_id) carries its own clinic name, address,
+// greeting, working hours, and secretary number. Single-number deployments
+// fall back to the global env values (old behavior unchanged).
+// ---------------------------------------------------------------------------
+async function getClinic(numberId) {
+  const id = numberId || DEFAULT_NUMBER_ID;
+  const cfg = await db.getClinicConfig(id);
+  return {
+    id,
+    name: (cfg && cfg.clinic_name) || CLINIC_NAME || "",
+    address: (cfg && cfg.address) || CLINIC_ADDRESS || "",
+    greeting: (cfg && cfg.greeting) || CLINIC_GREETING || "",
+    hours: (cfg && cfg.hours) || CLINIC_HOURS_TXT_ENV || "",
+    secretary: (cfg && cfg.secretary_number ? cfg.secretary_number.replace(/\D/g, "") : "") || SECRETARY_NUMBER,
+  };
+}
+
+// Explicit script request: "aktebli bel 3arbi" / "write in Arabic script".
+function looksLikeScriptRequest(text) {
+  const t = (text || "").toLowerCase();
+  return /(ekteb|ektbli|akteb|aktebli|ktobli).{0,20}(3arbi|arabe|arab)/.test(t) ||
+    /(\bbel\b|\bbil\b)( |-)3arbi/.test(t) && /ekteb|akteb|ktob/.test(t) ||
+    /\bwrite in arabic\b/.test(t);
+}
+
+// Explicit Latin-script request: "aktebli b 7rouf" / "bel latin".
+function looksLikeLatinRequest(text) {
+  const t = (text || "").toLowerCase();
+  return /(ekteb|ektbli|akteb|aktebli|ktobli).{0,20}(latin|7rouf|fran[cç]ais|francawi)/.test(t) ||
+    /\bb\s*7rouf\b/.test(t) && /ekteb|akteb|ktob/.test(t);
+}
+
+// Does the patient want Arabic script? Order: explicit request > saved
+// preference > Arabic characters in the incoming message.
+async function scriptAr(phone, text) {
+  if (looksLikeScriptRequest(text)) return true;
+  if (looksLikeLatinRequest(text)) return false;
+  const pref = await db.getScriptPref(phone);
+  if (pref) return pref === "ar";
+  return isAr(text);
+}
+
+// ---------------------------------------------------------------------------
+// AI output guard: the AI must NEVER invent a booking claim, a date, a time,
+// a secretary reply, or a price. Only the deterministic booking flow may speak
+// those words. Any AI sentence that does is replaced with a safe handoff.
+// ---------------------------------------------------------------------------
+const PHANTOM_CLAIM_PATTERNS = [
+  // invented booking claims
+  /n[7h]?ajz(lek|tl?ek|lk)?\s+rendez-?vous/i,   // "n7ajzlek rendez-vous", "n7ajezlek"
+  /rendez-?vous.*(m7ajouz|me7jouz|m7jouz|mokk[ae]d|mokked)/i, // "rendez-vous m7ajouz"
+  /t7ej(e)?z(lek)?\s+rendez-?vous/i,
+  // invented dates/times or doctor availability claims
+  /rendez-?vous\s+(ghodwa|lyoum|ba3d ghodwa|nhar|el\s+\w+day|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)/i,
+  /\b(la3chiya|el\s*sbe7|el\s*39chiya|el\s*sbe7)\b.*rendez-?vous/i,
+  /docteur.*(disponible|me7lol|available)/i,
+  /\b(tnjem|tnejm)\s+tji\s+(ghodwa|lyoum)\b/i, // "tnjem tji ghodwa" = invented slot
+  // invented prices
+  /\b\d+\s*(dt|dinar|tnd)\b/i,
+  // invented secretary messages
+  /el\s*secretaire\s+(9alet|9all?et|bech|ye)/i,
+  // Arabic-script invented claims
+  /حجزت\s*ل[كي]/,                    // "حجزتلك رونديفو"
+  /رونديفو.{0,15}(محجوز|مؤكد|مأكد|تم الحجز)/, // "الرونديفو محجوز"
+  /تنجم\s+تجي\s+(غدوة|اليوم|غدوا)/,  // invented slot in Arabic
+];
+
+function aiClaimsBooking(text) {
+  const t = text || "";
+  return PHANTOM_CLAIM_PATTERNS.some((re) => re.test(t));
+}
+
+const AI_SAFE_FALLBACK = {
+  latin: "Tfadhel, chnowa t7eb bedhabt? N7eb nse3dek n7ejzlek rendez-vous walla njawbek 3la sou2el.",
+  arabic: "تفضل، شنوة تحب بالضبط؟ نحب نساعدك نحجزلك موعد ولا نجاوبك على سؤال.",
+};
+
+// Deterministic guard over every AI reply: if the AI invented a booking,
+// date, time, or price, cut it — the deterministic flow owns those words.
+function guardAiOutput(aiText, aiFailed, fallbackText) {
+  if (aiFailed || !aiText) return fallbackText;
+  if (aiClaimsBooking(aiText)) return fallbackText;
+  return aiText;
+}
+
 // ---------- AI: Derja reply (with conversation history) ----------
-async function aiReply(patientText, history = [], patientName = null) {
+async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null) {
+  // Resolved script: explicit patient request > saved preference > message script.
+  const ar = useAr !== null ? useAr : isAr(patientText);
+
   // Fallback: keyword replies so the webhook loop works even without an AI key
-  if (!AI_API_KEY) return fallbackReply(patientText);
+  if (!AI_API_KEY) return fallbackReply(patientText, ar);
 
   const sys = SYSTEM_PROMPT + (patientName
     ? `\n- esm el patient: ${patientName} — esta3mel el esm ki ykoun naturel (kima "Ahlan Ahmed!"), ama el script yab9a 7asb el 9a3da (ma t5alletch).`
+    : "") + (clinicName
+    ? `\n- esm el 3iyada: "${clinicName}" — ki yse2lou 3la esm el 3iyada, jaweb bel esm hedha bedhabt, ma t5alla9ch esm e5er.`
+    : "") + (ar && !isAr(patientText)
+    ? `\n- el patient tlab sara7atan bech tektbelou bel 3arbi (Arabic script) — ektbelou bel 3arbi, ma t7awelch lel 7rouf el latiniya.`
     : "");
 
-  const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${AI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      messages: [
-        { role: "system", content: sys },
-        ...history.map((m) => ({ role: m.role, content: m.text })),
-        { role: "user", content: patientText },
-      ],
-      max_tokens: 200,
-      temperature: 0.5,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    console.error("[ai:ERROR]", JSON.stringify(data).slice(0, 300));
-    return "sme7na, saret mochkla s8ira — najem n3awnek b 7aja o5ra?";
+  let data = null;
+  let ok = false;
+  try {
+    const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: "system", content: sys },
+          ...history.map((m) => ({ role: m.role, content: m.text })),
+          { role: "user", content: patientText },
+        ],
+        max_tokens: 200,
+        temperature: 0.5,
+      }),
+    });
+    data = await res.json();
+    ok = res.ok;
+  } catch (e) {
+    console.error("[ai:ERROR]", e.message);
+    ok = false;
   }
-  const out = data.choices?.[0]?.message?.content?.trim() || "ma fhemtch, tnajem t3awed b tari9a o5ra?";
-  return enforceScript(out, patientText);
+  if (!ok) {
+    console.error("[ai:ERROR]", JSON.stringify(data).slice(0, 300));
+    return ar
+      ? "سمحنا، صارت مشكلة صغيرة — نجم نعاونك بحاجة أخرى؟"
+      : "sme7na, saret mochkla s8ira — najem n3awnek b 7aja o5ra?";
+  }
+  const out = data.choices?.[0]?.message?.content?.trim() || "";
+  // Deterministic guard: the AI must never invent a booking, date, time, or price.
+  return guardAiOutput(
+    enforceScript(out, patientText, ar),
+    false,
+    ar ? AI_SAFE_FALLBACK.arabic : AI_SAFE_FALLBACK.latin
+  );
 }
 
-function fallbackReply(text) {
-  if (isAr(text)) {
+function fallbackReply(text, forceAr) {
+  if (forceAr !== undefined ? forceAr : isAr(text)) {
     if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text))
       return "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)";
     if (/(حجز|رونديفو|موعد)/.test(text))
@@ -279,25 +400,39 @@ function faqKind(text) {
   if (looksLikeStatusQuestion(text)) return null; // "win wsol el 7ajz" stays a status question
   const t = " " + (text || "").toLowerCase() + " ";
   if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
+  if (/(chnowa esm|chneya esm|chno esm|esm el 3iyada|what('| i)s the (clinic|practice)( name)?|اسم العيادة|شنوة اسم)/.test(t)) return "clinic_name";
+  if (/(te5dem m3a chkoun|te5dem m3a|m3a chkoun te5dem|taba3 chkoun|with (whom|who)|مع شكون|تخدم مع)/.test(t)) return "works_with";
   if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|horaires|وقت الخدمة|وقتاش تحل)/.test(t)) return "hours";
   if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
   if (/(win el|win jeya|blasa|3onwen|adresse|وين|بلاصة|عنوان|فين)/.test(t)) return "place";
   return null;
 }
 
-function faqAnswer(kind, ar) {
+function faqAnswer(kind, ar, clinic) {
+  clinic = clinic || {};
+  const cname = clinic.name || "";
+  if (kind === "clinic_name") return ar
+    ? (cname ? `اسم العيادة: ${cname}.` : "أنا المساعد متاع العيادة — نأكدلك على الاسم مع العيادة.")
+    : (cname ? `Esm el 3iyada: ${cname}.` : "Ena el assistant mta3 el 3iyada — n2akkedlek 3al esm m3a el 3iyada.");
+  if (kind === "works_with") return ar
+    ? (cname ? `نخدم مع ${cname}.` : "نخدم مع العيادة هذي.")
+    : (cname ? `Ne5dem m3a ${cname}.` : "Ne5dem m3a el 3iyada hethi.");
   if (kind === "who") return ar
-    ? "أنا المساعد متاع العيادة — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب."
-    : "Ena el assistant mta3 el 3iyada — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.";
+    ? (cname ? `أنا المساعد متاع ${cname} — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.`
+      : "أنا المساعد متاع العيادة — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.")
+    : (cname ? `Ena el assistant mta3 ${cname} — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.`
+      : "Ena el assistant mta3 el 3iyada — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.");
   if (kind === "hours") return ar
-    ? `نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}. نهار الأحد مسكرين.`
-    : `Ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}. Nhar el 7ad msakrin.`;
+    ? (clinic.hours ? `وقت الخدمة: ${clinic.hours}.` : `نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}. نهار الأحد مسكرين.`)
+    : (clinic.hours ? `Wa9t el 5edma: ${clinic.hours}.` : `Ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}. Nhar el 7ad msakrin.`);
   if (kind === "price") return ar
     ? "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. تحب نحجزلك رونديفو؟"
     : "El aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. T7eb n7ajzlek rendez-vous?";
   return ar // place — the clinic verifies the address
-    ? "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟"
-    : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?";
+    ? (clinic.address ? `العنوان: ${clinic.address} — تحب نحجزلك رونديفو في نفس الوقت؟`
+      : "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟")
+    : (clinic.address ? `El 3onwen: ${clinic.address} — t7eb n7ajzlek rendez-vous fi nafs el wa9t?`
+      : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?");
 }
 
 // F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
@@ -308,6 +443,31 @@ function looksLikeWalkin(text) {
 
 // F4 — Two appointments ("zouz rendez-vous, wa7ed liya w wa7ed l omi").
 // Acknowledged, then processed one at a time — first one first.
+
+// Explicit beneficiaries in a two-booking request ("wa7ed liya w wa7ed l omi").
+// Never invent a beneficiary: without an explicit one, the bot must ask
+// "el ouwel lchkoun?" instead of guessing ("wa7ed l ommek").
+const BEN_AR = { lik: "ليك", ommek: "لأمك", o5tek: "لأختك", marti: "لمرتي", rajli: "لراجلي", weldi: "لولدي", benti: "لبنتي", baba: "لبابا", "5ouya": "لخويا", sa7bi: "لصاحبي", sa7ebti: "لصاحبتي" };
+function detectExplicitBeneficiaries(text) {
+  const t = " " + (text || "").toLowerCase().replace(/[.,!?;]/g, " ") + " ";
+  const nouns = {
+    liya: "lik", lia: "lik", lik: "lik",
+    ommi: "ommek", omi: "ommek", ommek: "ommek",
+    o5ti: "o5tek", o5t: "o5tek", o5tek: "o5tek",
+    marti: "marti", rajli: "rajli", weldi: "weldi", benti: "benti",
+    baba: "baba", bouya: "baba", "5ouya": "5ouya",
+    sa7bi: "sa7bi", sa7ebti: "sa7ebti",
+  };
+  const found = [];
+  const re = /\bwa7e?d\s+(?:li([a-z0-9]+)|l\s+([a-z0-9]+))/g;
+  let m;
+  while ((m = re.exec(t))) {
+    const w = m[1] ? "li" + m[1] : m[2];
+    const canon = nouns[w];
+    if (canon && !found.includes(canon)) found.push(canon);
+  }
+  return found;
+}
 function looksLikeTwoAppointments(text) {
   const t = " " + (text || "").toLowerCase() + " ";
   return /zouz/.test(t) && /(rendez|rdv|7ajz|hajz)/.test(t);
@@ -364,10 +524,10 @@ function stripTimeTokens(s) {
 
 function stripDateTokens(s) {
   let out = " " + (s || "").toLowerCase() + " ";
-  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "la7ad", "l7ad", "el 7ad", "dimanche",
+  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "la7ad", "l7ad", "lahad", "el 7ad", "dimanche",
     "ethnin", "thnin", "tnin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
     "erb3a", "larb3a", "mercredi", "khmis", "5mis", "jeudi", "jem3a", "jom3a", "vendredi",
-    "sebt", "sibt", "samedi", "ghodwa", "ghadwa", "lyoum", "elyoum", "bera7",
+    "sebt", "sibt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
     "الأحد", "الاحد", "الاثنين", "الإثنين", "الثلاثاء", "الأربعاء", "الاربعاء",
     "الخميس", "الجمعة", "السبت", "غدوة", "غدوا", "بعد غدوة", "اليوم", "البارح", "البارحة"];
   for (const w of words) out = out.split(" " + w + " ").join(" ");
@@ -487,7 +647,7 @@ function askFamilyNameMsg(ar) {
 }
 
 // The patient is answering our name question (proposal.awaiting_name is set).
-async function handleNameAnswer(phone, text, proposal, ar) {
+async function handleNameAnswer(phone, text, proposal, ar, clinic) {
   // Refusal -> drop the proposal, don't glue it to anything.
   if (looksLikeRefusal(text)) {
     await db.clearProposal(phone).catch(() => {});
@@ -508,7 +668,7 @@ async function handleNameAnswer(phone, text, proposal, ar) {
   if (partial || name.split(/\s+/).length >= 2) {
     const full = partial ? `${partial} ${name}`.trim() : name;
     await db.savePatientName(phone, full).catch(() => {});
-    return finishBooking(phone, proposal, full);
+    return finishBooking(phone, proposal, full, clinic);
   }
   // Single word ("ahmed") -> remember it, ask for the family name.
   await db.saveProposal(phone, proposal.slot_text, proposal.slot_at, proposal.display, true, name).catch(() => {});
@@ -520,7 +680,7 @@ async function say(phone, reply) {
   return { handled: true, reply };
 }
 
-async function finishBooking(phone, p, name) {
+async function finishBooking(phone, p, name, clinic) {
   // p: { display, slot_at (ISO), slot_text }, name: "Ahmed Ben Salah" | null
   const dup = await db.findPendingBooking(phone, p.slot_at).catch(() => null);
   const ar = isAr(p.display); // the slot display carries the patient's script
@@ -532,7 +692,7 @@ async function finishBooking(phone, p, name) {
       ? `الرونديفو متاعك (${p.display}) مازال يستنى — نأكدلك ونرجعلك.`
       : `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
   } else {
-    const id = await db.saveBooking(phone, p.display, p.slot_at || null, name || null);
+    const id = await db.saveBooking(phone, p.display, p.slot_at || null, name || null, clinic && clinic.id);
     console.log(`[booking] #${id} pending: ${phone} (${name || "sans nom"}) -> ${p.display}`);
     const hi = first
       ? (ar ? `داكور ${first}، مرحبا بيك!` : `D'accord ${first}, merhba bik!`)
@@ -541,7 +701,8 @@ async function finishBooking(phone, p, name) {
       ? `${hi} نأكدلك رونديفو (${p.display}) ونرجعلك.`
       : `${hi} n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
     await notifySecretary(
-      `⏳ Rendez-vous jdid mel bot:\nEsm: ${shownName || "(ma 3tach esmou)"}\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`
+      `⏳ Rendez-vous jdid mel bot:\nEsm: ${shownName || "(ma 3tach esmou)"}\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`,
+      clinic
     );
   }
   // F4) two appointments: the first is booked — prompt for the second one.
@@ -592,7 +753,7 @@ async function handleStatusQuestion(phone, text) {
 }
 
 // F7 — Cancel the patient's own booking (pending or confirmed), notify the secretary.
-async function handleCancellation(phone, text, ar) {
+async function handleCancellation(phone, text, ar, clinic) {
   const b = await db.getLatestBooking(phone).catch(() => null);
   const active = b && (b.status === "pending" || b.status === "confirmed") ? b : null;
   await db.clearProposal(phone).catch(() => {});
@@ -604,7 +765,7 @@ async function handleCancellation(phone, text, ar) {
       : "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?");
   }
   await db.setBookingStatus(active.id, "cancelled").catch(() => {});
-  await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`);
+  await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`, clinic);
   return say(phone, ar
     ? `داكور، فسخت الرونديفو (${active.slot}). تحب وقت آخر؟`
     : `D'accord, fassakht el rendez-vous (${active.slot}). T7eb wa9t e5er?`);
@@ -626,26 +787,29 @@ async function handleRescheduleStart(phone, ar) {
     : `D'accord — bech nbadlou el rendez-vous (${active.slot}). 9olli el nhar wel wa9t el jdid.`);
 }
 
-async function finishReschedule(phone, id, target, ar) {
+async function finishReschedule(phone, id, target, ar, clinic) {
   await db.updateBookingSlot(id, target.display, target.slot_at).catch(() => {});
   rescheduling.delete(phone);
   await db.clearProposal(phone).catch(() => {});
   const reply = ar
     ? `تبدل الرونديفو: ${target.display} — نأكدلك ونرجعلك.`
     : `Tbadal el rendez-vous: ${target.display} — n2akkedlek w narja3lek.`;
-  await notifySecretary(`🔁 Patient badal rendez-vous #${id} (${phone}) -> ${target.display}`);
+  await notifySecretary(`🔁 Patient badal rendez-vous #${id} (${phone}) -> ${target.display}`, clinic);
   await db.saveMessage(phone, "assistant", reply);
   return { handled: true, reply };
 }
 
 // Deterministic booking turn. Returns { handled, reply } or { handled: false }
 // to let the AI answer normally.
-async function handleBookingTurn(phone, text, history) {
-  const ar = isAr(text);
+async function handleBookingTurn(phone, text, history, clinic) {
+  clinic = clinic || {};
+  // Script: explicit patient request ("aktebli bel 3arbi") > saved preference
+  // > Arabic characters in the message.
+  const ar = await scriptAr(phone, text);
 
   // F1) Emergency — chest pain etc.: never a booking, direct to urgent care.
   if (looksLikeEmergency(text)) {
-    await notifySecretary(`🚨 URGENCE? patient ${phone}: "${text}"`).catch(() => {});
+    await notifySecretary(`🚨 URGENCE? patient ${phone}: "${text}"`, clinic).catch(() => {});
     return say(phone, ar
       ? "الوجيعة هذي تستحق طبيب فيسع — ما تستناش رونديفو: امشي للاستعجالي توا ولا عيط لـ190. البوت ما ينجمش يعاونك في حالة كيما هذي."
       : "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.");
@@ -659,13 +823,13 @@ async function handleBookingTurn(phone, text, history) {
   }
 
   // F7) Cancellation — before the status question: cancelling beats asking.
-  if (looksLikeCancellation(text)) return handleCancellation(phone, text, ar);
+  if (looksLikeCancellation(text)) return handleCancellation(phone, text, ar, clinic);
 
   // F8) FAQ / identity — pure questions (no date): answer directly, never
   // swallowed into a stale proposal.
   const r0 = dates.resolveSlot(text);
   const fk = !r0.date && faqKind(text);
-  if (fk) return say(phone, faqAnswer(fk, ar));
+  if (fk) return say(phone, faqAnswer(fk, ar, clinic));
 
   // F11) Walk-in ("n7eb nji tawa") — explain, offer a reserved time, no loop.
   if (looksLikeWalkin(text)) {
@@ -677,13 +841,28 @@ async function handleBookingTurn(phone, text, history) {
   }
 
   // F4) Two appointments — acknowledge both, one at a time, first one first.
+  // NEVER invent who the second is for: explicit beneficiaries are kept,
+  // otherwise the bot asks "el ouwel lchkoun?".
   if (looksLikeTwoAppointments(text)) {
     await db.clearProposal(phone).catch(() => {});
     rescheduling.delete(phone);
     multiBooking.set(phone, 1);
-    return say(phone, ar
-      ? "فهمتك — زوز رونديفو: واحد ليك وواحد لأمك. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟"
-      : "Fhemtek — zouz rendez-vous: wa7ed lik w wa7ed l ommek. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?");
+    const ben = detectExplicitBeneficiaries(text);
+    let msg;
+    if (ben.length >= 2) {
+      msg = ar
+        ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]} وواحد ${BEN_AR[ben[1]] || ben[1]}. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟`
+        : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]} w wa7ed ${ben[1]}. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?`;
+    } else if (ben.length === 1) {
+      msg = ar
+        ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]}. والثاني لشكون؟`
+        : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]}. W el theni lchkoun?`;
+    } else {
+      msg = ar
+        ? "فهمتك — زوز رونديفو. اللول لشكون؟"
+        : "Fhemtek — zouz rendez-vous. El louwel lchkoun?";
+    }
+    return say(phone, msg);
   }
 
   // Reschedule intent — move the existing booking, never duplicate it.
@@ -714,7 +893,7 @@ async function handleBookingTurn(phone, text, history) {
 
   // A-1) We asked for the patient's name — this message answers that.
   if (proposal && proposal.awaiting_name) {
-    return handleNameAnswer(phone, text, proposal, ar2);
+    return handleNameAnswer(phone, text, proposal, ar2, clinic);
   }
 
   let r = dates.resolveSlot(text);
@@ -789,10 +968,10 @@ async function handleBookingTurn(phone, text, history) {
       }
       return { handled: false }; // no pending slot: let the AI answer
     }
-    if (reschedId) return finishReschedule(phone, reschedId, target, ar2);
+    if (reschedId) return finishReschedule(phone, reschedId, target, ar2, clinic);
     // Name gate: nom + prenom are asked AFTER acceptance, remembered per number.
     const known = await db.getPatientName(phone).catch(() => null);
-    if (known) return finishBooking(phone, target, known);
+    if (known) return finishBooking(phone, target, known, clinic);
     await db.saveProposal(phone, target.slot_text || text, target.slot_at, target.display, true, null);
     return say(phone, askNameMsg(ar2, target.display));
   }
@@ -813,6 +992,19 @@ async function handleBookingTurn(phone, text, history) {
   // B) Slot information (new request or clarification answer).
   if (!r.found) return { handled: false };
   if (!r.date) {
+    // Time but no date, and the time is outside clinic hours ("nos el lil"
+    // = midnight): reject it immediately — never ask for a day first.
+    if (r.hour !== null && r.hour !== undefined) {
+      const open = CLINIC_HOURS[new Date(dates.tunisNow().getTime()).getUTCDay()];
+      const inside = open &&
+        (r.hour > open[0] || (r.hour === open[0] && (r.minute || 0) >= 0)) &&
+        (r.hour < open[1] || (r.hour === open[1] && (r.minute || 0) === 0));
+      if (!inside) {
+        const sug = suggestOpenSlot(dates.tunisNow().getTime(), ar);
+        if (sug) await db.saveProposal(phone, sug.display, sug.iso, sug.display).catch(() => {});
+        return say(phone, hoursRejectMsg(ar, open ? "hours" : "closed", sug ? sug.display : ""));
+      }
+    }
     return say(phone, ar
       ? "أنهو نهار بالضبط؟ (اكتب كيما: الجمعة، غدوة، 21 سبتمبر...)"
       : "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)");
@@ -917,9 +1109,15 @@ function looksLikePureGreeting(text) {
 }
 
 // Shared by the WhatsApp webhook and the /test page.
-async function processPatientText(phone, text) {
+async function processPatientText(phone, text, numberId) {
+  const clinic = await getClinic(numberId);
   const history = await db.getHistory(phone); // last 15 messages
   await db.saveMessage(phone, "user", text);
+
+  // Explicit script request ("aktebli bel 3arbi" / "aktebli b 7rouf"):
+  // remembered per patient, honored from this message on.
+  if (looksLikeScriptRequest(text)) await db.saveScriptPref(phone, "ar").catch(() => {});
+  else if (looksLikeLatinRequest(text)) await db.saveScriptPref(phone, "latin").catch(() => {});
 
   // Vendor (sales) mode first: exact "جرّب" trigger, or an ongoing vendor lead.
   // Sticky: once a dentist, always vendor for that number (fassa5 resets).
@@ -932,28 +1130,30 @@ async function processPatientText(phone, text) {
   // Neutral greeting: no vendeur pitch, no réceptionniste steering.
   // The next message decides the mode.
   if (looksLikePureGreeting(text)) {
-    const g = await say(phone, isAr(text)
+    const ar = await scriptAr(phone, text);
+    const g = await say(phone, clinic.greeting || (ar
       ? "وعليكم السلام! كيفاش نجم نعاونك؟"
-      : "3alikom salam! Kifech n3awnek?");
+      : "3alikom salam! Kifech n3awnek?"));
     return g.reply;
   }
 
-  const booking = await handleBookingTurn(phone, text, history);
+  const booking = await handleBookingTurn(phone, text, history, clinic);
   if (booking.handled) return booking.reply;
 
   const pname = await db.getPatientName(phone).catch(() => null);
-  const reply = await aiReply(text, history, pname);
+  const useAr = await scriptAr(phone, text);
+  const reply = await aiReply(text, history, pname, clinic.name, useAr);
   await db.saveMessage(phone, "assistant", reply);
   return reply;
 }
 
 // Secretary commands: "ok <id>" / "le <id>" / "list"
-async function processSecretaryText(text) {
+async function processSecretaryText(text, clinic) {
   const t = (text || "").trim();
   let m = t.match(/^(ok|okay|na3m|ey)\s+(\d+)$/i);
-  if (m) return settleBooking(parseInt(m[2], 10), true);
+  if (m) return settleBooking(parseInt(m[2], 10), true, clinic);
   m = t.match(/^(le|la|non|faskh|cancel)\s+(\d+)$/i);
-  if (m) return settleBooking(parseInt(m[2], 10), false);
+  if (m) return settleBooking(parseInt(m[2], 10), false, clinic);
   if (/^(list|liste|pending|chouf)/i.test(t)) {
     const pending = await db.getPendingBookings();
     if (!pending.length) return "Ma fama 7atta rendez-vous pending. 👍";
@@ -970,7 +1170,7 @@ async function processSecretaryText(text) {
   return "Ekteb: 'ok <numero>' bech tvalidi, 'le <numero>' bech tl4i, 'list' bech tchouf el pending, 'fassa5 <numero>' bech tfassa5 conversation.";
 }
 
-async function settleBooking(id, approve) {
+async function settleBooking(id, approve, clinic) {
   const b = await db.getBooking(id).catch(() => null);
   if (!b) return `Ma l9it 7atta rendez-vous b numero ${id}.`;
   if (b.status !== "pending") return `Rendez-vous ${id} deja: ${b.status}.`;
@@ -980,7 +1180,8 @@ async function settleBooking(id, approve) {
     ? (ar ? `تأكد الرونديفو متاعك: ${b.slot}. نستناوك! 🌸` : `T2akked rendez-vous mte3ek: ${b.slot}. Nestennewk! 🌸`)
     : (ar ? `سامحنا، الوقت ${b.slot} ما عادش متاح. تحب وقت آخر؟` : `Sme7na, el wa9t ${b.slot} ma 3adech disponible. T7eb wa9t e5er?`);
   await db.saveMessage(b.phone, "assistant", patientMsg);
-  await sendWhatsApp(b.phone, patientMsg);
+  // The patient hears back from the same bot number they wrote to.
+  await sendWhatsApp(b.phone, patientMsg, (b.number_id) || (clinic && clinic.id));
   console.log(`[booking] #${id} ${approve ? "CONFIRMED" : "CANCELLED"}`);
   return approve
     ? `T2akked rendez-vous #${id} (${b.slot}) w tbe3ath lel patient. ✅`
@@ -1029,6 +1230,9 @@ app.post("/webhook", async (req, res) => {
     }
 
     // 2) Incoming messages
+    // The bot number this message arrived on (multi-number routing).
+    const numberId = value.metadata?.phone_number_id || DEFAULT_NUMBER_ID;
+    const clinic = await getClinic(numberId);
     const messages = value.messages || [];
     for (const msg of messages) {
       const from = msg.from;
@@ -1038,13 +1242,13 @@ app.post("/webhook", async (req, res) => {
       }
       const text = msg.text.body;
 
-      // 2a) Secretary command (from her recognized number)
-      if (SECRETARY_NUMBER && from === SECRETARY_NUMBER) {
+      // 2a) Secretary command (from her recognized number for this clinic)
+      if (clinic.secretary && from === clinic.secretary) {
         console.log(`[secretary] ${from}: ${text}`);
         await db.saveMessage(from, "user", text);
-        const reply = await processSecretaryText(text);
+        const reply = await processSecretaryText(text, clinic);
         lastWebhook = { at: new Date().toISOString(), from, text, reply };
-        await sendWhatsApp(from, reply);
+        await sendWhatsApp(from, reply, numberId);
         await db.saveMessage(from, "assistant", reply);
         continue;
       }
@@ -1056,9 +1260,9 @@ app.post("/webhook", async (req, res) => {
         continue;
       }
       console.log(`[msg] from ${from}: ${text}`);
-      const reply = await processPatientText(from, text);
+      const reply = await processPatientText(from, text, numberId);
       lastWebhook = { at: new Date().toISOString(), from, text, reply };
-      await sendWhatsApp(from, reply);
+      await sendWhatsApp(from, reply, numberId);
     }
 
     // 3) Status updates -> just log
@@ -1246,8 +1450,11 @@ function validateSignup(d) {
   const clinic_name = clean(d.clinic_name, 150);
   const city = clean(d.city, 100);
   if (!name || !phone) return { error: "3ammer el esm w numero el telephone." };
-  if (!/^\d{8,15}$/.test(phone.replace(/\D/g, "")))
-    return { error: "Numero el telephone ghalet." };
+  const digits = phone.replace(/\D/g, "");
+  // Lenient: any plausible phone number (7-15 digits). Ahmed filters the
+  // signups himself — no country restriction here.
+  if (digits.length < 7 || digits.length > 15)
+    return { error: "Numero el telephone ghalet — 7ot numero s7i7." };
   return { name, phone, clinic_name, city };
 }
 
@@ -1314,6 +1521,30 @@ app.post("/api/signups", async (req, res) => {
   }
 });
 
+// ---------- /api/clinics: per-number clinic configuration (admin) ----------
+// password = VERIFY_TOKEN (same as /test). Every bot number (phone_number_id)
+// carries its own clinic name, address, greeting, hours, and secretary number.
+app.get("/api/clinics", async (req, res) => {
+  if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const rows = await db.listClinicConfigs().catch(() => []);
+  res.json({ ok: true, clinics: rows });
+});
+
+app.post("/api/clinics", async (req, res) => {
+  const b = req.body || {};
+  if (b.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const numberId = String(b.phone_number_id || "").trim();
+  if (!numberId) return res.status(400).json({ error: "phone_number_id lezem." });
+  await db.saveClinicConfig(numberId, {
+    clinic_name: String(b.clinic_name || "").slice(0, 150),
+    address: String(b.address || "").slice(0, 300),
+    greeting: String(b.greeting || "").slice(0, 500),
+    hours: String(b.hours || "").slice(0, 200),
+    secretary_number: String(b.secretary_number || "").replace(/\D/g, "").slice(0, 20),
+  });
+  res.json({ ok: true });
+});
+
 // ---------- /signups: admin list of doctors who filled the form ----------
 const SIGNUPS_PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signups</title>
 <style>body{font-family:sans-serif;max-width:560px;margin:0 auto;padding:12px;background:#f5f5f5}
@@ -1370,4 +1601,7 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
-  stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS };
+  stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS,
+  // batch fix 2026-09-25 (exported for the regression test)
+  getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
+  aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer };

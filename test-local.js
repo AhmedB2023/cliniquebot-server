@@ -14,6 +14,8 @@ function makeStubDb() {
   const patients = new Map();
   const vendorLeads = new Map();
   const signups = [];
+  const clinicConfigs = new Map();
+  const scriptPrefs = new Map();
   let seq = 1;
   return {
     initDb: async () => true,
@@ -37,8 +39,8 @@ function makeStubDb() {
       vendorLeads.delete(phone);
       return n;
     },
-    saveBooking: async (phone, slot, slot_at = null, patient_name = null) => {
-      const b = { id: seq++, phone, slot, slot_at, patient_name, status: "pending" };
+    saveBooking: async (phone, slot, slot_at = null, patient_name = null, number_id = null) => {
+      const b = { id: seq++, phone, slot, slot_at, patient_name, number_id, status: "pending" };
       bookings.push(b);
       return b.id;
     },
@@ -80,6 +82,11 @@ function makeStubDb() {
       return 0;
     },
     hasDb: () => true,
+    getClinicConfig: async (numberId) => clinicConfigs.get(numberId) || null,
+    saveClinicConfig: async (numberId, cfg) => { clinicConfigs.set(numberId, { phone_number_id: numberId, ...cfg }); },
+    listClinicConfigs: async () => [...clinicConfigs.values()],
+    getScriptPref: async (phone) => scriptPrefs.get(phone) || null,
+    saveScriptPref: async (phone, script) => { scriptPrefs.set(phone, script); },
     _inspect: () => ({ messages, bookings, proposals }),
   };
 }
@@ -169,6 +176,13 @@ const dateCases = [
   ["٢٥/٠٩ مع 3 متاع العشية", "25 سبتمبر، 15:00"], // Arabic-Indic digits
   ["21 سبتمبر 15:30", "PAST"], // explicit date already passed -> PAST, never next-year
   ["غدوة نص النهار", "غدوة 23 سبتمبر، 12:00"],
+  // batch 2026-09-25: Sunday phrase, French demain, filler-tolerant hours
+  ["n7eb rendez-vous nhar lahad", "needs:l7ad 27 septembre"],
+  ["nchallah ghodwa se3tin", "ghodwa 23 septembre, 14:00"],
+  ["demain se3tin", "ghodwa 23 septembre, 14:00"],
+  ["demain", "needs:ghodwa 23 septembre"],
+  ["apres demain", "needs:ba3d ghodwa 24 septembre"],
+  ["n7eb rendez-vous nos el lil", "FOUND-NODATE"], // midnight, no date -> out-of-hours branch
 ];
 
 for (const [input, expected] of dateCases) {
@@ -989,6 +1003,127 @@ async function run() {
     const r = await bot.processPatientText(p, "ok 5");
     ok("f5ok: not validated", before[0] && before[0].status === "pending", JSON.stringify(before[0]));
     ok("f5ok: explained", /commande mta3 el 3iyada/.test(r), `reply was: ${JSON.stringify(r)}`);
+  }
+
+  // ============ PART D: batch fix 2026-09-25 ============
+
+  // F1 — AI phantom-booking guard: deterministic, prompt-independent
+  {
+    ok("f1: invented booking claim detected", bot.aiClaimsBooking("N7ajzlek rendez-vous ghodwa la3chiya") === true);
+    ok("f1: invented confirmation detected", bot.aiClaimsBooking("rendez-vous m7ajouz") === true);
+    ok("f1: invented slot detected", bot.aiClaimsBooking("tnjem tji ghodwa") === true);
+    ok("f1: invented price detected", bot.aiClaimsBooking("el consultation 50 dt") === true);
+    ok("f1: invented secretary msg detected", bot.aiClaimsBooking("el secretaire bech teklmek") === true);
+    ok("f1: arabic phantom detected", bot.aiClaimsBooking("حجزتلك رونديفو غدوة") === true);
+    ok("f1: legit proposal text passes", bot.aiClaimsBooking("D'accord — ghodwa 23 septembre, 14:00. T7eb n7ajzlek? Ekteb \"ey\".") === false);
+    ok("f1: safe fallback passes", bot.aiClaimsBooking(bot.AI_SAFE_FALLBACK.latin) === false);
+    ok("f1: guard replaces phantom", bot.guardAiOutput("N7ajzlek rendez-vous ghodwa", false, "SAFE") === "SAFE");
+    ok("f1: guard passes clean text", bot.guardAiOutput("Ahlan, kifech n3awnek?", false, "SAFE") === "Ahlan, kifech n3awnek?");
+    ok("f1: guard on AI failure", bot.guardAiOutput("", true, "SAFE") === "SAFE");
+  }
+
+  // F2 — signup phone validation: lenient (Ahmed filters himself)
+  {
+    const base = "http://127.0.0.1:43117";
+    const fr = { name: "محمد المشيشي", phone: "+33 97993062" };
+    const rFr = await fetch(base + "/api/signups", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fr),
+    });
+    ok("f2: foreign-format accepted over HTTP", rFr.status === 200, `status=${rFr.status}`);
+    ok("f2: unit accepts +33", !bot.validateSignup({ name: "X", phone: "+33 97993062" }).error);
+    ok("f2: unit accepts 9 digits", !bot.validateSignup({ name: "X", phone: "543327122" }).error);
+    ok("f2: unit accepts local 8 digits", !bot.validateSignup({ name: "X", phone: "53180566" }).error);
+    ok("f2: unit accepts +216", !bot.validateSignup({ name: "X", phone: "+216 53 180 566" }).error);
+    ok("f2: unit rejects too-short", !!bot.validateSignup({ name: "X", phone: "123" }).error);
+    ok("f2: unit rejects non-numeric", !!bot.validateSignup({ name: "X", phone: "abc" }).error);
+  }
+
+  // F3 — multi-booking never invents the beneficiary
+  {
+    const r = await bot.processPatientText("21600000201", "n7eb zouz rendez-vous");
+    has("f3: asks who the first is for", r, "lchkoun");
+    ok("f3: no invented mother", !/ommek|ommi/.test(r), `reply was: ${JSON.stringify(r)}`);
+    const r2 = await bot.processPatientText("21600000202", "n7eb zouz rendez-vous, wa7ed liya w wa7ed l omi");
+    has("f3: keeps explicit lik", r2, "lik");
+    has("f3: keeps explicit ommek", r2, "ommek");
+    ok("f3: detector finds both", JSON.stringify(bot.detectExplicitBeneficiaries("wa7ed liya w wa7ed l omi")) === JSON.stringify(["lik", "ommek"]));
+    ok("f3: detector finds none", bot.detectExplicitBeneficiaries("n7eb zouz rendez-vous").length === 0);
+  }
+
+  // F4 — slot echo: "demain se3tin" is understood and repeated back
+  {
+    const r = await bot.processPatientText("21600000203", "demain se3tin");
+    has("f4: repeats the slot", r, "ghodwa 23 septembre, 14:00");
+    has("f4: asks ey", r, "ey");
+  }
+
+  // F5 — per-number clinic configuration
+  {
+    await stubDb.saveClinicConfig("NUM_A", { clinic_name: "3iyedet Ennour", address: "Tunis, rue X", greeting: "Ahla w sahla fi 3iyedet Ennour! Kifech n3awnek?", hours: "8:00 - 18:00", secretary_number: "21611111111" });
+    await stubDb.saveClinicConfig("NUM_B", { clinic_name: "Cabinet Dr Ben Ammar", address: "Sfax", greeting: "", hours: "", secretary_number: "21622222222" });
+    const cA = await bot.getClinic("NUM_A");
+    ok("f5: config loads per number", cA.name === "3iyedet Ennour" && cA.secretary === "21611111111");
+    const r1 = await bot.processPatientText("21600000204", "chnowa esm el 3iyada?", "NUM_A");
+    has("f5: answers clinic name", r1, "3iyedet Ennour");
+    const r2 = await bot.processPatientText("21600000205", "te5dem m3a chkoun?", "NUM_B");
+    has("f5: answers works-with", r2, "Cabinet Dr Ben Ammar");
+    const r3 = await bot.processPatientText("21600000206", "win el 3iyada?", "NUM_A");
+    has("f5: answers address", r3, "Tunis, rue X");
+    const r4 = await bot.processPatientText("21600000207", "wa9t el 5edma?", "NUM_A");
+    has("f5: answers custom hours", r4, "8:00 - 18:00");
+    const r5 = await bot.processPatientText("21600000208", "3aslema", "NUM_A");
+    has("f5: custom greeting", r5, "3iyedet Ennour");
+    const r6 = await bot.processPatientText("21600000209", "chnowa esm el 3iyada?");
+    ok("f5: fallback invents no name", !/3iyedet Ennour|Cabinet Dr/.test(r6), `reply was: ${JSON.stringify(r6)}`);
+    // HTTP admin surface
+    const base = "http://127.0.0.1:43117";
+    const TEST_PW = "clinic-bot-verify-123";
+    const noPw = await fetch(base + "/api/clinics");
+    ok("f5: /api/clinics without password is 403", noPw.status === 403, `status=${noPw.status}`);
+    const save = await fetch(base + "/api/clinics", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: TEST_PW, phone_number_id: "NUM_HTTP", clinic_name: "Test Clinic", address: "A", greeting: "G", hours: "H", secretary_number: "+216 33 333 333" }),
+    });
+    ok("f5: /api/clinics POST is 200", save.status === 200, `status=${save.status}`);
+    const list = await (await fetch(base + "/api/clinics?password=" + TEST_PW)).json();
+    ok("f5: saved config listed", list.clinics && list.clinics.some((c) => c.phone_number_id === "NUM_HTTP" && c.clinic_name === "Test Clinic" && c.secretary_number === "21633333333"), JSON.stringify(list.clinics));
+  }
+
+  // F6 — Sunday phrase: "nhar lahad" redirects, never a Sunday booking
+  {
+    const r = dates.resolveSlot("n7eb rendez-vous nhar lahad");
+    ok("f6: lahad detected as Sunday", r.found && r.date && r.dow === 0 && r.needs === "time", JSON.stringify({ dow: r.dow, display: r.dateDisplay }));
+    const r2 = await bot.processPatientText("21600000210", "n7eb rendez-vous nhar lahad");
+    has("f6: Sunday-closed redirect", r2, "msakra");
+    ok("f6: no Sunday booking offered", !/l7ad 27 septembre/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+  }
+
+  // F7 — filler-tolerant hour: "nchallah ghodwa se3tin" -> 14:00
+  {
+    const r = await bot.processPatientText("21600000211", "nchallah ghodwa se3tin");
+    has("f7: se3tin understood as 14:00", r, "ghodwa 23 septembre, 14:00");
+  }
+
+  // F8 — explicit script request ("aktebli bel 3arbi") is remembered and honored
+  {
+    ok("f8: detector", bot.looksLikeScriptRequest("aktebli bel 3arbi") === true);
+    ok("f8: bel 3arbi variant", bot.looksLikeScriptRequest("ektebli bel 3arbi svp") === true);
+    const p = "21600000212";
+    const r1 = await bot.processPatientText(p, "aktebli bel 3arbi");
+    ok("f8: reply in Arabic script", /[\u0600-\u06FF]/.test(r1) && !/[a-zA-Z]/.test(r1), `reply was: ${JSON.stringify(r1)}`);
+    const r2 = await bot.processPatientText(p, "n7eb rendez-vous ghodwa");
+    ok("f8: booking flow honors saved pref", /[\u0600-\u06FF]/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+    ok("f8: pref saved", (await bot.scriptAr(p, "n7eb")) === true);
+    const r3 = await bot.processPatientText(p, "aktebli b 7rouf");
+    ok("f8: latin request honored", /[a-zA-Z]/.test(r3) && !/[\u0600-\u06FF]/.test(r3), `reply was: ${JSON.stringify(r3)}`);
+  }
+
+  // F9 — "nos el lil" rejected immediately as out-of-hours, valid slot suggested
+  {
+    const r = await bot.processPatientText("21600000213", "n7eb rendez-vous nos el lil");
+    has("f9: rejected as out-of-hours", r, "5arej wa9t el 5edma");
+    ok("f9: no day asked", !/anhou nhar/.test(r), `reply was: ${JSON.stringify(r)}`);
+    ok("f9: suggests open future slot", /09:00/.test(r), `reply was: ${JSON.stringify(r)}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

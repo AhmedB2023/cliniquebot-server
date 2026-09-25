@@ -59,6 +59,7 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS patient_name TEXT;
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS number_id TEXT;
     ALTER TABLE proposals ADD COLUMN IF NOT EXISTS awaiting_name BOOLEAN DEFAULT FALSE;
     ALTER TABLE proposals ADD COLUMN IF NOT EXISTS partial_name TEXT;
     -- Signup form: doctors who fill the /formulaire page.
@@ -76,6 +77,23 @@ async function initDb() {
       phone TEXT PRIMARY KEY,
       stage TEXT NOT NULL,              -- asked_clinic | asked_call | done
       clinic_name TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Per-number clinic configuration: every bot number (phone_number_id) carries
+    -- its own identity — clinic name, address, greeting, hours, secretary number.
+    CREATE TABLE IF NOT EXISTS clinic_configs (
+      phone_number_id TEXT PRIMARY KEY,
+      clinic_name TEXT NOT NULL DEFAULT '',
+      address TEXT NOT NULL DEFAULT '',
+      greeting TEXT NOT NULL DEFAULT '',
+      hours TEXT NOT NULL DEFAULT '',
+      secretary_number TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Explicit script preference per patient ("aktebli bel 3arbi"): 'ar' | 'latin'.
+    CREATE TABLE IF NOT EXISTS script_prefs (
+      phone TEXT PRIMARY KEY,
+      script TEXT NOT NULL,
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
@@ -144,6 +162,7 @@ async function deleteConversation(phone) {
     await p.query("DELETE FROM proposals WHERE phone=$1", [phone]);
     await p.query("DELETE FROM patients WHERE phone=$1", [phone]);
     await p.query("DELETE FROM vendor_leads WHERE phone=$1", [phone]);
+    await p.query("DELETE FROM script_prefs WHERE phone=$1", [phone]);
     return r.rowCount;
   } catch (e) {
     console.error("[db:ERROR] delete:", e.message);
@@ -151,14 +170,87 @@ async function deleteConversation(phone) {
   }
 }
 
+// ---------- Per-number clinic configuration ----------
+
+async function getClinicConfig(numberId) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query(
+      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number FROM clinic_configs WHERE phone_number_id=$1",
+      [numberId]
+    );
+    return r.rows[0] || null;
+  } catch (e) {
+    console.error("[db:ERROR] clinicConfig:", e.message);
+    return null;
+  }
+}
+
+async function saveClinicConfig(numberId, cfg) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,NOW())
+       ON CONFLICT (phone_number_id) DO UPDATE
+       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, updated_at=NOW()`,
+      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || ""]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] clinicConfig:", e.message);
+  }
+}
+
+async function listClinicConfigs() {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = await p.query("SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number FROM clinic_configs ORDER BY updated_at DESC");
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] clinicConfigs:", e.message);
+    return [];
+  }
+}
+
+// ---------- Explicit script preference ("aktebli bel 3arbi") ----------
+
+async function getScriptPref(phone) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query("SELECT script FROM script_prefs WHERE phone=$1", [phone]);
+    return (r.rows[0] && r.rows[0].script) || null;
+  } catch (e) {
+    console.error("[db:ERROR] scriptPref:", e.message);
+    return null;
+  }
+}
+
+async function saveScriptPref(phone, script) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      `INSERT INTO script_prefs(phone, script, updated_at) VALUES($1,$2,NOW())
+       ON CONFLICT (phone) DO UPDATE SET script=$2, updated_at=NOW()`,
+      [phone, script]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] scriptPref:", e.message);
+  }
+}
+
 // ---------- Bookings (stage 2) ----------
 
-async function saveBooking(phone, slot, slot_at = null, patient_name = null) {
+async function saveBooking(phone, slot, slot_at = null, patient_name = null, number_id = null) {
   const p = getPool();
   if (!p) return null;
   const r = await p.query(
-    "INSERT INTO bookings(phone, slot, slot_at, patient_name) VALUES($1,$2,$3,$4) RETURNING id",
-    [phone, slot, slot_at, patient_name]
+    "INSERT INTO bookings(phone, slot, slot_at, patient_name, number_id) VALUES($1,$2,$3,$4,$5) RETURNING id",
+    [phone, slot, slot_at, patient_name, number_id]
   );
   return r.rows[0].id;
 }
@@ -385,5 +477,10 @@ module.exports = {
   getVendorLead,
   saveVendorLead,
   clearVendorLead,
+  getClinicConfig,
+  saveClinicConfig,
+  listClinicConfigs,
+  getScriptPref,
+  saveScriptPref,
   hasDb: () => !!DATABASE_URL,
 };

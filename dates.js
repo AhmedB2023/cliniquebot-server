@@ -50,6 +50,7 @@ const NUM_WORDS = [
   ["arb3a", 4], ["arba3a", 4], ["larb3a", 4], // "larb3a" after a day = 4 o'clock ("thleth larb3a"); the weekday word is blanked first, so bare "larb3a" still = Wednesday
   ["tletha", 3], ["tlata", 3], ["theltha", 3],
   ["zouz", 2], ["thnin", 2], ["tnin", 2], ["ethnin", 2],
+  ["se3tin", 2], ["sa3tin", 2], ["sa3tine", 2], ["sa3teen", 2], // "ghodwa se3tin" = 2 (PM by clinic rule)
   ["wa7ed", 1], ["wa7da", 1], ["wahed", 1],
   // Arabic-script number words
   ["اثناش", 12], ["أثناش", 12],
@@ -68,7 +69,7 @@ const NUM_WORDS = [
 
 // weekday name -> JS day number (0 = Sunday)
 const DAYS = [
-  ["la7ad", 0], ["l7ad", 0], ["el 7ad", 0], ["dimanche", 0],
+  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el 7ad", 0], ["dimanche", 0],
   ["ethnin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["mercredi", 3],
@@ -190,6 +191,18 @@ function resolveSlot(rawText) {
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = ar ? `البارح ${dd.getUTCDate()} ${mname}` : `bera7 ${dd.getUTCDate()} ${mname}`;
+    } else if (t.includes(" apres demain ")) {
+      // French "après demain" (norm() already folded è -> e) = day after tomorrow.
+      dateUTC = todayStart + 2 * 86400000;
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = ar ? `بعد غدوة ${dd.getUTCDate()} ${mname}` : `ba3d ghodwa ${dd.getUTCDate()} ${mname}`;
+    } else if (t.includes(" demain ") || t.includes(" demin ") || t.includes(" demen ")) {
+      // French "demain" = tomorrow.
+      dateUTC = todayStart + 86400000;
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = ar ? `غدوة ${dd.getUTCDate()} ${mname}` : `ghodwa ${dd.getUTCDate()} ${mname}`;
     } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ")) {
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
@@ -271,6 +284,7 @@ function resolveSlot(rawText) {
 
   return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso,
     morning, afternoon, night, ar,
+    hour: finalHour, minute, // 24h hour (null when no time parsed) — for the no-date out-of-hours reject
     dateUTC, // Tunis-midnight ms (null when no date) — for weekday/hours checks
     dow: dateUTC !== null ? new Date(dateUTC).getUTCDay() : null }; // 0 = Sunday
 }
