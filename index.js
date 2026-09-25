@@ -1484,7 +1484,12 @@ button:disabled{background:#999}
 #msg{margin-top:12px;font-size:15px;text-align:center}
 .ok-msg{color:#0b7;font-weight:700}.err-msg{color:#c33;font-weight:700}
 .price{color:#0b7;font-weight:700}
+video{width:100%;border-radius:10px;background:#000;display:block}
+.trust{font-size:15px;line-height:2}
 </style></head><body>
+<div class="card">
+<video src="/demo.mp4" controls playsinline preload="metadata"></video>
+</div>
 <div class="card">
 <h1>مساعد الاستقبال الذكي 🤖</h1>
 <p>عيادتك تخدم وحدها حتى كي تكون مسكّرة:</p>
@@ -1495,6 +1500,11 @@ button:disabled{background:#999}
 <li>التركيب في 5 دقايق، والمريض يستعمل واتساب عادي</li>
 <li>الشهر الأول <span class="price">بلاش</span>، وبعد <span class="price">2 دينار فقط</span> على كل مريض يوصل</li>
 </ul>
+</div>
+<div class="card trust">
+<p><b>كيفاش تخدم؟</b></p>
+<p>1️⃣ تعمّر الاسم والنمر<br>2️⃣ نتّصلو بيك ونتفاهمو<br>3️⃣ نركّبولك البوت على نمر العيادة في 5 دقايق</p>
+<p>💰 ما تخلّص <b>حتّى فرنك</b> كان المريض ما يوصلش</p>
 </div>
 <div class="card">
 <label for="name">الاسم الكامل</label>
@@ -1515,6 +1525,7 @@ else{m.className='err-msg';m.textContent=j.error||'صار خطأ، جرّب مر
 }catch(e){m.className='err-msg';m.textContent='مشكلة في الاتصال، جرّب مرة أخرى.';b.disabled=false;}}
 </script></body></html>`;
 
+app.get("/demo.mp4", (req, res) => res.sendFile(__dirname + "/demo.mp4"));
 app.get("/formulaire", (req, res) => res.send(FORMULAIRE_PAGE));
 
 app.post("/api/signups", async (req, res) => {
