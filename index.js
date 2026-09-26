@@ -1486,9 +1486,14 @@ button:disabled{background:#999}
 .price{color:#0b7;font-weight:700}
 video{width:100%;border-radius:10px;background:#000;display:block}
 .trust{font-size:15px;line-height:2}
+.wa-btn{display:block;background:#25D366;color:#fff;text-decoration:none;padding:16px;border-radius:10px;font-size:19px;font-weight:700;text-align:center}
 </style></head><body>
 <div class="card">
 <video src="/demo.mp4" controls playsinline preload="metadata"></video>
+</div>
+<div class="card">
+<a class="wa-btn" href="https://wa.me/21653180566?text=%D8%B3%D9%84%D8%A7%D9%85">💬 جرّب البوت على واتساب</a>
+<p style="font-size:14px;margin:10px 0 0;text-align:center">أو ابعث «سلام» مباشرة إلى <b dir="ltr">+216 53 180 566</b><br>رقمك يظهر عندنا — نتّصلو بيك بعد التجربة</p>
 </div>
 <div class="card">
 <h1>مساعد الاستقبال الذكي 🤖</h1>
@@ -1503,10 +1508,11 @@ video{width:100%;border-radius:10px;background:#000;display:block}
 </div>
 <div class="card trust">
 <p><b>كيفاش تخدم؟</b></p>
-<p>1️⃣ تعمّر الاسم والنومرو<br>2️⃣ نتّصلو بيك ونتفاهمو<br>3️⃣ نركّبولك نومرو واتساب للحجز في 5 دقايق</p>
+<p>1️⃣ تجرّب البوت على واتساب بكليكة وحدة<br>2️⃣ نتّصلو بيك ونتفاهمو<br>3️⃣ نركّبولك نومرو واتساب للحجز في 5 دقايق</p>
 <p>💰 ما تخلّص <b>حتّى فرنك</b> كان المريض ما يوصلش</p>
 </div>
 <div class="card">
+<p style="font-size:14px;margin:0 0 4px">ما تنجّمش تجرّب توّا؟ عمّر الفورمولير ونتّصلو بيك:</p>
 <label for="name">الاسم الكامل</label>
 <input id="name" placeholder="مثال: محمد بن علي" autocomplete="name">
 <label for="phone">رقم الهاتف</label>
