@@ -131,9 +131,10 @@ const pendingVoice = new Map();
 let lastTtsError = null;
 
 // Text -> French speech. Returns { buffer, format } or null.
-// OpenRouter's /audio/speech needs the provider prefix (openai/tts-1) and only
-// serves mp3/pcm — opus is tried first so WhatsApp shows a real voice note,
-// mp3 falls back to a plain audio message.
+// OpenRouter's /audio/speech serves only its own TTS models — "openai/tts-1"
+// does NOT exist there (HTTP 400, verified 2026-09-27). opus is tried first
+// so WhatsApp shows a real voice note, mp3 falls back to a plain audio message.
+const TTS_MODEL = "openai/gpt-4o-mini-tts-2025-12-15";
 async function ttsFrench(text) {
   lastTtsError = null;
   if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
@@ -146,7 +147,7 @@ async function ttsFrench(text) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "openai/tts-1",
+          model: TTS_MODEL,
           input: String(text).slice(0, 600),
           voice: "nova",
           response_format: fmt,

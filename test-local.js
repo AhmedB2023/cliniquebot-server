@@ -1223,10 +1223,11 @@ async function run() {
     ok("fr: standalone prompt mandates French",
       /TOUJOURS EN FRANÇAIS/.test(bot.FRENCH_SYSTEM_PROMPT));
     // regression 2026-09-27: live OpenRouter returned HTTP 400 because the TTS
-    // model was "tts-1" without provider prefix — OpenRouter needs "openai/tts-1".
+    // model "openai/tts-1" does not exist on OpenRouter — verified model:
+    // openai/gpt-4o-mini-tts-2025-12-15.
     const _src = require("fs").readFileSync(__dirname + "/index.js", "utf8");
-    ok("fr: TTS model carries OpenRouter provider prefix",
-      /model:\s*"openai\/tts-1"/.test(_src));
+    ok("fr: TTS uses the verified OpenRouter TTS model",
+      /TTS_MODEL = "openai\/gpt-4o-mini-tts-2025-12-15"/.test(_src));
     ok("fr: TTS tries opus then mp3 fallback",
       /for\s*\(\s*const fmt of \["opus", "mp3"\]/.test(_src));
     ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
