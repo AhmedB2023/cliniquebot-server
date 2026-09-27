@@ -154,13 +154,15 @@ async function ttsFrench(text) {
         }),
       });
       if (!res.ok) {
-        lastTtsError = `TTS ${fmt} HTTP ${res.status}`;
+        // Log OpenRouter's exact reason (model? voice? format?) — not just the status.
+        const bodyText = await res.text().catch(() => "");
+        lastTtsError = `TTS ${fmt} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
         console.error("[tts:ERROR]", lastTtsError);
         continue;
       }
       const buf = Buffer.from(await res.arrayBuffer());
       if (!buf.length) { lastTtsError = `TTS ${fmt} empty audio`; continue; }
-      console.log(`[tts:OK] ${fmt}, ${buf.length} bytes`);
+      console.log(`[tts:OK] ${TTS_MODEL} ${fmt}, ${buf.length} bytes`);
       return { buffer: buf, format: fmt };
     } catch (e) {
       lastTtsError = `TTS ${fmt} network: ${e.message}`;
