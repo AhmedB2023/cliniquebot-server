@@ -303,20 +303,21 @@ function guardAiOutput(aiText, aiFailed, fallbackText) {
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
-async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "") {
+async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "", sysOverride = null) {
   // Resolved script: explicit patient request > saved preference > message script.
   const ar = useAr !== null ? useAr : isAr(patientText);
 
   // Fallback: keyword replies so the webhook loop works even without an AI key
   if (!AI_API_KEY) return fallbackReply(patientText, ar);
 
-  const sys = SYSTEM_PROMPT + (patientName
+  // sysOverride (French test): full replacement — never layered on SYSTEM_PROMPT.
+  const sys = sysOverride || (SYSTEM_PROMPT + (patientName
     ? `\n- esm el patient: ${patientName} — esta3mel el esm ki ykoun naturel (kima "Ahlan Ahmed!"), ama el script yab9a 7asb el 9a3da (ma t5alletch).`
     : "") + (clinicName
     ? `\n- esm el 3iyada: "${clinicName}" — ki yse2lou 3la esm el 3iyada, jaweb bel esm hedha bedhabt, ma t5alla9ch esm e5er.`
     : "") + (ar && !isAr(patientText)
     ? `\n- el patient tlab sara7atan bech tektbelou bel 3arbi (Arabic script) — ektbelou bel 3arbi, ma t7awelch lel 7rouf el latiniya.`
-    : "") + extraSys;
+    : "") + extraSys);
 
   let data = null;
   let ok = false;
@@ -533,10 +534,16 @@ function looksLikeFrenchRequest(text) {
   return /\ben francais\b/.test(t);
 }
 
-// Extra system instruction appended when the patient writes in French.
-const FRENCH_SYS = `
-- REGLE DE LANGUE (test français): le patient écrit en français — répondez EN FRANÇAIS uniquement, jamais en derja ni en arabe. Messages courts et polis.
-- Ignorez la règle des phrases de clôture derja/arabe ci-dessus; terminez si besoin par une courte phrase française comme "Puis-je vous aider avec autre chose ?".`;
+// Standalone system prompt for the French test (2026-09-27, fixed after live
+// test): REPLACES the Derja base prompt entirely. Appending caused a conflict
+// and the AI answered "je ne peux répondre qu'en derja..." — prompt layering
+// is not a guardrail, so French gets its own prompt.
+const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clinique (dentiste) en Tunisie.
+- Répondez TOUJOURS EN FRANÇAIS, jamais en derja ni en arabe. Messages courts et polis.
+- Vous aidez pour : prise de rendez-vous, horaires, adresse, prix.
+- INTERDIT : médicaments, symptômes, diagnostic, conseil médical. Pour une question médicale, dites : "Pour les questions médicales, seul le docteur peut répondre — voulez-vous prendre rendez-vous ?"
+- N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites "Je vérifie avec la clinique et je reviens vers vous."
+- Ne confirmez jamais un rendez-vous définitivement seul : si le patient accepte un créneau, dites "D'accord, je vous confirme et je reviens vers vous" — la confirmation finale vient de la secrétaire.`;
 
 // No-AI-key fallback in French (used by the local test; production has the AI key).
 function frenchFallback(text) {
@@ -1252,8 +1259,9 @@ async function processPatientText(phone, text, numberId) {
   // voice note ONLY when the patient explicitly asks for French.
   // The webhook sends the queued voice note right after the text reply.
   if (looksLikeFrenchRequest(text)) {
-    const pname = await db.getPatientName(phone).catch(() => null);
-    const freply = await aiReply(text, history, pname, clinic.name, false, FRENCH_SYS);
+    const freply = AI_API_KEY
+      ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
+      : frenchFallback(text); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply);
     const audio = await ttsFrench(freply).catch(() => null);
     if (audio) pendingVoice.set(phone, audio);
@@ -1762,4 +1770,4 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French voice-note test 2026-09-27 (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, ttsFrench, pendingVoice };
+  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pendingVoice };

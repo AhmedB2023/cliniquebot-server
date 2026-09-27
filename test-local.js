@@ -1215,6 +1215,13 @@ async function run() {
     has("fr: explicit request -> French reply", fr1, "Bonjour");
     ok("fr: French reply is not Derja", !/n3awnek|Kifech n3awnek/.test(fr1),
       `reply was: ${JSON.stringify(fr1)}`);
+    // regression 2026-09-27: the French system prompt must be standalone —
+    // layering it on the Derja base prompt made the live AI answer
+    // "je ne peux répondre qu'en derja tunisienne ou en arabe".
+    ok("fr: standalone prompt has no derja-only rule",
+      !/jaweb dima bel derja/i.test(bot.FRENCH_SYSTEM_PROMPT));
+    ok("fr: standalone prompt mandates French",
+      /TOUJOURS EN FRANÇAIS/.test(bot.FRENCH_SYSTEM_PROMPT));
     ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
     const tts = await bot.ttsFrench("Bonjour");
     ok("fr: tts null without AI key", tts === null);
