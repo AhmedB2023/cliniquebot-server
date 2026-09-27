@@ -130,48 +130,55 @@ const pendingVoice = new Map();
 // Last TTS failure reason (surfaced to the secretary on WhatsApp for the test).
 let lastTtsError = null;
 
-// Text -> French speech via OpenAI TTS (opus = WhatsApp voice-note format).
-// Returns a Buffer, or null when TTS is unavailable (no key / API error).
+// Text -> French speech. Returns { buffer, format } or null.
+// OpenRouter's /audio/speech needs the provider prefix (openai/tts-1) and only
+// serves mp3/pcm — opus is tried first so WhatsApp shows a real voice note,
+// mp3 falls back to a plain audio message.
 async function ttsFrench(text) {
   lastTtsError = null;
   if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
-  try {
-    const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${AI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "tts-1",
-        input: String(text).slice(0, 600),
-        voice: "nova",
-        response_format: "opus",
-      }),
-    });
-    if (!res.ok) {
-      lastTtsError = `TTS HTTP ${res.status} on ${AI_BASE_URL}/audio/speech`;
-      console.error("[tts:ERROR]", lastTtsError);
-      return null;
+  for (const fmt of ["opus", "mp3"]) {
+    try {
+      const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${AI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "openai/tts-1",
+          input: String(text).slice(0, 600),
+          voice: "nova",
+          response_format: fmt,
+        }),
+      });
+      if (!res.ok) {
+        lastTtsError = `TTS ${fmt} HTTP ${res.status}`;
+        console.error("[tts:ERROR]", lastTtsError);
+        continue;
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length) { lastTtsError = `TTS ${fmt} empty audio`; continue; }
+      console.log(`[tts:OK] ${fmt}, ${buf.length} bytes`);
+      return { buffer: buf, format: fmt };
+    } catch (e) {
+      lastTtsError = `TTS ${fmt} network: ${e.message}`;
+      console.error("[tts:ERROR]", e.message);
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) { lastTtsError = "TTS empty audio"; return null; }
-    return buf;
-  } catch (e) {
-    lastTtsError = `TTS network: ${e.message}`;
-    console.error("[tts:ERROR]", e.message);
-    return null;
   }
+  return null;
 }
 
-// Upload an opus voice note to WhatsApp, then send it as an audio message.
-async function sendVoiceNote(to, audioBuffer, numberId) {
+// Send French speech to WhatsApp: opus => voice note (ogg), mp3 => audio message.
+async function sendVoiceNote(to, voice, numberId) {
   const nid = numberId || DEFAULT_NUMBER_ID;
+  const audioBuffer = voice && voice.buffer;
   if (!WHATSAPP_TOKEN || !nid || !audioBuffer) return false;
+  const isOpus = voice.format === "opus";
   try {
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
-    form.append("file", new Blob([audioBuffer], { type: "audio/ogg; codecs=opus" }), "voice.ogg");
+    form.append("file", new Blob([audioBuffer], { type: isOpus ? "audio/ogg; codecs=opus" : "audio/mpeg" }), isOpus ? "voice.ogg" : "voice.mp3");
     const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
       method: "POST",
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
