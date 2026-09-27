@@ -1183,6 +1183,43 @@ async function run() {
       `reply was: ${JSON.stringify(r2)}`);
   }
 
+  // FR — French voice-note test path (2026-09-27, revised): French ONLY on explicit
+  // request. No auto-detect: "Bonjour" alone stays Derja greeting.
+  {
+    // auto-detector still exists as a utility (not wired into the flow)
+    ok("fr: detector 'Bonjour'", bot.looksLikeFrench("Bonjour") === true);
+    ok("fr: detector full sentence",
+      bot.looksLikeFrench("Bonjour, vous avez une Clio disponible ?") === true);
+    ok("fr: detector diacritics", bot.looksLikeFrench("Combien ça coûte ?") === true);
+    ok("fr: detector derja stays derja",
+      bot.looksLikeFrench("n7eb na7jez rendez-vous") === false);
+    ok("fr: detector 'rendez-vous' = derja",
+      bot.looksLikeFrench("Je veux fixer un rendez-vous") === false);
+    // explicit-request trigger (this is what the flow uses)
+    ok("fr: req 'jewbni bel français'", bot.looksLikeFrenchRequest("jewbni bel français") === true);
+    ok("fr: req 'ektebli bel français'", bot.looksLikeFrenchRequest("ektebli bel français") === true);
+    ok("fr: req 'parle en français'", bot.looksLikeFrenchRequest("parle en français") === true);
+    ok("fr: req 'en français'", bot.looksLikeFrenchRequest("ktebli en français") === true);
+    ok("fr: req derja stays derja", bot.looksLikeFrenchRequest("n7eb na7jez") === false);
+    ok("fr: req 'Bonjour' alone is NOT a request",
+      bot.looksLikeFrenchRequest("Bonjour") === false);
+    ok("fr: req incidental mention not a request",
+      bot.looksLikeFrenchRequest("el ordonnance bel français") === false);
+    // flow: no auto-detect
+    const pf = "21600000fr1";
+    const fr0 = await bot.processPatientText(pf, "Bonjour");
+    has("fr: 'Bonjour' alone -> Derja greeting (no auto-detect)", fr0, "Kifech n3awnek");
+    // flow: explicit request -> French
+    const pf2 = "21600000fr2";
+    const fr1 = await bot.processPatientText(pf2, "jewbni bel français");
+    has("fr: explicit request -> French reply", fr1, "Bonjour");
+    ok("fr: French reply is not Derja", !/n3awnek|Kifech n3awnek/.test(fr1),
+      `reply was: ${JSON.stringify(fr1)}`);
+    ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
+    const tts = await bot.ttsFrench("Bonjour");
+    ok("fr: tts null without AI key", tts === null);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

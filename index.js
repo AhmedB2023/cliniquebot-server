@@ -123,6 +123,78 @@ async function sendWhatsApp(to, text, numberId) {
   }
 }
 
+// ---------- French voice-note test (2026-09-27) ----------
+// Queued French voice notes: { patientPhone: audioBuffer } — the webhook sends
+// them right after the French text reply. Test-only behavior.
+const pendingVoice = new Map();
+
+// Text -> French speech via OpenAI TTS (opus = WhatsApp voice-note format).
+// Returns a Buffer, or null when TTS is unavailable (no key / API error).
+async function ttsFrench(text) {
+  if (!AI_API_KEY || !text) return null;
+  try {
+    const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "tts-1",
+        input: String(text).slice(0, 600),
+        voice: "nova",
+        response_format: "opus",
+      }),
+    });
+    if (!res.ok) { console.error("[tts:ERROR]", res.status); return null; }
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length ? buf : null;
+  } catch (e) {
+    console.error("[tts:ERROR]", e.message);
+    return null;
+  }
+}
+
+// Upload an opus voice note to WhatsApp, then send it as an audio message.
+async function sendVoiceNote(to, audioBuffer, numberId) {
+  const nid = numberId || DEFAULT_NUMBER_ID;
+  if (!WHATSAPP_TOKEN || !nid || !audioBuffer) return false;
+  try {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("file", new Blob([audioBuffer], { type: "audio/ogg; codecs=opus" }), "voice.ogg");
+    const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: form,
+    });
+    const upData = await up.json().catch(() => ({}));
+    if (!up.ok || !upData.id) {
+      console.error("[voice:UPLOAD_ERROR]", up.status, JSON.stringify(upData).slice(0, 200));
+      return false;
+    }
+    const res = await fetch(`https://graph.facebook.com/v21.0/${nid}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: { id: upData.id },
+      }),
+    });
+    if (!res.ok) console.error("[voice:SEND_ERROR]", res.status);
+    else console.log(`[voice:OK] voice note sent to ${to}`);
+    return res.ok;
+  } catch (e) {
+    console.error("[voice:ERROR]", e.message);
+    return false;
+  }
+}
+
 // Notify the secretary of THIS bot number's clinic (per-number config),
 // falling back to the global SECRETARY_NUMBER.
 async function notifySecretary(text, clinic) {
@@ -231,7 +303,7 @@ function guardAiOutput(aiText, aiFailed, fallbackText) {
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
-async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null) {
+async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "") {
   // Resolved script: explicit patient request > saved preference > message script.
   const ar = useAr !== null ? useAr : isAr(patientText);
 
@@ -244,7 +316,7 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
     ? `\n- esm el 3iyada: "${clinicName}" — ki yse2lou 3la esm el 3iyada, jaweb bel esm hedha bedhabt, ma t5alla9ch esm e5er.`
     : "") + (ar && !isAr(patientText)
     ? `\n- el patient tlab sara7atan bech tektbelou bel 3arbi (Arabic script) — ektbelou bel 3arbi, ma t7awelch lel 7rouf el latiniya.`
-    : "");
+    : "") + extraSys;
 
   let data = null;
   let ok = false;
@@ -288,6 +360,7 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
 }
 
 function fallbackReply(text, forceAr) {
+  if (looksLikeFrench(text)) return frenchFallback(text);
   if (forceAr !== undefined ? forceAr : isAr(text)) {
     if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text))
       return "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)";
@@ -433,6 +506,44 @@ function faqAnswer(kind, ar, clinic) {
       : "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟")
     : (clinic.address ? `El 3onwen: ${clinic.address} — t7eb n7ajzlek rendez-vous fi nafs el wa9t?`
       : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?");
+}
+
+// ---------- French test path (2026-09-27) ----------
+// Detect French so the bot can reply in French text + a French voice note.
+// Derja wins on conflict: a Derja marker anywhere means it's Derja, not French.
+// ("rendez-vous" counts as Derja — Tunisians write it in Derja constantly.)
+function looksLikeFrench(text) {
+  const raw = text || "";
+  if (/[êëàâçîïôûùœæ]/i.test(raw)) return true; // French diacritics never appear in Arabizi
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|rendez-vous|\brdv\b|ey | le |slem|slm)/.test(t)) return false;
+  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je veux|je voudrais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  const hits = (t.match(fr) || []).length;
+  if (hits >= 2) return true;
+  // One unambiguous French opener is enough ("Bonjour" alone = French test).
+  return /\b(bonjour|bonsoir|combien)\b/.test(t);
+}
+
+// Explicit French request (revised 2026-09-27): the bot answers in French
+// ONLY when the patient explicitly asks — no auto-detect.
+// ("jewbni bel français", "ektebli bel français", "parle en français", "en français")
+function looksLikeFrenchRequest(text) {
+  const t = " " + (text || "").toLowerCase().replace(/ç/g, "c") + " ";
+  if (/(jewbni|jewb|ektebli|ekteb|a7ki|e7ki|parle|parlez|repond)[^.?!]*francais/.test(t)) return true;
+  return /\ben francais\b/.test(t);
+}
+
+// Extra system instruction appended when the patient writes in French.
+const FRENCH_SYS = `
+- REGLE DE LANGUE (test français): le patient écrit en français — répondez EN FRANÇAIS uniquement, jamais en derja ni en arabe. Messages courts et polis.
+- Ignorez la règle des phrases de clôture derja/arabe ci-dessus; terminez si besoin par une courte phrase française comme "Puis-je vous aider avec autre chose ?".`;
+
+// No-AI-key fallback in French (used by the local test; production has the AI key).
+function frenchFallback(text) {
+  const t = (text || "").toLowerCase();
+  if (/bonjour|bonsoir|salut/.test(t))
+    return "Bonjour ! 👋 Comment puis-je vous aider ? (rendez-vous, horaires, adresse...)";
+  return "Bonjour ! Je suis l'assistant de la clinique — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?";
 }
 
 // F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
@@ -1137,6 +1248,18 @@ async function processPatientText(phone, text, numberId) {
     if (v.handled) return v.reply;
   }
 
+  // French test path (2026-09-27, revised): reply in French text + queue a French
+  // voice note ONLY when the patient explicitly asks for French.
+  // The webhook sends the queued voice note right after the text reply.
+  if (looksLikeFrenchRequest(text)) {
+    const pname = await db.getPatientName(phone).catch(() => null);
+    const freply = await aiReply(text, history, pname, clinic.name, false, FRENCH_SYS);
+    await db.saveMessage(phone, "assistant", freply);
+    const audio = await ttsFrench(freply).catch(() => null);
+    if (audio) pendingVoice.set(phone, audio);
+    return freply;
+  }
+
   // Neutral greeting: no vendeur pitch, no réceptionniste steering.
   // The next message decides the mode.
   if (looksLikePureGreeting(text)) {
@@ -1273,6 +1396,12 @@ app.post("/webhook", async (req, res) => {
       const reply = await processPatientText(from, text, numberId);
       lastWebhook = { at: new Date().toISOString(), from, text, reply };
       await sendWhatsApp(from, reply, numberId);
+      // French voice-note test: send the queued voice note right after the text.
+      const vn = pendingVoice.get(from);
+      if (vn) {
+        pendingVoice.delete(from);
+        await sendVoiceNote(from, vn, numberId);
+      }
     }
 
     // 3) Status updates -> just log
@@ -1631,4 +1760,6 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS,
   // batch fix 2026-09-25 (exported for the regression test)
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
-  aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer };
+  aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
+  // French voice-note test 2026-09-27 (exported for the regression test)
+  looksLikeFrench, looksLikeFrenchRequest, ttsFrench, pendingVoice };
