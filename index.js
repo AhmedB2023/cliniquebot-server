@@ -127,11 +127,14 @@ async function sendWhatsApp(to, text, numberId) {
 // Queued French voice notes: { patientPhone: audioBuffer } — the webhook sends
 // them right after the French text reply. Test-only behavior.
 const pendingVoice = new Map();
+// Last TTS failure reason (surfaced to the secretary on WhatsApp for the test).
+let lastTtsError = null;
 
 // Text -> French speech via OpenAI TTS (opus = WhatsApp voice-note format).
 // Returns a Buffer, or null when TTS is unavailable (no key / API error).
 async function ttsFrench(text) {
-  if (!AI_API_KEY || !text) return null;
+  lastTtsError = null;
+  if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
   try {
     const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
       method: "POST",
@@ -146,10 +149,16 @@ async function ttsFrench(text) {
         response_format: "opus",
       }),
     });
-    if (!res.ok) { console.error("[tts:ERROR]", res.status); return null; }
+    if (!res.ok) {
+      lastTtsError = `TTS HTTP ${res.status} on ${AI_BASE_URL}/audio/speech`;
+      console.error("[tts:ERROR]", lastTtsError);
+      return null;
+    }
     const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length ? buf : null;
+    if (!buf.length) { lastTtsError = "TTS empty audio"; return null; }
+    return buf;
   } catch (e) {
+    lastTtsError = `TTS network: ${e.message}`;
     console.error("[tts:ERROR]", e.message);
     return null;
   }
@@ -1264,7 +1273,13 @@ async function processPatientText(phone, text, numberId) {
       : frenchFallback(text); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply);
     const audio = await ttsFrench(freply).catch(() => null);
-    if (audio) pendingVoice.set(phone, audio);
+    if (audio) {
+      pendingVoice.set(phone, audio);
+    } else {
+      // Test visibility: the failure reason goes to the secretary on WhatsApp
+      // (and stays in Render logs as [tts:ERROR]).
+      notifySecretary(`⚠️ [test français] voice note failed: ${lastTtsError || "unknown"} (patient ${phone})`, clinic).catch(() => {});
+    }
     return freply;
   }
 
@@ -1408,7 +1423,8 @@ app.post("/webhook", async (req, res) => {
       const vn = pendingVoice.get(from);
       if (vn) {
         pendingVoice.delete(from);
-        await sendVoiceNote(from, vn, numberId);
+        const sent = await sendVoiceNote(from, vn, numberId);
+        if (!sent) notifySecretary(`⚠️ [test français] voice note upload/send failed (patient ${from}) — see Render logs [voice:...]`, clinic).catch(() => {});
       }
     }
 
