@@ -130,18 +130,39 @@ const pendingVoice = new Map();
 // Last TTS failure reason (surfaced to the secretary on WhatsApp for the test).
 let lastTtsError = null;
 
+// Wrap raw 16-bit mono PCM (24 kHz = Gemini's native audio format) in a WAV
+// container. Pure Node — no ffmpeg on the server.
+function pcmToWav(pcmBuf, sampleRate = 24000) {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcmBuf.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // fmt chunk size
+  header.writeUInt16LE(1, 20);  // PCM
+  header.writeUInt16LE(1, 22);  // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32);  // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(pcmBuf.length, 40);
+  return Buffer.concat([header, pcmBuf]);
+}
+
 // Text -> French speech. Returns { buffer, format } or null.
-// Live discovery 2026-09-27 (models?output_modalities=speech): OpenAI serves NO
-// TTS model on OpenRouter right now — not tts-1, not gpt-4o-mini-tts-* (both
-// HTTP 400 "does not exist"). Gemini flash-lite TTS speaks French well.
-// OpenRouter only serves mp3/pcm here (opus = ZodError 400), so the audio
-// arrives as a playable audio message, not a voice-note bubble.
-const TTS_MODELS = ["google/gemini-3.8-flash-lite-tts", "google/gemini-3.1-flash-tts-preview"];
-const TTS_VOICE = "Kore"; // feminine voice; speaks the input language (French)
+// Live findings 2026-09-27: OpenAI serves NO TTS on OpenRouter; OpenRouter
+// serves only mp3/pcm (no opus); Gemini TTS serves ONLY pcm. So: Gemini pcm
+// -> WAV wrap -> WhatsApp audio message, with mai-voice-2/mp3 as fallback.
+const TTS_ATTEMPTS = [
+  { model: "google/gemini-3.8-flash-lite-tts", voice: "Kore", format: "pcm", wrap: "wav" },
+  { model: "microsoft/mai-voice-2", voice: "fr-FR-DeniseNeural:MAI-Voice-2", format: "mp3" },
+  { model: "microsoft/mai-voice-2", voice: "en-US-Harper:MAI-Voice-2", format: "mp3" },
+];
 async function ttsFrench(text) {
   lastTtsError = null;
   if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
-  for (const model of TTS_MODELS) {
+  for (const a of TTS_ATTEMPTS) {
     try {
       const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
         method: "POST",
@@ -150,40 +171,43 @@ async function ttsFrench(text) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model,
+          model: a.model,
           input: String(text).slice(0, 600),
-          voice: TTS_VOICE,
-          response_format: "mp3",
+          voice: a.voice,
+          response_format: a.format,
         }),
       });
       if (!res.ok) {
-        // Log OpenRouter's exact reason (model? voice? format?) — not just the status.
         const bodyText = await res.text().catch(() => "");
-        lastTtsError = `TTS ${model} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
+        lastTtsError = `TTS ${a.model} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
         console.error("[tts:ERROR]", lastTtsError);
         continue;
       }
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length) { lastTtsError = `TTS ${model} empty audio`; continue; }
-      console.log(`[tts:OK] ${model} mp3, ${buf.length} bytes`);
-      return { buffer: buf, format: "mp3" };
+      let buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length) { lastTtsError = `TTS ${a.model} empty audio`; continue; }
+      let outFormat = a.format;
+      if (a.wrap === "wav") { buf = pcmToWav(buf); outFormat = "wav"; }
+      console.log(`[tts:OK] ${a.model} -> ${outFormat}, ${buf.length} bytes`);
+      return { buffer: buf, format: outFormat };
     } catch (e) {
-      lastTtsError = `TTS ${model} network: ${e.message}`;
+      lastTtsError = `TTS ${a.model} network: ${e.message}`;
       console.error("[tts:ERROR]", e.message);
     }
   }
   return null;
 }
 
-// Send French speech to WhatsApp as a playable audio message (mp3).
+// Send French speech to WhatsApp as a playable audio message (wav or mp3).
 async function sendVoiceNote(to, voice, numberId) {
   const nid = numberId || DEFAULT_NUMBER_ID;
   const audioBuffer = voice && voice.buffer;
   if (!WHATSAPP_TOKEN || !nid || !audioBuffer) return false;
+  const mime = voice.format === "wav" ? "audio/wav" : "audio/mpeg";
+  const fname = voice.format === "wav" ? "voice.wav" : "voice.mp3";
   try {
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
-    form.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "voice.mp3");
+    form.append("file", new Blob([audioBuffer], { type: mime }), fname);
     const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
       method: "POST",
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
@@ -1798,4 +1822,4 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French voice-note test 2026-09-27 (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pendingVoice };
+  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pcmToWav, pendingVoice };
