@@ -131,14 +131,17 @@ const pendingVoice = new Map();
 let lastTtsError = null;
 
 // Text -> French speech. Returns { buffer, format } or null.
-// OpenRouter's /audio/speech serves only its own TTS models — "openai/tts-1"
-// does NOT exist there (HTTP 400, verified 2026-09-27). opus is tried first
-// so WhatsApp shows a real voice note, mp3 falls back to a plain audio message.
-const TTS_MODEL = "openai/gpt-4o-mini-tts-2025-12-15";
+// Live discovery 2026-09-27 (models?output_modalities=speech): OpenAI serves NO
+// TTS model on OpenRouter right now — not tts-1, not gpt-4o-mini-tts-* (both
+// HTTP 400 "does not exist"). Gemini flash-lite TTS speaks French well.
+// OpenRouter only serves mp3/pcm here (opus = ZodError 400), so the audio
+// arrives as a playable audio message, not a voice-note bubble.
+const TTS_MODELS = ["google/gemini-3.8-flash-lite-tts", "google/gemini-3.1-flash-tts-preview"];
+const TTS_VOICE = "Kore"; // feminine voice; speaks the input language (French)
 async function ttsFrench(text) {
   lastTtsError = null;
   if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
-  for (const fmt of ["opus", "mp3"]) {
+  for (const model of TTS_MODELS) {
     try {
       const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
         method: "POST",
@@ -147,41 +150,40 @@ async function ttsFrench(text) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: TTS_MODEL,
+          model,
           input: String(text).slice(0, 600),
-          voice: "nova",
-          response_format: fmt,
+          voice: TTS_VOICE,
+          response_format: "mp3",
         }),
       });
       if (!res.ok) {
         // Log OpenRouter's exact reason (model? voice? format?) — not just the status.
         const bodyText = await res.text().catch(() => "");
-        lastTtsError = `TTS ${fmt} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
+        lastTtsError = `TTS ${model} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
         console.error("[tts:ERROR]", lastTtsError);
         continue;
       }
       const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length) { lastTtsError = `TTS ${fmt} empty audio`; continue; }
-      console.log(`[tts:OK] ${TTS_MODEL} ${fmt}, ${buf.length} bytes`);
-      return { buffer: buf, format: fmt };
+      if (!buf.length) { lastTtsError = `TTS ${model} empty audio`; continue; }
+      console.log(`[tts:OK] ${model} mp3, ${buf.length} bytes`);
+      return { buffer: buf, format: "mp3" };
     } catch (e) {
-      lastTtsError = `TTS ${fmt} network: ${e.message}`;
+      lastTtsError = `TTS ${model} network: ${e.message}`;
       console.error("[tts:ERROR]", e.message);
     }
   }
   return null;
 }
 
-// Send French speech to WhatsApp: opus => voice note (ogg), mp3 => audio message.
+// Send French speech to WhatsApp as a playable audio message (mp3).
 async function sendVoiceNote(to, voice, numberId) {
   const nid = numberId || DEFAULT_NUMBER_ID;
   const audioBuffer = voice && voice.buffer;
   if (!WHATSAPP_TOKEN || !nid || !audioBuffer) return false;
-  const isOpus = voice.format === "opus";
   try {
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
-    form.append("file", new Blob([audioBuffer], { type: isOpus ? "audio/ogg; codecs=opus" : "audio/mpeg" }), isOpus ? "voice.ogg" : "voice.mp3");
+    form.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "voice.mp3");
     const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
       method: "POST",
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },

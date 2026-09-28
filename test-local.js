@@ -1222,14 +1222,14 @@ async function run() {
       !/jaweb dima bel derja/i.test(bot.FRENCH_SYSTEM_PROMPT));
     ok("fr: standalone prompt mandates French",
       /TOUJOURS EN FRANÇAIS/.test(bot.FRENCH_SYSTEM_PROMPT));
-    // regression 2026-09-27: live OpenRouter returned HTTP 400 because the TTS
-    // model "openai/tts-1" does not exist on OpenRouter — verified model:
-    // openai/gpt-4o-mini-tts-2025-12-15.
+    // regression 2026-09-27: live OpenRouter serves NO OpenAI TTS model at all
+    // (tts-1 and gpt-4o-mini-tts-* both 400 "does not exist") — discovered via
+    // models?output_modalities=speech. Gemini flash TTS is the live French-capable pick.
     const _src = require("fs").readFileSync(__dirname + "/index.js", "utf8");
-    ok("fr: TTS uses the verified OpenRouter TTS model",
-      /TTS_MODEL = "openai\/gpt-4o-mini-tts-2025-12-15"/.test(_src));
-    ok("fr: TTS tries opus then mp3 fallback",
-      /for\s*\(\s*const fmt of \["opus", "mp3"\]/.test(_src));
+    ok("fr: TTS uses a live OpenRouter speech model",
+      /TTS_MODELS = \["google\/gemini-3\.8-flash-lite-tts"/.test(_src));
+    ok("fr: TTS requests mp3 (opus is rejected by OpenRouter)",
+      /response_format: "mp3"/.test(_src));
     ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
     const tts = await bot.ttsFrench("Bonjour");
     ok("fr: tts null without AI key", tts === null);
