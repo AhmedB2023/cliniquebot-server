@@ -130,32 +130,14 @@ const pendingVoice = new Map();
 // Last TTS failure reason (surfaced to the secretary on WhatsApp for the test).
 let lastTtsError = null;
 
-// Wrap raw 16-bit mono PCM (24 kHz = Gemini's native audio format) in a WAV
-// container. Pure Node — no ffmpeg on the server.
-function pcmToWav(pcmBuf, sampleRate = 24000) {
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + pcmBuf.length, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // fmt chunk size
-  header.writeUInt16LE(1, 20);  // PCM
-  header.writeUInt16LE(1, 22);  // mono
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * 2, 28); // byte rate
-  header.writeUInt16LE(2, 32);  // block align
-  header.writeUInt16LE(16, 34); // bits per sample
-  header.write("data", 36);
-  header.writeUInt32LE(pcmBuf.length, 40);
-  return Buffer.concat([header, pcmBuf]);
-}
-
 // Text -> French speech. Returns { buffer, format } or null.
-// Live findings 2026-09-27: OpenAI serves NO TTS on OpenRouter; OpenRouter
-// serves only mp3/pcm (no opus); Gemini TTS serves ONLY pcm. So: Gemini pcm
-// -> WAV wrap -> WhatsApp audio message, with mai-voice-2/mp3 as fallback.
+// Live findings 2026-09-27:
+// - OpenAI serves NO TTS on OpenRouter; OpenRouter serves only mp3/pcm (no opus)
+// - Gemini TTS serves ONLY pcm -> WAV, but WhatsApp upload REJECTS audio/wav
+//   (accepts: aac, mp4, mpeg, amr, ogg, opus)
+// - microsoft/mai-voice-2 serves mp3 (per OpenRouter docs) -> WhatsApp accepts
+//   audio/mpeg, so this arrives as a playable audio message.
 const TTS_ATTEMPTS = [
-  { model: "google/gemini-3.8-flash-lite-tts", voice: "Kore", format: "pcm", wrap: "wav" },
   { model: "microsoft/mai-voice-2", voice: "fr-FR-DeniseNeural:MAI-Voice-2", format: "mp3" },
   { model: "microsoft/mai-voice-2", voice: "en-US-Harper:MAI-Voice-2", format: "mp3" },
 ];
@@ -183,12 +165,10 @@ async function ttsFrench(text) {
         console.error("[tts:ERROR]", lastTtsError);
         continue;
       }
-      let buf = Buffer.from(await res.arrayBuffer());
+      const buf = Buffer.from(await res.arrayBuffer());
       if (!buf.length) { lastTtsError = `TTS ${a.model} empty audio`; continue; }
-      let outFormat = a.format;
-      if (a.wrap === "wav") { buf = pcmToWav(buf); outFormat = "wav"; }
-      console.log(`[tts:OK] ${a.model} -> ${outFormat}, ${buf.length} bytes`);
-      return { buffer: buf, format: outFormat };
+      console.log(`[tts:OK] ${a.model} -> ${a.format}, ${buf.length} bytes`);
+      return { buffer: buf, format: a.format };
     } catch (e) {
       lastTtsError = `TTS ${a.model} network: ${e.message}`;
       console.error("[tts:ERROR]", e.message);
@@ -197,7 +177,7 @@ async function ttsFrench(text) {
   return null;
 }
 
-// Send French speech to WhatsApp as a playable audio message (wav or mp3).
+// Send French speech to WhatsApp as a playable audio message (mp3).
 async function sendVoiceNote(to, voice, numberId) {
   const nid = numberId || DEFAULT_NUMBER_ID;
   const audioBuffer = voice && voice.buffer;
@@ -588,7 +568,8 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 - Vous aidez pour : prise de rendez-vous, horaires, adresse, prix.
 - INTERDIT : médicaments, symptômes, diagnostic, conseil médical. Pour une question médicale, dites : "Pour les questions médicales, seul le docteur peut répondre — voulez-vous prendre rendez-vous ?"
 - N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites "Je vérifie avec la clinique et je reviens vers vous."
-- Ne confirmez jamais un rendez-vous définitivement seul : si le patient accepte un créneau, dites "D'accord, je vous confirme et je reviens vers vous" — la confirmation finale vient de la secrétaire.`;
+- Ne confirmez jamais un rendez-vous définitivement seul : si le patient accepte un créneau, dites "D'accord, je vous confirme et je reviens vers vous" — la confirmation finale vient de la secrétaire.
+- Ne vous excusez jamais de parler français : c'est le patient qui l'a demandé. Répondez directement et utilement.`;
 
 // No-AI-key fallback in French (used by the local test; production has the AI key).
 function frenchFallback(text) {
@@ -1822,4 +1803,4 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French voice-note test 2026-09-27 (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pcmToWav, pendingVoice };
+  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pendingVoice };

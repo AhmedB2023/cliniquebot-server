@@ -1222,14 +1222,15 @@ async function run() {
       !/jaweb dima bel derja/i.test(bot.FRENCH_SYSTEM_PROMPT));
     ok("fr: standalone prompt mandates French",
       /TOUJOURS EN FRANÇAIS/.test(bot.FRENCH_SYSTEM_PROMPT));
-    // regression 2026-09-27: live OpenRouter serves NO OpenAI TTS model at all
-    // (tts-1 and gpt-4o-mini-tts-* both 400 "does not exist") — discovered via
-    // models?output_modalities=speech. Gemini flash TTS is the live French-capable pick.
+    // regression 2026-09-27: OpenRouter serves NO OpenAI TTS at all, serves only
+    // mp3/pcm (no opus); Gemini TTS serves ONLY pcm -> WAV, but WhatsApp upload
+    // REJECTS audio/wav. microsoft/mai-voice-2 serves mp3 (per OpenRouter docs)
+    // which WhatsApp accepts as audio/mpeg.
     const _src = require("fs").readFileSync(__dirname + "/index.js", "utf8");
-    ok("fr: TTS uses a live OpenRouter speech model",
-      /TTS_MODELS = \["google\/gemini-3\.8-flash-lite-tts"/.test(_src));
-    ok("fr: TTS requests mp3 (opus is rejected by OpenRouter)",
-      /response_format: "mp3"/.test(_src));
+    ok("fr: TTS attempts start with mai-voice-2 mp3",
+      /TTS_ATTEMPTS = \[\s*\{\s*model: "microsoft\/mai-voice-2", voice: "fr-FR-DeniseNeural:MAI-Voice-2", format: "mp3"/.test(_src));
+    ok("fr: prompt tells the AI not to apologize for speaking French",
+      /Ne vous excusez jamais de parler français/.test(bot.FRENCH_SYSTEM_PROMPT));
     ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
     const tts = await bot.ttsFrench("Bonjour");
     ok("fr: tts null without AI key", tts === null);
