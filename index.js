@@ -123,102 +123,10 @@ async function sendWhatsApp(to, text, numberId) {
   }
 }
 
-// ---------- French voice-note test (2026-09-27) ----------
-// Queued French voice notes: { patientPhone: audioBuffer } — the webhook sends
-// them right after the French text reply. Test-only behavior.
-const pendingVoice = new Map();
-// Last TTS failure reason (surfaced to the secretary on WhatsApp for the test).
-let lastTtsError = null;
-
-// Text -> French speech. Returns { buffer, format } or null.
-// Live findings 2026-09-27:
-// - OpenAI serves NO TTS on OpenRouter; OpenRouter serves only mp3/pcm (no opus)
-// - Gemini TTS serves ONLY pcm -> WAV, but WhatsApp upload REJECTS audio/wav
-//   (accepts: aac, mp4, mpeg, amr, ogg, opus)
-// - microsoft/mai-voice-2 serves mp3 (per OpenRouter docs) -> WhatsApp accepts
-//   audio/mpeg, so this arrives as a playable audio message.
-const TTS_ATTEMPTS = [
-  { model: "microsoft/mai-voice-2", voice: "fr-FR-DeniseNeural:MAI-Voice-2", format: "mp3" },
-  { model: "microsoft/mai-voice-2", voice: "en-US-Harper:MAI-Voice-2", format: "mp3" },
-];
-async function ttsFrench(text) {
-  lastTtsError = null;
-  if (!AI_API_KEY || !text) { lastTtsError = "no AI_API_KEY"; return null; }
-  for (const a of TTS_ATTEMPTS) {
-    try {
-      const res = await fetch(`${AI_BASE_URL}/audio/speech`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${AI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: a.model,
-          input: String(text).slice(0, 600),
-          voice: a.voice,
-          response_format: a.format,
-        }),
-      });
-      if (!res.ok) {
-        const bodyText = await res.text().catch(() => "");
-        lastTtsError = `TTS ${a.model} HTTP ${res.status}: ${bodyText.slice(0, 220)}`;
-        console.error("[tts:ERROR]", lastTtsError);
-        continue;
-      }
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length) { lastTtsError = `TTS ${a.model} empty audio`; continue; }
-      console.log(`[tts:OK] ${a.model} -> ${a.format}, ${buf.length} bytes`);
-      return { buffer: buf, format: a.format };
-    } catch (e) {
-      lastTtsError = `TTS ${a.model} network: ${e.message}`;
-      console.error("[tts:ERROR]", e.message);
-    }
-  }
-  return null;
-}
-
-// Send French speech to WhatsApp as a playable audio message (mp3).
-async function sendVoiceNote(to, voice, numberId) {
-  const nid = numberId || DEFAULT_NUMBER_ID;
-  const audioBuffer = voice && voice.buffer;
-  if (!WHATSAPP_TOKEN || !nid || !audioBuffer) return false;
-  const mime = voice.format === "wav" ? "audio/wav" : "audio/mpeg";
-  const fname = voice.format === "wav" ? "voice.wav" : "voice.mp3";
-  try {
-    const form = new FormData();
-    form.append("messaging_product", "whatsapp");
-    form.append("file", new Blob([audioBuffer], { type: mime }), fname);
-    const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-      body: form,
-    });
-    const upData = await up.json().catch(() => ({}));
-    if (!up.ok || !upData.id) {
-      console.error("[voice:UPLOAD_ERROR]", up.status, JSON.stringify(upData).slice(0, 200));
-      return false;
-    }
-    const res = await fetch(`https://graph.facebook.com/v21.0/${nid}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        type: "audio",
-        audio: { id: upData.id },
-      }),
-    });
-    if (!res.ok) console.error("[voice:SEND_ERROR]", res.status);
-    else console.log(`[voice:OK] voice note sent to ${to}`);
-    return res.ok;
-  } catch (e) {
-    console.error("[voice:ERROR]", e.message);
-    return false;
-  }
-}
+// ---------- French voice note (REMOVED 2026-09-29) ----------
+// The French TTS voice note was removed: French is now text-only.
+// The bot still understands French and replies in French text when the
+// patient explicitly asks ("jewbni bel français"). Derja behavior unchanged.
 
 // Notify the secretary of THIS bot number's clinic (per-number config),
 // falling back to the global SECRETARY_NUMBER.
@@ -535,7 +443,7 @@ function faqAnswer(kind, ar, clinic) {
 }
 
 // ---------- French test path (2026-09-27) ----------
-// Detect French so the bot can reply in French text + a French voice note.
+// Detect French so the bot can reply in French text.
 // Derja wins on conflict: a Derja marker anywhere means it's Derja, not French.
 // ("rendez-vous" counts as Derja — Tunisians write it in Derja constantly.)
 function looksLikeFrench(text) {
@@ -1281,22 +1189,13 @@ async function processPatientText(phone, text, numberId) {
     if (v.handled) return v.reply;
   }
 
-  // French test path (2026-09-27, revised): reply in French text + queue a French
-  // voice note ONLY when the patient explicitly asks for French.
-  // The webhook sends the queued voice note right after the text reply.
+  // French path (2026-09-29: text-only — the French voice note was removed):
+  // reply in French text ONLY when the patient explicitly asks for French.
   if (looksLikeFrenchRequest(text)) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
       : frenchFallback(text); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply);
-    const audio = await ttsFrench(freply).catch(() => null);
-    if (audio) {
-      pendingVoice.set(phone, audio);
-    } else {
-      // Test visibility: the failure reason goes to the secretary on WhatsApp
-      // (and stays in Render logs as [tts:ERROR]).
-      notifySecretary(`⚠️ [test français] voice note failed: ${lastTtsError || "unknown"} (patient ${phone})`, clinic).catch(() => {});
-    }
     return freply;
   }
 
@@ -1436,13 +1335,6 @@ app.post("/webhook", async (req, res) => {
       const reply = await processPatientText(from, text, numberId);
       lastWebhook = { at: new Date().toISOString(), from, text, reply };
       await sendWhatsApp(from, reply, numberId);
-      // French voice-note test: send the queued voice note right after the text.
-      const vn = pendingVoice.get(from);
-      if (vn) {
-        pendingVoice.delete(from);
-        const sent = await sendVoiceNote(from, vn, numberId);
-        if (!sent) notifySecretary(`⚠️ [test français] voice note upload/send failed (patient ${from}) — see Render logs [voice:...]`, clinic).catch(() => {});
-      }
     }
 
     // 3) Status updates -> just log
@@ -1802,5 +1694,5 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   // batch fix 2026-09-25 (exported for the regression test)
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
-  // French voice-note test 2026-09-27 (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT, ttsFrench, pendingVoice };
+  // French text path (exported for the regression test)
+  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT };

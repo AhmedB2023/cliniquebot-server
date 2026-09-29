@@ -1183,8 +1183,8 @@ async function run() {
       `reply was: ${JSON.stringify(r2)}`);
   }
 
-  // FR — French voice-note test path (2026-09-27, revised): French ONLY on explicit
-  // request. No auto-detect: "Bonjour" alone stays Derja greeting.
+  // FR — French text path (2026-09-29: voice note removed, text-only).
+  // French ONLY on explicit request. No auto-detect: "Bonjour" alone stays Derja greeting.
   {
     // auto-detector still exists as a utility (not wired into the flow)
     ok("fr: detector 'Bonjour'", bot.looksLikeFrench("Bonjour") === true);
@@ -1222,18 +1222,15 @@ async function run() {
       !/jaweb dima bel derja/i.test(bot.FRENCH_SYSTEM_PROMPT));
     ok("fr: standalone prompt mandates French",
       /TOUJOURS EN FRANÇAIS/.test(bot.FRENCH_SYSTEM_PROMPT));
-    // regression 2026-09-27: OpenRouter serves NO OpenAI TTS at all, serves only
-    // mp3/pcm (no opus); Gemini TTS serves ONLY pcm -> WAV, but WhatsApp upload
-    // REJECTS audio/wav. microsoft/mai-voice-2 serves mp3 (per OpenRouter docs)
-    // which WhatsApp accepts as audio/mpeg.
+    // regression 2026-09-29: the French voice note was REMOVED — French is
+    // text-only now. No TTS call, no queued voice, no voice machinery left.
     const _src = require("fs").readFileSync(__dirname + "/index.js", "utf8");
-    ok("fr: TTS attempts start with mai-voice-2 mp3",
-      /TTS_ATTEMPTS = \[\s*\{\s*model: "microsoft\/mai-voice-2", voice: "fr-FR-DeniseNeural:MAI-Voice-2", format: "mp3"/.test(_src));
+    ok("fr: no voice machinery left in source",
+      !/pendingVoice|ttsFrench|sendVoiceNote|TTS_ATTEMPTS|mai-voice/.test(_src));
+    ok("fr: voice helpers not exported",
+      bot.pendingVoice === undefined && bot.ttsFrench === undefined);
     ok("fr: prompt tells the AI not to apologize for speaking French",
       /Ne vous excusez jamais de parler français/.test(bot.FRENCH_SYSTEM_PROMPT));
-    ok("fr: no voice queued without AI key", bot.pendingVoice.size === 0);
-    const tts = await bot.ttsFrench("Bonjour");
-    ok("fr: tts null without AI key", tts === null);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
