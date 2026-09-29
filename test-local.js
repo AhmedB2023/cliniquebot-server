@@ -19,17 +19,17 @@ function makeStubDb() {
   let seq = 1;
   return {
     initDb: async () => true,
-    saveMessage: async (phone, role, text) => { messages.push({ phone, role, text }); },
+    saveMessage: async (phone, role, text, numberId = null) => { messages.push({ phone, role, text, number_id: numberId || null }); },
     getHistory: async (phone, limit = 15) =>
       messages.filter((m) => m.phone === phone).slice(-limit).map((m) => ({ role: m.role, text: m.text })),
-    getConversations: async () =>
-      [...new Set(messages.map((m) => m.phone))].map((phone) => ({
+    getConversations: async (numberId = null) =>
+      [...new Set(messages.filter((m) => !numberId || m.number_id === numberId).map((m) => m.phone))].map((phone) => ({
         phone,
-        count: messages.filter((m) => m.phone === phone).length,
+        count: messages.filter((m) => m.phone === phone && (!numberId || m.number_id === numberId)).length,
         last_at: "test",
       })),
-    getFullHistory: async (phone) =>
-      messages.filter((m) => m.phone === phone).map((m) => ({ role: m.role, text: m.text })),
+    getFullHistory: async (phone, numberId = null) =>
+      messages.filter((m) => m.phone === phone && (!numberId || m.number_id === numberId)).map((m) => ({ role: m.role, text: m.text })),
     deleteConversation: async (phone) => {
       let n = 0;
       for (let i = messages.length - 1; i >= 0; i--)
@@ -326,7 +326,7 @@ async function run() {
   {
     const p = "21600000007";
     const r1 = await bot.processPatientText(p, "salem");
-    has("flow7: neutral greeting", r1, "Kifech n3awnek");
+    has("flow7: neutral greeting", r1, "Kifech najmou n3awnouk");
     const r2 = await bot.processPatientText(p, "3andi wji3a, chnowa el dwe?");
     has("flow7: medical redirect", r2, "doktor");
     const r3 = await bot.processPatientText(p, "n7eb na7jez");
@@ -377,7 +377,7 @@ async function run() {
     has("flow9b: delete empty -> not found", del2, "Ma l9it");
     // patient starts fresh, no old memory
     const r = await bot.processPatientText(p, "slm");
-    has("flow9b: fresh start after delete", r, "Kifech n3awnek");
+    has("flow9b: fresh start after delete", r, "Kifech najmou n3awnouk");
   }
 
   // Flow 10 — past slot is refused clearly
@@ -720,10 +720,10 @@ async function run() {
 
     // D10: neutral greeting — no vendeur pitch, no receptionist steering
     const n1 = await bot.processPatientText("neut1", "slm");
-    has("vendor: 'slm' -> neutral greeting", n1, "Kifech n3awnek");
+    has("vendor: 'slm' -> neutral greeting", n1, "Kifech najmou n3awnouk");
     ok("vendor: neutral greeting steers nothing", !/jareb|rendez-vous|7ajz/i.test(n1), `reply was: ${JSON.stringify(n1)}`);
     const n2 = await bot.processPatientText("neut2", "عسلامة");
-    has("vendor: AR greeting -> neutral", n2, "كيفاش نجم نعاونك");
+    has("vendor: AR greeting -> neutral", n2, "كيفاش نجمو نعاونوك");
 
     // D11: next message decides — dentist path
     await bot.processPatientText("neut3", "salut");
@@ -737,7 +737,7 @@ async function run() {
 
     // D13: "sbe7" alone is NOT a pure greeting (time-of-day ambiguity) — old flow intact
     const n5 = await bot.processPatientText("neut5", "sbe7");
-    ok("vendor: 'sbe7' not treated as greeting", !/Kifech n3awnek/.test(n5), `reply was: ${JSON.stringify(n5)}`);
+    ok("vendor: 'sbe7' not treated as greeting", !/Kifech najmou n3awnouk/.test(n5), `reply was: ${JSON.stringify(n5)}`);
   }
 
   // Flow 10 — availability question is NEVER an acceptance (live bug 2026-09-23:
@@ -761,7 +761,7 @@ async function run() {
   // (live bug 2026-09-23: "Kif nجم n3awnk elyoum?"), and "3aslema" is a pure greeting
   {
     const g = await bot.processPatientText("neut6", "3aslema");
-    has("script: 3aslema -> fixed greeting", g, "Kifech n3awnek");
+    has("script: 3aslema -> fixed greeting", g, "Kifech najmou n3awnouk");
     ok("script: greeting has no arabic", !/[\u0600-\u06FF]/.test(g), `reply was: ${JSON.stringify(g)}`);
     const fixed = bot.enforceScript("3aslema! Kif nجم n3awnk elyoum?", "3aslema");
     ok("script: no arabic letters left", !/[\u0600-\u06FF]/.test(fixed), `got: ${JSON.stringify(fixed)}`);
@@ -1208,12 +1208,12 @@ async function run() {
     // flow: no auto-detect
     const pf = "21600000fr1";
     const fr0 = await bot.processPatientText(pf, "Bonjour");
-    has("fr: 'Bonjour' alone -> Derja greeting (no auto-detect)", fr0, "Kifech n3awnek");
+    has("fr: 'Bonjour' alone -> Derja greeting (no auto-detect)", fr0, "Kifech najmou n3awnouk");
     // flow: explicit request -> French
     const pf2 = "21600000fr2";
     const fr1 = await bot.processPatientText(pf2, "jewbni bel français");
     has("fr: explicit request -> French reply", fr1, "Bonjour");
-    ok("fr: French reply is not Derja", !/n3awnek|Kifech n3awnek/.test(fr1),
+    ok("fr: French reply is not Derja", !/n3awnek|n3awnouk/.test(fr1),
       `reply was: ${JSON.stringify(fr1)}`);
     // regression 2026-09-27: the French system prompt must be standalone —
     // layering it on the Derja base prompt made the live AI answer
@@ -1231,6 +1231,148 @@ async function run() {
       bot.pendingVoice === undefined && bot.ttsFrench === undefined);
     ok("fr: prompt tells the AI not to apologize for speaking French",
       /Ne vous excusez jamais de parler français/.test(bot.FRENCH_SYSTEM_PROMPT));
+  }
+
+  // GR — greeting phrasing (2026-09-29): the AI greeting must be
+  // "kifech najmou n3awnouk" style, never "chnowa n9dar n3awnek",
+  // and never the "Nchalllah" typo.
+  {
+    ok("gr: prompt has exact greeting rule",
+      /EL GREETING/.test(bot.SYSTEM_PROMPT));
+    ok("gr: prompt mandates 'Kifech najmou n3awnouk'",
+      /Kifech najmou n3awnouk/.test(bot.SYSTEM_PROMPT));
+    ok("gr: prompt bans 'chnowa n9dar n3awnek'",
+      /MAMNOU3[^.]*n9dar n3awnek/.test(bot.SYSTEM_PROMPT));
+    ok("gr: prompt bans 'Nchalllah' typo",
+      /"Nchalllah" ghalta/.test(bot.SYSTEM_PROMPT));
+    const pg = await bot.processPatientText("21600000gr1", "slm");
+    has("gr: pure greeting uses new phrasing", pg, "Kifech najmou n3awnouk");
+  }
+
+  // PILOT — Dr Ines per-number config (2026-09-29): the pilot number
+  // 1364750653386950 carries its own booking hours (Mon-Fri 8-16, Sat 8-13,
+  // Sun closed), its own greeting (incl. Arabic-script), and a handoff rule
+  // for the other doctor sharing the clinic (Dr Dakhlaoui).
+  {
+    const PILOT = "1364750653386950";
+    // parseBookingHours unit checks
+    ok("pilot: parse valid", JSON.stringify(bot.parseBookingHours("1:8-16;2:8-16;6:8-13")) === JSON.stringify({ 1: [8, 16], 2: [8, 16], 6: [8, 13] }));
+    ok("pilot: parse rejects garbage", bot.parseBookingHours("foo") === null);
+    ok("pilot: parse rejects inverted range", bot.parseBookingHours("1:16-8") === null);
+    ok("pilot: parse rejects dow 7", bot.parseBookingHours("7:8-16") === null);
+    ok("pilot: parse rejects empty", bot.parseBookingHours("") === null);
+    // seed config loads with no DB row
+    const c = await bot.getClinic(PILOT);
+    ok("pilot: seed name", c.name === "Cabinet Dr Ines", JSON.stringify(c.name));
+    ok("pilot: seed secretary empty until the partner confirms the number", c.secretary === "", JSON.stringify(c.secretary));
+    ok("pilot: seed otherDoctor", c.otherDoctor === "Dakhlaoui", JSON.stringify(c.otherDoctor));
+    ok("pilot: seed bookingHours", JSON.stringify(c.bookingHours) === JSON.stringify({ 1: [8, 16], 2: [8, 16], 3: [8, 16], 4: [8, 16], 5: [8, 16], 6: [8, 13] }), JSON.stringify(c.bookingHours));
+    ok("pilot: seed greetingAr", /إيناس/.test(c.greetingAr || ""), JSON.stringify(c.greetingAr));
+    ok("pilot: default number has no override", (await bot.getClinic("no-such-number")).bookingHours === null
+      && (await bot.getClinic("no-such-number")).otherDoctor === "");
+    // booking hours enforced: Wed 17:30 is outside 8-16 -> rejected
+    const r1 = await bot.processPatientText("21600000px1", "n7eb rendez-vous ghodwa m3a 17:30", PILOT);
+    has("pilot: 17:30 rejected as out-of-hours", r1, "5arej wa9t el 5edma");
+    has("pilot: reject shows her hours", r1, "16:00");
+    has("pilot: suggests next open slot", r1, "23-09-2026, 09:00");
+    // inside hours: Wed 10:00 -> proposed
+    const r2 = await bot.processPatientText("21600000px2", "n7eb rendez-vous larb3a m3a 10 mta3 sbe7", PILOT);
+    has("pilot: 10:00 proposed", r2, "23-09-2026, 10:00");
+    // Saturday 15:00 is outside Sat 8-13 -> rejected
+    const r3 = await bot.processPatientText("21600000px3", "n7eb rendez-vous sebt m3a 3 mte3 l3chiya", PILOT);
+    has("pilot: Sat 15:00 rejected", r3, "5arej wa9t el 5edma");
+    // Saturday 11:00 inside -> proposed
+    const r4 = await bot.processPatientText("21600000px4", "n7eb rendez-vous sebt m3a 11 mta3 sbe7", PILOT);
+    has("pilot: Sat 11:00 proposed", r4, "26-09-2026, 11:00");
+    // Sunday closed -> her hours text, not the default range
+    const r5 = await bot.processPatientText("21600000px5", "n7eb rendez-vous nhar lahad", PILOT);
+    has("pilot: Sunday closed", r5, "msakra");
+    has("pilot: Sunday shows her hours", r5, "16:00");
+    ok("pilot: Sunday hides default range", !/mel ethneyn lel sebt/.test(r5), `reply was: ${JSON.stringify(r5)}`);
+    // the default (demo) number is untouched: 17:30 still inside 7-21
+    const r6 = await bot.processPatientText("21600000px6", "n7eb rendez-vous ghodwa m3a 17:30");
+    has("pilot: default number still accepts 17:30", r6, "23-09-2026, 17:30");
+    // other-doctor handoff: never books, hands to the secretary
+    const r7 = await bot.processPatientText("21600000px7", "Dr Dakhlaoui mawjoud ghodwa?", PILOT);
+    has("pilot: Dakhlaoui hands to secretary", r7, "secretaire");
+    ok("pilot: Dakhlaoui never books", !/D'accord/.test(r7), `reply was: ${JSON.stringify(r7)}`);
+    // Arabic-script greeting uses greeting_ar
+    const r8 = await bot.processPatientText("21600000px8", "عسلامة", PILOT);
+    ok("pilot: Arabic greeting is Arabic script", /[\u0600-\u06FF]/.test(r8) && /إيناس/.test(r8), `reply was: ${JSON.stringify(r8)}`);
+    // a DB row overrides the seed (partner corrections via /api/clinics)
+    await stubDb.saveClinicConfig(PILOT, { booking_hours: "1:9-12", hours: "custom" });
+    const c2 = await bot.getClinic(PILOT);
+    ok("pilot: DB overrides seed bookingHours", JSON.stringify(c2.bookingHours) === JSON.stringify({ 1: [9, 12] }), JSON.stringify(c2.bookingHours));
+    ok("pilot: DB overrides seed hours text", c2.hours === "custom");
+  }
+
+  // VW — dentist viewer: private per-number link, read-only, isolated
+  {
+    const base = "http://127.0.0.1:43117";
+    const TEST_PW = "clinic-bot-verify-123";
+    const PILOT = "1364750653386950";
+    const OTHER = "9999999999999999";
+    const tokP = bot.viewerToken(PILOT);
+    const tokO = bot.viewerToken(OTHER);
+    ok("vw: token is 32 hex chars", /^[0-9a-f]{32}$/.test(tokP), tokP);
+    ok("vw: tokens differ per number", tokP !== tokO);
+
+    // chats on two different bot numbers
+    await bot.processPatientText("21600000901", "3aslema", PILOT);
+    await bot.processPatientText("21600000901", "n7eb rendez-vous ghodwa", PILOT);
+    await bot.processPatientText("21600000902", "3aslema", OTHER);
+
+    // stub-level isolation
+    const convP = await stubDb.getConversations(PILOT);
+    ok("vw: pilot viewer sees only pilot chats",
+      convP.some((c) => c.phone === "21600000901") && !convP.some((c) => c.phone === "21600000902"),
+      JSON.stringify(convP.map((c) => c.phone)));
+    const convO = await stubDb.getConversations(OTHER);
+    ok("vw: other viewer sees only its chats",
+      convO.some((c) => c.phone === "21600000902") && !convO.some((c) => c.phone === "21600000901"),
+      JSON.stringify(convO.map((c) => c.phone)));
+    ok("vw: own history non-empty", (await stubDb.getFullHistory("21600000901", PILOT)).length >= 2);
+    ok("vw: cross-number history is empty", (await stubDb.getFullHistory("21600000901", OTHER)).length === 0);
+
+    // HTTP: conversations API with good token
+    const rOk = await fetch(`${base}/api/view/${PILOT}/${tokP}/conversations`);
+    ok("vw: viewer API 200 with good token", rOk.status === 200, `status=${rOk.status}`);
+    const jOk = await rOk.json();
+    ok("vw: viewer API isolated",
+      jOk.conversations.some((c) => c.phone === "21600000901") && !jOk.conversations.some((c) => c.phone === "21600000902"),
+      JSON.stringify(jOk.conversations.map((c) => c.phone)));
+    // bad token -> 403
+    const rBad = await fetch(`${base}/api/view/${PILOT}/deadbeefdeadbeefdeadbeefdeadbeef/conversations`);
+    ok("vw: viewer API 403 with bad token", rBad.status === 403, `status=${rBad.status}`);
+
+    // thread endpoint
+    const rTh = await fetch(`${base}/api/view/${PILOT}/${tokP}/conversations/21600000901`);
+    ok("vw: thread 200", rTh.status === 200, `status=${rTh.status}`);
+    ok("vw: thread has messages", (await rTh.json()).messages.length >= 2);
+    const rThBad = await fetch(`${base}/api/view/${PILOT}/0/conversations/21600000901`);
+    ok("vw: thread 403 with bad token", rThBad.status === 403, `status=${rThBad.status}`);
+
+    // HTML page
+    const rPage = await fetch(`${base}/v/${PILOT}/${tokP}`);
+    ok("vw: viewer page 200", rPage.status === 200, `status=${rPage.status}`);
+    const pageTxt = await rPage.text();
+    ok("vw: page shows clinic name", pageTxt.includes("Cabinet Dr Ines"), pageTxt.slice(0, 120));
+    ok("vw: page is read-only (no delete)", !/fassa5|delete/i.test(pageTxt));
+    const rPageBad = await fetch(`${base}/v/${PILOT}/wrongtoken`);
+    ok("vw: viewer page 403 with bad token", rPageBad.status === 403, `status=${rPageBad.status}`);
+
+    // admin surface still sees everything (no filter)
+    const jAdmin = await (await fetch(`${base}/api/conversations?password=${TEST_PW}`)).json();
+    ok("vw: admin sees all numbers",
+      jAdmin.conversations.some((c) => c.phone === "21600000901") && jAdmin.conversations.some((c) => c.phone === "21600000902"));
+
+    // viewer_url carried in /api/clinics for Ahmed to copy
+    await stubDb.saveClinicConfig("NUM_VW", { clinic_name: "Viewer Test" });
+    const jClinics = await (await fetch(`${base}/api/clinics?password=${TEST_PW}`)).json();
+    const vwEntry = (jClinics.clinics || []).find((c) => c.phone_number_id === "NUM_VW");
+    ok("vw: /api/clinics carries viewer_url",
+      !!(vwEntry && vwEntry.viewer_url && vwEntry.viewer_url.includes("/v/NUM_VW/")),
+      JSON.stringify(vwEntry && vwEntry.viewer_url));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

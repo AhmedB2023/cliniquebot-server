@@ -36,6 +36,10 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages(phone, id);
+    -- Which bot number (phone_number_id) this message belongs to — per-number
+    -- isolation for the dentist viewer. NULL = old rows / admin-only.
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS number_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_messages_number ON messages(number_id, id);
     CREATE TABLE IF NOT EXISTS bookings (
       id SERIAL PRIMARY KEY,
       phone TEXT NOT NULL,             -- patient phone (or 'webtest')
@@ -88,8 +92,15 @@ async function initDb() {
       greeting TEXT NOT NULL DEFAULT '',
       hours TEXT NOT NULL DEFAULT '',
       secretary_number TEXT NOT NULL DEFAULT '',
+      booking_hours TEXT NOT NULL DEFAULT '',
+      greeting_ar TEXT NOT NULL DEFAULT '',
+      other_doctor TEXT NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Migration for databases created before the new columns existed.
+    ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS booking_hours TEXT NOT NULL DEFAULT '';
+    ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS greeting_ar TEXT NOT NULL DEFAULT '';
+    ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS other_doctor TEXT NOT NULL DEFAULT '';
     -- Explicit script preference per patient ("aktebli bel 3arbi"): 'ar' | 'latin'.
     CREATE TABLE IF NOT EXISTS script_prefs (
       phone TEXT PRIMARY KEY,
@@ -101,14 +112,15 @@ async function initDb() {
   return true;
 }
 
-async function saveMessage(phone, role, text) {
+async function saveMessage(phone, role, text, numberId = null) {
   const p = getPool();
   if (!p) return;
   try {
-    await p.query("INSERT INTO messages(phone, role, text) VALUES($1,$2,$3)", [
+    await p.query("INSERT INTO messages(phone, role, text, number_id) VALUES($1,$2,$3,$4)", [
       phone,
       role,
       text,
+      numberId || null,
     ]);
   } catch (e) {
     console.error("[db:ERROR] save:", e.message);
@@ -132,14 +144,21 @@ async function getHistory(phone, limit = 15) {
 }
 
 // All conversations: phone + message count + last message time, most recent first.
-async function getConversations() {
+// When numberId is given, only that bot number's conversations (dentist viewer).
+async function getConversations(numberId = null) {
   const p = getPool();
   if (!p) return [];
   try {
-    const r = await p.query(
-      `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at
-       FROM messages GROUP BY phone ORDER BY last_at DESC`
-    );
+    const r = numberId
+      ? await p.query(
+          `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at
+           FROM messages WHERE number_id = $1 GROUP BY phone ORDER BY last_at DESC`,
+          [numberId]
+        )
+      : await p.query(
+          `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at
+           FROM messages GROUP BY phone ORDER BY last_at DESC`
+        );
     return r.rows;
   } catch (e) {
     console.error("[db:ERROR] conversations:", e.message);
@@ -148,8 +167,21 @@ async function getConversations() {
 }
 
 // Full conversation for one phone, oldest first (for the dashboard).
-async function getFullHistory(phone) {
-  return getHistory(phone, 500);
+// When numberId is given, only that bot number's messages (dentist viewer).
+async function getFullHistory(phone, numberId = null) {
+  if (!numberId) return getHistory(phone, 500);
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = await p.query(
+      "SELECT role, text FROM messages WHERE phone = $1 AND number_id = $2 ORDER BY id ASC LIMIT 500",
+      [phone, numberId]
+    );
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] fullhistory:", e.message);
+    return [];
+  }
 }
 
 // Forget everything about one phone: messages + pending slot proposal + remembered name.
@@ -177,7 +209,7 @@ async function getClinicConfig(numberId) {
   if (!p) return null;
   try {
     const r = await p.query(
-      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number FROM clinic_configs WHERE phone_number_id=$1",
+      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor FROM clinic_configs WHERE phone_number_id=$1",
       [numberId]
     );
     return r.rows[0] || null;
@@ -192,11 +224,11 @@ async function saveClinicConfig(numberId, cfg) {
   if (!p) return;
   try {
     await p.query(
-      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, updated_at)
-       VALUES($1,$2,$3,$4,$5,$6,NOW())
+      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
        ON CONFLICT (phone_number_id) DO UPDATE
-       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, updated_at=NOW()`,
-      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || ""]
+       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, booking_hours=$7, greeting_ar=$8, other_doctor=$9, updated_at=NOW()`,
+      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || "", cfg.booking_hours || "", cfg.greeting_ar || "", cfg.other_doctor || ""]
     );
   } catch (e) {
     console.error("[db:ERROR] clinicConfig:", e.message);
@@ -207,7 +239,7 @@ async function listClinicConfigs() {
   const p = getPool();
   if (!p) return [];
   try {
-    const r = await p.query("SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number FROM clinic_configs ORDER BY updated_at DESC");
+    const r = await p.query("SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor FROM clinic_configs ORDER BY updated_at DESC");
     return r.rows;
   } catch (e) {
     console.error("[db:ERROR] clinicConfigs:", e.message);

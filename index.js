@@ -15,6 +15,7 @@
 //   PORT            - default 3000
 
 const express = require("express");
+const crypto = require("crypto");
 const app = express();
 app.use(express.json());
 
@@ -88,6 +89,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - 3andek el conversation el 9dima (history) — 9bal ma tjewb chouf chnowa t9al 9balek. MAMNOU3 t3awed nafs el sou2el 7arfiyan: ken s2elt el patient 3la 7aja w ma jewbch 3liha b wdhuh, ma t3awedch nafs el sou2el — fassrou b tari9a o5ra w a3tih mthel wadh7 (kima "jem3a 10 mta3 sbe7").
 - Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".
+- EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "3aslema! Kifech najmou n3awnouk?" / "3aslema! Nchallah labes, kifech najmou n3awnouk?". Ken el patient kteb bel 3arabiya: "عسلامة! كيفاش نجمو نعاونوك؟" / "عسلامة! نشالله لاباس، كيفاش نجمو نعاونوك؟". MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
 // ---------- Meta: send a WhatsApp text message ----------
@@ -154,16 +156,62 @@ async function notifySales(text) {
 // greeting, working hours, and secretary number. Single-number deployments
 // fall back to the global env values (old behavior unchanged).
 // ---------------------------------------------------------------------------
+// Seed configs: built-in per-number defaults so a freshly deployed server
+// works out of the box. A row in clinic_configs (set via POST /api/clinics)
+// always wins over the seed — the partner's corrections go there, no ZIP
+// needed. booking_hours format: "dow:start-end;..." e.g. "1:8-16;6:8-13"
+// (dow 0=Sunday). other_doctor: name of another doctor sharing the clinic —
+// patients asking for them are handed to the secretary, never booked by bot.
+const SEED_CLINICS = {
+  // Pilot: Cabinet Dr Ines (Dr Inès Zaguia), HI Dental Clinic, L'Aouina.
+  // Hours from the clinic's Facebook page (partner confirming with the doctor).
+  "1364750653386950": {
+    clinic_name: "Cabinet Dr Ines",
+    address: "Centre Médical Élégantis, 2ème étage, 22 Avenue Mongi Slim, L'Aouina, Tunis",
+    greeting: "Ahla w sahla fi Cabinet Dr Ines! Kifech najmou n3awnouk?",
+    greeting_ar: "أهلا وسهلا في عيادة الدكتورة إيناس! كيفاش نجمو نعاونوك؟",
+    hours: "Ethneyn–Jem3a: 8:00–16:00, Sebt: 8:00–13:00, 7ad: msakra",
+    booking_hours: "1:8-16;2:8-16;3:8-16;4:8-16;5:8-16;6:8-13",
+    // ⚠️ stays EMPTY until the partner confirms who owns +216 54 178 535
+    // (secretary vs personal). Then set it via POST /api/clinics — no new
+    // ZIP needed. Never notify an unconfirmed number.
+    secretary_number: "",
+    other_doctor: "Dakhlaoui",
+  },
+};
+
+// Parse "1:8-16;2:8-16;6:8-13" into {1:[8,16],2:[8,16],6:[8,13]}.
+// Returns null on empty/invalid input (caller falls back to CLINIC_HOURS).
+function parseBookingHours(str) {
+  if (!str || typeof str !== "string") return null;
+  const out = {};
+  for (const part of str.split(";")) {
+    const m = part.trim().match(/^([0-6]):(\d{1,2})-(\d{1,2})$/);
+    if (!m) return null;
+    const dow = parseInt(m[1], 10), s = parseInt(m[2], 10), e = parseInt(m[3], 10);
+    if (!(s >= 0 && s < e && e <= 24)) return null;
+    out[dow] = [s, e];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 async function getClinic(numberId) {
   const id = numberId || DEFAULT_NUMBER_ID;
   const cfg = await db.getClinicConfig(id);
+  const seed = SEED_CLINICS[id] || {};
+  // A DB row wins over the seed. ?? (not ||) so the partner can CLEAR a
+  // seed value by saving "" — only null/undefined fall back to the seed.
+  const pick = (k, fb) => (cfg && cfg[k] != null ? cfg[k] : seed[k] ?? fb ?? "");
   return {
     id,
-    name: (cfg && cfg.clinic_name) || CLINIC_NAME || "",
-    address: (cfg && cfg.address) || CLINIC_ADDRESS || "",
-    greeting: (cfg && cfg.greeting) || CLINIC_GREETING || "",
-    hours: (cfg && cfg.hours) || CLINIC_HOURS_TXT_ENV || "",
-    secretary: (cfg && cfg.secretary_number ? cfg.secretary_number.replace(/\D/g, "") : "") || SECRETARY_NUMBER,
+    name: pick("clinic_name", CLINIC_NAME),
+    address: pick("address", CLINIC_ADDRESS),
+    greeting: pick("greeting", CLINIC_GREETING),
+    greetingAr: pick("greeting_ar", ""),
+    hours: pick("hours", CLINIC_HOURS_TXT_ENV),
+    bookingHours: parseBookingHours(pick("booking_hours", "")) || null,
+    otherDoctor: pick("other_doctor", ""),
+    secretary: pick("secretary_number", "").replace(/\D/g, "") || SECRETARY_NUMBER,
   };
 }
 
@@ -590,9 +638,12 @@ function stripDateTokens(s) {
 
 // F10 — Clinic-hours gate. A concrete slot outside working hours (or on a closed
 // day) is rejected with the next suitable open slot, saved as the new proposal.
-function hoursCheck(r) {
+function hoursCheck(r, hours) {
   // r: concrete resolved slot (date + time, not past). null = inside hours.
-  const open = CLINIC_HOURS[r.dow];
+  // hours: per-number booking hours (from the clinic config); falls back to
+  // the global CLINIC_HOURS when the number has no override.
+  const bh = hours || CLINIC_HOURS;
+  const open = bh[r.dow];
   const wall = new Date(Date.parse(r.iso) + 3600000); // Tunis wall time
   const h = wall.getUTCHours(), m = wall.getUTCMinutes();
   const inside = open && (h > open[0] || (h === open[0] && m >= 0)) && (h < open[1] || (h === open[1] && m === 0));
@@ -602,14 +653,15 @@ function hoursCheck(r) {
 
 // Next suitable open slot: from the given start day, the first open day
 // whose 09:00 is still in the future (real now, not the start day).
-function suggestOpenSlot(fromDateUTC, ar) {
+function suggestOpenSlot(fromDateUTC, ar, hours) {
   // All timestamps here are shifted so getUTC*() reads Tunis wall time.
+  const bh = hours || CLINIC_HOURS;
   const DAY = 86400000;
   const nowMs = dates.tunisNow().getTime();
   let dayStart = Math.floor(fromDateUTC / DAY) * DAY; // Tunis-wall midnight of the start day
   for (let i = 0; i < 8; i++) {
     const dow = new Date(dayStart).getUTCDay();
-    if (CLINIC_HOURS[dow]) {
+    if (bh[dow]) {
       const nineAM = dayStart + 9 * 3600000;
       if (nineAM > nowMs) return dates.slotDisplay(dayStart, 9, 0, ar);
     }
@@ -619,11 +671,12 @@ function suggestOpenSlot(fromDateUTC, ar) {
 }
 
 // Next open DAY (for the needs-time branch on a closed day): date text only.
-function suggestOpenDay(dateUTC, ar) {
+function suggestOpenDay(dateUTC, ar, hours) {
+  const bh = hours || CLINIC_HOURS;
   let d = dateUTC;
   for (let i = 0; i < 8; i++) {
     const dow = new Date(d).getUTCDay();
-    if (CLINIC_HOURS[dow]) {
+    if (bh[dow]) {
       return { dateUTC: d, dow, dateDisplay: dates.fmtDate(d, ar) };
     }
     d += 86400000;
@@ -631,8 +684,8 @@ function suggestOpenDay(dateUTC, ar) {
   return null;
 }
 
-function hoursRejectMsg(ar, reason, sugDisplay) {
-  const hrs = CLINIC_HOURS_TXT;
+function hoursRejectMsg(ar, reason, sugDisplay, hoursTxt) {
+  const hrs = hoursTxt || CLINIC_HOURS_TXT;
   if (reason === "closed") return ar
     ? `النهار هذا العيادة مسكرة (نخدمو من الاثنين للسبت: ${hrs}). نقترح عليك: ${sugDisplay} — تحب نحجزلك؟ اكتب "اي".`
     : `El nhar hetha el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${hrs}). Ne9tar7oulek: ${sugDisplay} — t7eb n7ajzlek? Ekteb "ey".`;
@@ -708,13 +761,13 @@ async function handleNameAnswer(phone, text, proposal, ar, clinic) {
     await db.clearProposal(phone).catch(() => {});
     return say(phone, ar
       ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.", clinic);
   }
   // A new concrete slot mid-flow ("le, jem3a 11") -> update the slot, ask the name again.
   const r = dates.resolveSlot(text, ar);
   if (r.found && r.date && !r.needs && !r.past) {
     await db.saveProposal(phone, text, r.iso, r.display, true, null).catch(() => {});
-    return say(phone, askNameMsg(isAr(text) || ar, r.display));
+    return say(phone, askNameMsg(isAr(text) || ar, r.display), clinic);
   }
   const name = parsePatientName(text);
   // Not a name (a question, chitchat...) -> let the AI answer, keep waiting for the name.
@@ -727,11 +780,11 @@ async function handleNameAnswer(phone, text, proposal, ar, clinic) {
   }
   // Single word ("ahmed") -> remember it, ask for the family name.
   await db.saveProposal(phone, proposal.slot_text, proposal.slot_at, proposal.display, true, name).catch(() => {});
-  return say(phone, askFamilyNameMsg(ar));
+  return say(phone, askFamilyNameMsg(ar), clinic);
 }
 
-async function say(phone, reply) {
-  await db.saveMessage(phone, "assistant", reply);
+async function say(phone, reply, clinic) {
+  await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return { handled: true, reply };
 }
 
@@ -767,7 +820,7 @@ async function finishBooking(phone, p, name, clinic) {
     reply += ar ? "\nTawa ethani: anhou nhar w wa9t?" : "\nTawa ethani: anhou nhar w wa9t?";
   }
   await db.clearProposal(phone).catch(() => {});
-  await db.saveMessage(phone, "assistant", reply);
+  await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return { handled: true, reply };
 }
 
@@ -780,7 +833,7 @@ function looksLikeStatusQuestion(text) {
   return /(تأكد|تاكد|وين وصل|الحجز متاعي|حجزي|تم الحجز)/.test(text || "");
 }
 
-async function handleStatusQuestion(phone, text) {
+async function handleStatusQuestion(phone, text, clinic) {
   if (!looksLikeStatusQuestion(text)) return { handled: false };
   // "t2akkedli ghodwa 10" = new booking request, not a status question.
   try {
@@ -804,7 +857,7 @@ async function handleStatusQuestion(phone, text) {
       ? `الرونديفو متاعك (${when}) مازال يستنى — نستناو في التأكيد من العيادة. نأكدلك ونرجعلك. ⏳`
       : `El rendez-vous mte3ek (${when}) mazel pending — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
   }
-  return say(phone, reply);
+  return say(phone, reply, clinic);
 }
 
 // F7 — Cancel the patient's own booking (pending or confirmed), notify the secretary.
@@ -817,29 +870,29 @@ async function handleCancellation(phone, text, ar, clinic) {
   if (!active) {
     return say(phone, ar
       ? "ما لقيت حتى رونديفو محجوز بهالرقم. تحب نحجزلك واحد جديد؟"
-      : "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?");
+      : "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?", clinic);
   }
   await db.setBookingStatus(active.id, "cancelled").catch(() => {});
   await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`, clinic);
   return say(phone, ar
     ? `داكور، فسخت الرونديفو (${active.slot}). تحب وقت آخر؟`
-    : `D'accord, fassakht el rendez-vous (${active.slot}). T7eb wa9t e5er?`);
+    : `D'accord, fassakht el rendez-vous (${active.slot}). T7eb wa9t e5er?`, clinic);
 }
 
 // Rescheduling: move an EXISTING booking to a new slot — never a duplicate row.
-async function handleRescheduleStart(phone, ar) {
+async function handleRescheduleStart(phone, ar, clinic) {
   const b = await db.getLatestBooking(phone).catch(() => null);
   const active = b && (b.status === "pending" || b.status === "confirmed") ? b : null;
   await db.clearProposal(phone).catch(() => {});
   if (!active) {
     return say(phone, ar
       ? "ما لقيت حتى رونديفو باش نبدلوه. تحب نحجزلك واحد جديد؟"
-      : "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?");
+      : "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?", clinic);
   }
   rescheduling.set(phone, active.id);
   return say(phone, ar
     ? `داكور — باش نبدلو الرونديفو (${active.slot}). قولي النهار والوقت الجديد.`
-    : `D'accord — bech nbadlou el rendez-vous (${active.slot}). 9olli el nhar wel wa9t el jdid.`);
+    : `D'accord — bech nbadlou el rendez-vous (${active.slot}). 9olli el nhar wel wa9t el jdid.`, clinic);
 }
 
 async function finishReschedule(phone, id, target, ar, clinic) {
@@ -850,7 +903,7 @@ async function finishReschedule(phone, id, target, ar, clinic) {
     ? `تبدل الرونديفو: ${target.display} — نأكدلك ونرجعلك.`
     : `Tbadal el rendez-vous: ${target.display} — n2akkedlek w narja3lek.`;
   await notifySecretary(`🔁 Patient badal rendez-vous #${id} (${phone}) -> ${target.display}`, clinic);
-  await db.saveMessage(phone, "assistant", reply);
+  await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return { handled: true, reply };
 }
 
@@ -858,6 +911,10 @@ async function finishReschedule(phone, id, target, ar, clinic) {
 // to let the AI answer normally.
 async function handleBookingTurn(phone, text, history, clinic) {
   clinic = clinic || {};
+  // Per-number booking hours (pilot clinic override) + display text for messages.
+  const bh = clinic.bookingHours || CLINIC_HOURS;
+  const rangeTxt = clinic.hours ? clinic.hours : `mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}`;
+  const rangeTxtAr = clinic.hours ? clinic.hours : `من الاثنين للسبت: ${CLINIC_HOURS_TXT}`;
   // Script: explicit patient request ("aktebli bel 3arbi") > saved preference
   // > Arabic characters in the message.
   const ar = await scriptAr(phone, text);
@@ -867,14 +924,14 @@ async function handleBookingTurn(phone, text, history, clinic) {
     await notifySecretary(`🚨 URGENCE? patient ${phone}: "${text}"`, clinic).catch(() => {});
     return say(phone, ar
       ? "الوجيعة هذي تستحق طبيب فيسع — ما تستناش رونديفو: امشي للاستعجالي توا ولا عيط لـ190. البوت ما ينجمش يعاونك في حالة كيما هذي."
-      : "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.");
+      : "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.", clinic);
   }
 
   // F6) Frustrated patient — brief "sama7ni", ask what went wrong, resume.
   if (looksLikeFrustration(text)) {
     return say(phone, ar
       ? "سامحني 🙏 شنوة صار بالضبط؟ قولي ونعاونك."
-      : "Sama7ni 🙏 chnowa saret b dhabt? 9olli w n3awnek.");
+      : "Sama7ni 🙏 chnowa saret b dhabt? 9olli w n3awnek.", clinic);
   }
 
   // F7) Cancellation — before the status question: cancelling beats asking.
@@ -884,7 +941,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // swallowed into a stale proposal.
   const r0 = dates.resolveSlot(text, ar);
   const fk = !r0.date && faqKind(text);
-  if (fk) return say(phone, faqAnswer(fk, ar, clinic));
+  if (fk) return say(phone, faqAnswer(fk, ar, clinic), clinic);
 
   // F11) Walk-in ("n7eb nji tawa") — explain, offer a reserved time, no loop.
   if (looksLikeWalkin(text)) {
@@ -892,7 +949,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     rescheduling.delete(phone);
     return say(phone, ar
       ? "تنجم تجي توا، أما الاستناة تنجم تطوال حسب الحالة — الأحسن نحجزلك وقت مضمون باش ما تستناش. تحب نحجزلك؟ قولي أنهو نهار وأنهو وقت."
-      : "Tnjem tji tawa, ama el waiting ynajem ykoun twil 7asb el 7ala — el a7sen n7ajzlek wa9t mathmoun bech ma testa7melch. T7eb n7ajzlek? 9olli anhou nhar w anhou wa9t.");
+      : "Tnjem tji tawa, ama el waiting ynajem ykoun twil 7asb el 7ala — el a7sen n7ajzlek wa9t mathmoun bech ma testa7melch. T7eb n7ajzlek? 9olli anhou nhar w anhou wa9t.", clinic);
   }
 
   // F4) Two appointments — acknowledge both, one at a time, first one first.
@@ -917,21 +974,21 @@ async function handleBookingTurn(phone, text, history, clinic) {
         ? "فهمتك — زوز رونديفو. اللول لشكون؟"
         : "Fhemtek — zouz rendez-vous. El louwel lchkoun?";
     }
-    return say(phone, msg);
+    return say(phone, msg, clinic);
   }
 
   // Reschedule intent — move the existing booking, never duplicate it.
-  if (looksLikeReschedule(text)) return handleRescheduleStart(phone, ar);
+  if (looksLikeReschedule(text)) return handleRescheduleStart(phone, ar, clinic);
 
   // F13) Third-party query — privacy: only this number's bookings are visible.
   if (looksLikeThirdPartyQuery(text)) {
     return say(phone, ar
       ? "سامحني — نجم نشوف كان الرونديفو المحجوز بالرقم هذا. كان الحجز تسجل باسم آخر، قولي الاسم ونتثبت مع العيادة."
-      : "Sama7ni — najem nchouf ken el rendez-vous el ma7jouz b numero hetha. Ken el 7ajz tsajjel b esm e5er, 9olli el esm w nthabbet m3a el 3iyada.");
+      : "Sama7ni — najem nchouf ken el rendez-vous el ma7jouz b numero hetha. Ken el 7ajz tsajjel b esm e5er, 9olli el esm w nthabbet m3a el 3iyada.", clinic);
   }
 
   // A0) Status question — real DB status beats AI guessing.
-  const st = await handleStatusQuestion(phone, text);
+  const st = await handleStatusQuestion(phone, text, clinic);
   if (st.handled) return st;
 
   // Patient-side "ok 5" — a secretary-command shape, never a validation.
@@ -940,7 +997,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   if (/^(ok|le|faskh|cancel)\s+\d+\s*$/.test(text.trim().toLowerCase())) {
     return say(phone, ar
       ? "هذي commande متاع العيادة — كان تحب تبدل ولا تفسخ الرونديفو متاعك، قولي."
-      : "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.");
+      : "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.", clinic);
   }
 
   let proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
@@ -968,7 +1025,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     await db.clearProposal(phone).catch(() => {});
     return say(phone, ar2
       ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.");
+      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.", clinic);
   }
 
   // Merge follow-ups into a pending proposal — but never a pure acceptance:
@@ -1005,12 +1062,12 @@ async function handleBookingTurn(phone, text, history, clinic) {
       // F9) incomplete proposal: repeat the pending clarification, no invention.
       const rp = dates.resolveSlot(proposal.slot_text || "", ar2);
       if (rp.found && rp.date && !rp.past && rp.needs === "time") {
-        return say(phone, timeQuestionMsg(ar2, rp, proposal.slot_text));
+        return say(phone, timeQuestionMsg(ar2, rp, proposal.slot_text), clinic);
       }
       await db.clearProposal(phone).catch(() => {});
       return say(phone, ar2
         ? "داكور — أنهو نهار وأنهو وقت تحب؟"
-        : "D'accord — anhou nhar w anhou wa9t t7eb?");
+        : "D'accord — anhou nhar w anhou wa9t t7eb?", clinic);
     }
     if (!target) {
       // No pending slot — but a booking may already exist (double "ey"):
@@ -1019,7 +1076,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
       if (existing && (existing.status === "pending" || existing.status === "confirmed")) {
         return say(phone, ar2
           ? `عندك رونديفو deja pending: ${existing.slot} — نأكدلك ونرجعلك.`
-          : `3andek rendez-vous deja pending: ${existing.slot} — n2akkedlek w narja3lek.`);
+          : `3andek rendez-vous deja pending: ${existing.slot} — n2akkedlek w narja3lek.`, clinic);
       }
       return { handled: false }; // no pending slot: let the AI answer
     }
@@ -1028,7 +1085,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     const known = await db.getPatientName(phone).catch(() => null);
     if (known) return finishBooking(phone, target, known, clinic);
     await db.saveProposal(phone, target.slot_text || text, target.slot_at, target.display, true, null);
-    return say(phone, askNameMsg(ar2, target.display));
+    return say(phone, askNameMsg(ar2, target.display), clinic);
   }
 
   // B0) Booking intent but no date/time — and we ALREADY asked for day/time.
@@ -1039,7 +1096,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     if (lastAsst && /(nhar w anhou wa9t|anhou nhar|wa9t yse3dek|أنهو نهار|وقت يساعدك)/i.test(lastAsst.text)) {
       return say(phone, ar
         ? "فهمتك تحب تحجز — قولي أنهو نهار وأنهو وقت، كيما: الجمعة 10 متاع الصباح."
-        : "Fhemtek t7eb ta7jez — 9olli anhou nhar w anhou wa9t, kima: jem3a 10 mta3 sbe7.");
+        : "Fhemtek t7eb ta7jez — 9olli anhou nhar w anhou wa9t, kima: jem3a 10 mta3 sbe7.", clinic);
     }
     return { handled: false }; // first time asking: let the AI do it
   }
@@ -1052,37 +1109,37 @@ async function handleBookingTurn(phone, text, history, clinic) {
     if (r.nextWeek) {
       return say(phone, ar
         ? "أوك — الجمعة الجاية. أنهو نهار وأنهو وقت يساعدك؟"
-        : "Ok, jem3a jeya — anhou nhar w anhou wa9t?");
+        : "Ok, jem3a jeya — anhou nhar w anhou wa9t?", clinic);
     }
     // Time but no date, and the time is outside clinic hours ("nos el lil"
     // = midnight): reject it immediately — never ask for a day first.
     if (r.hour !== null && r.hour !== undefined) {
-      const open = CLINIC_HOURS[new Date(dates.tunisNow().getTime()).getUTCDay()];
+      const open = bh[new Date(dates.tunisNow().getTime()).getUTCDay()];
       const inside = open &&
         (r.hour > open[0] || (r.hour === open[0] && (r.minute || 0) >= 0)) &&
         (r.hour < open[1] || (r.hour === open[1] && (r.minute || 0) === 0));
       if (!inside) {
-        const sug = suggestOpenSlot(dates.tunisNow().getTime(), ar);
+        const sug = suggestOpenSlot(dates.tunisNow().getTime(), ar, bh);
         if (sug) await db.saveProposal(phone, sug.display, sug.iso, sug.display).catch(() => {});
-        return say(phone, hoursRejectMsg(ar, open ? "hours" : "closed", sug ? sug.display : ""));
+        return say(phone, hoursRejectMsg(ar, open ? "hours" : "closed", sug ? sug.display : "", clinic.hours || ""), clinic);
       }
     }
     return say(phone, ar
       ? "أنهو نهار بالضبط؟ (اكتب كيما: الجمعة، غدوة، 21 سبتمبر...)"
-      : "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)");
+      : "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)", clinic);
   }
   if (r.past) {
-    return say(phone, ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.");
+    return say(phone, ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.", clinic);
   }
   if (r.needs === "time") {
     // F10b) closed day (Sunday): redirect to the next open day — never ask a
     // time for a day the clinic is closed.
-    if (r.dow !== null && !CLINIC_HOURS[r.dow]) {
-      const sug = suggestOpenDay(r.dateUTC, ar2);
+    if (r.dow !== null && !bh[r.dow]) {
+      const sug = suggestOpenDay(r.dateUTC, ar2, bh);
       await db.saveProposal(phone, sug.dateDisplay, null, sug.dateDisplay);
       return say(phone, ar2
-        ? `نهار الأحد العيادة مسكرة (نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
-        : `Nhar el 7ad el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`);
+        ? `نهار الأحد العيادة مسكرة (نخدمو ${rangeTxtAr}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
+        : `Nhar el 7ad el 3iyada msakra (ne5dmou ${rangeTxt}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`, clinic);
     }
     await db.saveProposal(phone, slotText, null, r.dateDisplay);
     const q = timeQuestionMsg(ar2, r, text);
@@ -1098,23 +1155,23 @@ async function handleBookingTurn(phone, text, history, clinic) {
       const pm = `${String(hh + 12).padStart(2, "0")}:${mm}`;
       return say(phone, ar2
         ? `${r.dateDisplay} — باش نتأكد: الـ${hourStr} هاذي ${am} متاع الصباح ولا ${pm} متاع العشية؟`
-        : `${r.dateDisplay} — bech net2akked: el ${hourStr} hethi ${am} mta3 sbe7 walla ${pm} mta3 l3chiya?`);
+        : `${r.dateDisplay} — bech net2akked: el ${hourStr} hethi ${am} mta3 sbe7 walla ${pm} mta3 l3chiya?`, clinic);
     }
-    return say(phone, q);
+    return say(phone, q, clinic);
   }
   // F10) concrete slot outside clinic hours (or on a closed day): reject it and
   // offer the next suitable open slot, saved as the new proposal.
-  const hc = hoursCheck(r);
+  const hc = hoursCheck(r, bh);
   if (hc) {
-    const sug = suggestOpenSlot(r.dateUTC, ar2);
+    const sug = suggestOpenSlot(r.dateUTC, ar2, bh);
     await db.saveProposal(phone, sug.display, sug.iso, sug.display);
-    return say(phone, hoursRejectMsg(ar2, hc.reason, sug.display));
+    return say(phone, hoursRejectMsg(ar2, hc.reason, sug.display, clinic.hours || ""), clinic);
   }
   // concrete date+time -> propose it back, wait for "ey"
   await db.saveProposal(phone, slotText, r.iso, r.display);
   return say(phone, ar2
     ? `داكور — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
-    : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`);
+    : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`, clinic);
 }
 
 // ---------- Vendor (sales) mode: dentist wrote "جرّب" from the demo video ----------
@@ -1126,7 +1183,7 @@ function looksLikeVendorTrigger(text) {
   return /^(جرّب|جرب|jareb|jarreb)$/i.test(t);
 }
 
-async function handleVendorTurn(phone, text, lead) {
+async function handleVendorTurn(phone, text, lead, clinic) {
   const ar = isAr(text);
 
   // Fresh trigger (or re-trigger after done): restart the pitch.
@@ -1134,7 +1191,7 @@ async function handleVendorTurn(phone, text, lead) {
     await db.saveVendorLead(phone, "asked_clinic", null);
     return say(phone, ar
       ? "أهلا وسهلا! 👋 المساعد متاعنا يجاوب على واتساب العيادة بالدارجة التونسية، يحجز الـ rendez-vous وحدو حتى كي العيادة مسكّرة، والسكرتيرة متاعك تبقى هي اللي تقرّر الحجز النهائي. ما فمّاش اشتراك — تخلّص كان 2 دنانير على كل مريض يوصل، والشهر الأول بلاش. شنوّا اسم العيادة متاعك؟"
-      : "Ahla w sahla! 👋 El assistant mte3na yjawb 3la WhatsApp el 3iyada b derja tounsiya, ya7jez el rendez-vous wa7dou 7atta ki el 3iyada msakra, w el secretaire mte3ek teb9a hiya eli t9arer el 7ajz el nihe2i. Ma fammech ichtirak — t5alles ken 2 dinars 3la kol mridh yousel, w el chhar elowel blech. Chnowa esm el 3iyada mte3ek?");
+      : "Ahla w sahla! 👋 El assistant mte3na yjawb 3la WhatsApp el 3iyada b derja tounsiya, ya7jez el rendez-vous wa7dou 7atta ki el 3iyada msakra, w el secretaire mte3ek teb9a hiya eli t9arer el 7ajz el nihe2i. Ma fammech ichtirak — t5alles ken 2 dinars 3la kol mridh yousel, w el chhar elowel blech. Chnowa esm el 3iyada mte3ek?", clinic);
   }
 
   if (lead.stage === "asked_clinic") {
@@ -1143,7 +1200,7 @@ async function handleVendorTurn(phone, text, lead) {
     await notifySales(`🔔 Lead jdid (جرّب): 3iyada "${clinic}" — numero ${phone}`);
     return say(phone, ar
       ? `ممتاز، عيادة ${clinic}! 🎉 تحب نحكيو 10 دقايق باش نورّيك كيفاش يخدم على عيادتك؟ أنهو وقت يساعدك — اليوم ولا غدوة؟`
-      : `Momtez, 3iyedet ${clinic}! 🎉 T7eb na7kiw 10 d9aye9 bech nwarik kifech ye5dem 3la 3iyedtek? Anhou wa9t yse3dek — lyoum walla ghodwa?`);
+      : `Momtez, 3iyedet ${clinic}! 🎉 T7eb na7kiw 10 d9aye9 bech nwarik kifech ye5dem 3la 3iyedtek? Anhou wa9t yse3dek — lyoum walla ghodwa?`, clinic);
   }
 
   if (lead.stage === "asked_call") {
@@ -1152,13 +1209,13 @@ async function handleVendorTurn(phone, text, lead) {
     await notifySales(`📞 "${lead.clinic_name || "—"}" (${phone}) y7eb appel: "${when}"`);
     return say(phone, ar
       ? `داكور! ✅ باش نتصلو بيك ${when}. كان عندك أي سؤال اكتب هوني.`
-      : `D'accord! ✅ Bech nettaslou bik ${when}. Ken 3andek ay sou2el ekteb houni.`);
+      : `D'accord! ✅ Bech nettaslou bik ${when}. Ken 3andek ay sou2el ekteb houni.`, clinic);
   }
 
   // stage "done": handoff already made, stay quiet-ish.
   return say(phone, ar
     ? "شريكتنا باش تتصل بيك قريب. كان عندك سؤال آخر اكتب هوني."
-    : "El charika bech tetassel bik 9rib. Ken 3andek sou2el e5er ekteb houni.");
+    : "El charika bech tetassel bik 9rib. Ken 3andek sou2el e5er ekteb houni.", clinic);
 }
 
 // Bare greeting ("slm", "bonjour", "عسلامة") -> neutral reply only, no steering.
@@ -1174,7 +1231,7 @@ function looksLikePureGreeting(text) {
 async function processPatientText(phone, text, numberId) {
   const clinic = await getClinic(numberId);
   const history = await db.getHistory(phone); // last 15 messages
-  await db.saveMessage(phone, "user", text);
+  await db.saveMessage(phone, "user", text, clinic && clinic.id);
 
   // Explicit script request ("aktebli bel 3arbi" / "aktebli b 7rouf"):
   // remembered per patient, honored from this message on.
@@ -1185,8 +1242,19 @@ async function processPatientText(phone, text, numberId) {
   // Sticky: once a dentist, always vendor for that number (fassa5 resets).
   const vlead = await db.getVendorLead(phone).catch(() => null);
   if (looksLikeVendorTrigger(text) || vlead) {
-    const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead);
+    const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead, clinic);
     if (v.handled) return v.reply;
+  }
+
+  // Shared clinic: the patient asks for the OTHER doctor by name -> never book
+  // for them, hand to the secretary (per-number config: otherDoctor).
+  if (clinic.otherDoctor && new RegExp(String(clinic.otherDoctor).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text || "")) {
+    await notifySecretary(`👨‍⚕️ Patient ${phone} yes2el 3la Dr ${clinic.otherDoctor}: "${(text || "").slice(0, 120)}"`, clinic).catch(() => {});
+    const arx = await scriptAr(phone, text);
+    const dh = await say(phone, arx
+      ? `الدكتور ${clinic.otherDoctor} يخدم في نفس العيادة — باش نوصلو طلبك للسكرتيرة وهي ترجعلك. تحب نحجزلك في ${clinic.name}؟`
+      : `Dr ${clinic.otherDoctor} ye5dem fi nafs el 3iyada — bech nwaslou talbek lel secretaire w hiya tarja3lek. T7eb n7ajzlek fi ${clinic.name}?`, clinic);
+    return dh.reply;
   }
 
   // French path (2026-09-29: text-only — the French voice note was removed):
@@ -1195,7 +1263,7 @@ async function processPatientText(phone, text, numberId) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
       : frenchFallback(text); // deterministic French without AI key (local tests)
-    await db.saveMessage(phone, "assistant", freply);
+    await db.saveMessage(phone, "assistant", freply, clinic && clinic.id);
     return freply;
   }
 
@@ -1203,9 +1271,9 @@ async function processPatientText(phone, text, numberId) {
   // The next message decides the mode.
   if (looksLikePureGreeting(text)) {
     const ar = await scriptAr(phone, text);
-    const g = await say(phone, clinic.greeting || (ar
-      ? "وعليكم السلام! كيفاش نجم نعاونك؟"
-      : "3alikom salam! Kifech n3awnek?"));
+    const g = await say(phone, ar
+      ? (clinic.greetingAr || clinic.greeting || "وعليكم السلام! كيفاش نجمو نعاونوك؟")
+      : (clinic.greeting || "3alikom salam! Kifech najmou n3awnouk?"), clinic);
     return g.reply;
   }
 
@@ -1215,7 +1283,7 @@ async function processPatientText(phone, text, numberId) {
   const pname = await db.getPatientName(phone).catch(() => null);
   const useAr = await scriptAr(phone, text);
   const reply = await aiReply(text, history, pname, clinic.name, useAr);
-  await db.saveMessage(phone, "assistant", reply);
+  await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return reply;
 }
 
@@ -1251,7 +1319,7 @@ async function settleBooking(id, approve, clinic) {
   const patientMsg = approve
     ? (ar ? `تأكد الرونديفو متاعك: ${b.slot}. نستناوك! 🌸` : `T2akked rendez-vous mte3ek: ${b.slot}. Nestennewk! 🌸`)
     : (ar ? `سامحنا، الوقت ${b.slot} ما عادش متاح. تحب وقت آخر؟` : `Sme7na, el wa9t ${b.slot} ma 3adech disponible. T7eb wa9t e5er?`);
-  await db.saveMessage(b.phone, "assistant", patientMsg);
+  await db.saveMessage(b.phone, "assistant", patientMsg, clinic && clinic.id);
   // The patient hears back from the same bot number they wrote to.
   await sendWhatsApp(b.phone, patientMsg, (b.number_id) || (clinic && clinic.id));
   console.log(`[booking] #${id} ${approve ? "CONFIRMED" : "CANCELLED"}`);
@@ -1317,11 +1385,11 @@ app.post("/webhook", async (req, res) => {
       // 2a) Secretary command (from her recognized number for this clinic)
       if (clinic.secretary && from === clinic.secretary) {
         console.log(`[secretary] ${from}: ${text}`);
-        await db.saveMessage(from, "user", text);
+        await db.saveMessage(from, "user", text, clinic && clinic.id);
         const reply = await processSecretaryText(text, clinic);
         lastWebhook = { at: new Date().toISOString(), from, text, reply };
         await sendWhatsApp(from, reply, numberId);
-        await db.saveMessage(from, "assistant", reply);
+        await db.saveMessage(from, "assistant", reply, clinic && clinic.id);
         continue;
       }
 
@@ -1514,6 +1582,102 @@ app.post("/api/conversations/:phone/delete", async (req, res) => {
   res.json({ deleted });
 });
 
+// ---------- Dentist viewer: private per-number link, read-only ----------
+// The dentist gets a private link like /v/<phone_number_id>/<token> showing
+// ONLY her own bot number's conversations — never other clinics'. The token
+// is an HMAC of the number id keyed by VERIFY_TOKEN: unguessable, needs no
+// database, and works for seed-only clinics too.
+function viewerToken(numberId) {
+  return crypto.createHmac("sha256", VERIFY_TOKEN).update("viewer:" + String(numberId)).digest("hex").slice(0, 32);
+}
+function viewerTokenOk(numberId, token) {
+  const a = String(token || ""), b = viewerToken(numberId);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+function viewerUrl(req, numberId) {
+  return req.protocol + "://" + req.get("host") + "/v/" + encodeURIComponent(numberId) + "/" + viewerToken(numberId);
+}
+
+// Server-side HTML escaping (the other esc() helpers live inside page
+// template strings as client-side JS — not visible here).
+function escHtml(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+
+function viewerPage(numberId, token, clinicName) {
+  const api = "/api/view/" + encodeURIComponent(numberId) + "/" + encodeURIComponent(token);
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conversations — ${escHtml(clinicName)}</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:640px;margin:0 auto;padding:0;background:#e5ddd5;color:#222}
+header{background:#075e54;color:#fff;padding:14px 16px;position:sticky;top:0}
+header h1{font-size:17px;margin:0}
+#list{padding:8px}
+.card{background:#fff;border-radius:8px;padding:12px;margin:8px;box-shadow:0 1px 1px rgba(0,0,0,.15);cursor:pointer}
+.card small{color:#888}
+#thread{display:none;padding:8px 8px 16px}
+.msg{max-width:80%;padding:8px 12px;border-radius:8px;margin:6px 8px;box-shadow:0 1px 1px rgba(0,0,0,.15);font-size:15px;line-height:1.45;white-space:pre-wrap;word-wrap:break-word}
+.msg.user{background:#fff;float:left;clear:both}
+.msg.assistant{background:#dcf8c6;float:right;clear:both}
+.who{font-size:11px;color:#888;font-weight:700}
+#back{background:#075e54;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:15px;margin:8px;cursor:pointer}
+.clear{clear:both}
+.empty{padding:32px;text-align:center;color:#666}
+</style></head><body>
+<header><h1>💬 Conversations — ${escHtml(clinicName)}</h1></header>
+<div id="list"></div>
+<div id="thread"></div>
+<script>
+var API=${JSON.stringify(api)};
+function esc(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/'/g,"&#39;");}
+function fmtDate(s){ if(!s) return ""; var d=new Date(s); return isNaN(d.getTime())? s : d.toLocaleString("fr-FR"); }
+async function load(){
+  var r=await fetch(API+"/conversations"); var j=await r.json();
+  var list=document.getElementById("list"), th=document.getElementById("thread");
+  th.style.display="none"; list.style.display="block";
+  if(!r.ok){ list.innerHTML="<p class=empty>⚠️ "+esc(j.error||"erreur")+"</p>"; return; }
+  if(!j.conversations.length){ list.innerHTML="<p class=empty>Aucune conversation pour le moment.</p>"; return; }
+  list.innerHTML=j.conversations.map(function(c){
+    return "<div class=card onclick=\"viewConv('"+esc(c.phone)+"')\"><b>"+esc(c.phone)+"</b> — "+c.count+" messages<br><small>"+esc(fmtDate(c.last_at))+"</small></div>";
+  }).join("");
+}
+async function viewConv(phone){
+  var r=await fetch(API+"/conversations/"+encodeURIComponent(phone)); var j=await r.json();
+  var list=document.getElementById("list"), th=document.getElementById("thread");
+  list.style.display="none"; th.style.display="block";
+  if(!r.ok){ th.innerHTML="<p class=empty>⚠️ "+esc(j.error||"erreur")+"</p>"; return; }
+  th.innerHTML="<button id=back onclick=\"load()\">← Retour</button>"+
+    (j.messages.map(function(m){
+      return "<div class=\"msg "+m.role+"\"><span class=who>"+(m.role==="user"?"Patient":"Bot")+"</span><br>"+esc(m.text)+"</div>";
+    }).join("") || "<p class=empty>Vide.</p>")+"<div class=clear></div>";
+}
+load();
+</script></body></html>`;
+}
+
+app.get("/v/:numberId/:token", async (req, res) => {
+  const { numberId, token } = req.params;
+  if (!viewerTokenOk(numberId, token)) return res.status(403).send("<h1>🔒 Lien invalide</h1>");
+  const clinic = await getClinic(numberId).catch(() => null);
+  res.send(viewerPage(numberId, token, (clinic && clinic.name) || "Clinique"));
+});
+
+app.get("/api/view/:numberId/:token/conversations", async (req, res) => {
+  const { numberId, token } = req.params;
+  if (!viewerTokenOk(numberId, token)) return res.status(403).json({ error: "lien ghalet" });
+  const conversations = await db.getConversations(numberId).catch(() => []);
+  res.json({ conversations });
+});
+
+app.get("/api/view/:numberId/:token/conversations/:phone", async (req, res) => {
+  const { numberId, token } = req.params;
+  if (!viewerTokenOk(numberId, token)) return res.status(403).json({ error: "lien ghalet" });
+  const phone = (req.params.phone || "").replace(/\D/g, "");
+  if (!phone) return res.status(400).json({ error: "bad phone" });
+  const messages = await db.getFullHistory(phone, numberId).catch(() => []);
+  res.json({ messages });
+});
+
 // ---------- /formulaire: public signup page for doctors ----------
 function validateSignup(d) {
   const clean = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -1616,7 +1780,8 @@ app.post("/api/signups", async (req, res) => {
 app.get("/api/clinics", async (req, res) => {
   if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
   const rows = await db.listClinicConfigs().catch(() => []);
-  res.json({ ok: true, clinics: rows });
+  const clinics = rows.map((r) => ({ ...r, viewer_url: viewerUrl(req, r.phone_number_id) }));
+  res.json({ ok: true, clinics });
 });
 
 app.post("/api/clinics", async (req, res) => {
@@ -1630,6 +1795,9 @@ app.post("/api/clinics", async (req, res) => {
     greeting: String(b.greeting || "").slice(0, 500),
     hours: String(b.hours || "").slice(0, 200),
     secretary_number: String(b.secretary_number || "").replace(/\D/g, "").slice(0, 20),
+    booking_hours: String(b.booking_hours || "").slice(0, 200),
+    greeting_ar: String(b.greeting_ar || "").slice(0, 500),
+    other_doctor: String(b.other_doctor || "").slice(0, 100),
   });
   res.json({ ok: true });
 });
@@ -1695,4 +1863,8 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French text path (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT };
+  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT,
+  // Per-number booking hours (exported for the regression test)
+  parseBookingHours, SEED_CLINICS,
+  // Dentist viewer token (exported for the regression test)
+  viewerToken };
