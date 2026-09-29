@@ -1358,6 +1358,12 @@ async function run() {
     const pageTxt = await rPage.text();
     ok("vw: page shows clinic name", pageTxt.includes("Cabinet Dr Ines"), pageTxt.slice(0, 120));
     ok("vw: page is read-only (no delete)", !/fassa5|delete/i.test(pageTxt));
+    // the page's inline script must be syntactically valid — a broken script = blank page
+    const scriptM = pageTxt.match(/<script>([\s\S]*)<\/script>/);
+    let scriptOk = false, scriptErr = "no <script> block";
+    try { if (scriptM) { new Function(scriptM[1]); scriptOk = true; scriptErr = ""; } }
+    catch (e) { scriptErr = e.message; }
+    ok("vw: page script is valid JS", scriptOk, scriptErr);
     const rPageBad = await fetch(`${base}/v/${PILOT}/wrongtoken`);
     ok("vw: viewer page 403 with bad token", rPageBad.status === 403, `status=${rPageBad.status}`);
 

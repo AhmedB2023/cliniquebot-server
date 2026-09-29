@@ -1638,18 +1638,20 @@ async function load(){
   if(!r.ok){ list.innerHTML="<p class=empty>⚠️ "+esc(j.error||"erreur")+"</p>"; return; }
   if(!j.conversations.length){ list.innerHTML="<p class=empty>Aucune conversation pour le moment.</p>"; return; }
   list.innerHTML=j.conversations.map(function(c){
-    return "<div class=card onclick=\"viewConv('"+esc(c.phone)+"')\"><b>"+esc(c.phone)+"</b> — "+c.count+" messages<br><small>"+esc(fmtDate(c.last_at))+"</small></div>";
+    return '<div class=card data-phone="'+esc(c.phone)+'"><b>'+esc(c.phone)+'</b> — '+c.count+' messages<br><small>'+esc(fmtDate(c.last_at))+'</small></div>';
   }).join("");
+  Array.prototype.forEach.call(list.querySelectorAll(".card"), function(el){ el.onclick=function(){ viewConv(el.getAttribute("data-phone")); }; });
 }
 async function viewConv(phone){
   var r=await fetch(API+"/conversations/"+encodeURIComponent(phone)); var j=await r.json();
   var list=document.getElementById("list"), th=document.getElementById("thread");
   list.style.display="none"; th.style.display="block";
   if(!r.ok){ th.innerHTML="<p class=empty>⚠️ "+esc(j.error||"erreur")+"</p>"; return; }
-  th.innerHTML="<button id=back onclick=\"load()\">← Retour</button>"+
+  th.innerHTML='<button id=back>← Retour</button>'+
     (j.messages.map(function(m){
-      return "<div class=\"msg "+m.role+"\"><span class=who>"+(m.role==="user"?"Patient":"Bot")+"</span><br>"+esc(m.text)+"</div>";
+      return '<div class="msg '+m.role+'"><span class=who>'+(m.role==="user"?"Patient":"Bot")+'</span><br>'+esc(m.text)+'</div>';
     }).join("") || "<p class=empty>Vide.</p>")+"<div class=clear></div>";
+  document.getElementById("back").onclick=function(){ load(); };
 }
 load();
 </script></body></html>`;
