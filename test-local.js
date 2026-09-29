@@ -23,11 +23,10 @@ function makeStubDb() {
     getHistory: async (phone, limit = 15) =>
       messages.filter((m) => m.phone === phone).slice(-limit).map((m) => ({ role: m.role, text: m.text })),
     getConversations: async (numberId = null) =>
-      [...new Set(messages.filter((m) => !numberId || m.number_id === numberId).map((m) => m.phone))].map((phone) => ({
-        phone,
-        count: messages.filter((m) => m.phone === phone && (!numberId || m.number_id === numberId)).length,
-        last_at: "test",
-      })),
+      [...new Set(messages.filter((m) => !numberId || m.number_id === numberId).map((m) => m.phone))].map((phone) => {
+        const ms = messages.filter((m) => m.phone === phone && (!numberId || m.number_id === numberId));
+        return { phone, count: ms.length, last_at: "test", number_id: ms.length ? ms[ms.length - 1].number_id : null };
+      }),
     getFullHistory: async (phone, numberId = null) =>
       messages.filter((m) => m.phone === phone && (!numberId || m.number_id === numberId)).map((m) => ({ role: m.role, text: m.text })),
     deleteConversation: async (phone) => {
@@ -1379,6 +1378,27 @@ async function run() {
     ok("vw: /api/clinics carries viewer_url",
       !!(vwEntry && vwEntry.viewer_url && vwEntry.viewer_url.includes("/v/NUM_VW/")),
       JSON.stringify(vwEntry && vwEntry.viewer_url));
+  }
+
+  // ADMIN — clinic label per conversation + clinic filter on /messages
+  {
+    const base = "http://127.0.0.1:43117";
+    const TEST_PW = "clinic-bot-verify-123";
+    const jAdmin = await (await fetch(`${base}/api/conversations?password=${TEST_PW}`)).json();
+    const p = jAdmin.conversations.find((c) => c.phone === "21600000901");
+    ok("admin: conversation carries clinic label", p && p.clinic === "Cabinet Dr Ines", JSON.stringify(p && p.clinic));
+    ok("admin: conversation carries number_id", !!(p && p.number_id === "1364750653386950"), JSON.stringify(p && p.number_id));
+    const o = jAdmin.conversations.find((c) => c.phone === "21600000902");
+    ok("admin: other-number conversation labelled", !!(o && o.clinic), JSON.stringify(o && o.clinic));
+    const rPage = await fetch(`${base}/messages`);
+    ok("admin: page 200", rPage.status === 200, `status=${rPage.status}`);
+    const pageTxt = await rPage.text();
+    ok("admin: page has clinic filter", pageTxt.includes('id="filter"') && pageTxt.includes('renderList('), "no filter");
+    const scriptM = pageTxt.match(/<script>([\s\S]*)<\/script>/);
+    let scriptOk = false, scriptErr = "no <script> block";
+    try { if (scriptM) { new Function(scriptM[1]); scriptOk = true; scriptErr = ""; } }
+    catch (e) { scriptErr = e.message; }
+    ok("admin: page script is valid JS", scriptOk, scriptErr);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

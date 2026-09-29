@@ -156,7 +156,7 @@ async function getConversations(numberId = null) {
           [numberId]
         )
       : await p.query(
-          `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at
+          `SELECT phone, COUNT(*) AS count, MAX(created_at) AS last_at, MAX(number_id) AS number_id
            FROM messages GROUP BY phone ORDER BY last_at DESC`
         );
     return r.rows;
