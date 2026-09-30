@@ -957,6 +957,20 @@ async function run() {
     ok("f7e: name Abdallah is not reschedule", bot.looksLikeReschedule("el rendez-vous mta3 abdallah wa9tech?") === false);
   }
 
+  // F7f — bare cancel verb (no noun, no pronoun) still cancels:
+  // the f-s-5 root is unambiguous in Derja.
+  {
+    ok("f7f: fasa5 tawa", bot.looksLikeCancellation("fasa5 tawa") === true);
+    ok("f7f: fasa5 sil te plait", bot.looksLikeCancellation("fasa5 sil te plait") === true);
+    ok("f7f: bare fasa5", bot.looksLikeCancellation("fasa5") === true);
+    const p = "21600000145";
+    const id = await stubDb.saveBooking(p, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    const r = await bot.processPatientText(p, "fasa5 tawa");
+    has("f7f: fasa5 tawa cancels", r, "fassakht");
+    const b = await stubDb.getBooking(id);
+    ok("f7f: fasa5 tawa status cancelled in db", b && b.status === "cancelled", JSON.stringify(b));
+  }
+
   // F8 — FAQ/identity answered before any stale-proposal merge
   {
     ok("f8: price kind", bot.faqKind("9adech el soum?") === "price");

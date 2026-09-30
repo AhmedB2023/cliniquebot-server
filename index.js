@@ -457,23 +457,21 @@ function looksLikeFrustration(text) {
 // F7 — Cancellation intent ("n7eb nfassakh el rendez-vous mte3i").
 // Checked BEFORE the status question: cancelling beats asking about status.
 //
-// Root-based: the verb root f-s-5 (فسخ) is matched vowel-tolerant
-// (/f[aeiou]*s[aeiou]*5/), so fasa5, fas5, nfasa5, tafsa5li, yefsa5…
-// are all caught by one pattern — no spelling list to maintain.
+// Root-based: the verb roots f-s-5 / f-s-kh (فسخ) are UNAMBIGUOUS — in
+// Derja they can only mean "cancel". So any spelling counts on its own,
+// with or without the appointment noun or a pronoun:
+// fasa5, fas5, nfasa5, fasa5 tawa, fasa5 sil te plait, tafsakh…
 function looksLikeCancellation(text) {
   const raw = (text || "").trim();
   if (/فسخ/.test(raw)) return true; // Arabic root: افسخ، تفسخلي، نفسخ…
   if (/^(الغي|إلغاء|الغاء)/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
-  // Pronoun-carrying forms ("cancel it [for me]") — no noun needed:
-  // anulih/anuliha/anulha, fasa5li/tafsa5li/nfasa5li…
+  if (rootRe("fs5").test(t)) return true;
+  if (/f[aeiou]*s+[aeiou]*kh/.test(t)) return true; // kh-spelling: fassakh, nafsakh…
+  // Pronoun-carrying "cancel it": anulih/anuliha/anulha.
   if (/(^|\s)(anulih|anuliha|anulha)(\s|$)/.test(t)) return true;
-  if (/(^|\s)\S*f[aeiou]*s[aeiou]*5(li|ha|hom)\b/.test(t)) return true;
-  // Verb root f-s-5 in any spelling + the appointment noun.
-  if (rootRe("fs5").test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t)) return true;
-  // Remaining explicit forms: kh-spelling root f-s-kh (fassakh/nafsakh/tafsakh…),
-  // nlaghi, annuler/cancel.
-  return /(f[aeiou]*s+[aeiou]*kh|nlaghi|nla8i|annuler|cancel)/
+  // Vaguer forms still need the appointment noun as anchor.
+  return /(nlaghi|nla8i|annuler|cancel)/
     .test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t);
 }
 
