@@ -930,6 +930,33 @@ async function run() {
     ok("f7c: anulih status cancelled in db", b && b.status === "cancelled", JSON.stringify(b));
   }
 
+  // F7d — "fasa5li/tafsa5li/nfasa5" (cancel it for me) detected as cancellation
+  {
+    ok("f7d: fasa5li detected", bot.looksLikeCancellation("le juste fasa5li rendez vous eli 3andi") === true);
+    ok("f7d: tafsa5li detected", bot.looksLikeCancellation("momken tafsa5li rendez vous?") === true);
+    ok("f7d: nfasa5 detected", bot.looksLikeCancellation("n7eb nfasa5 el rendez-vous mte3i") === true);
+    const p = "21600000144";
+    const id = await stubDb.saveBooking(p, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    const r = await bot.processPatientText(p, "momken tafsa5li rendez vous?");
+    has("f7d: tafsa5li cancels", r, "fassakht");
+    const b = await stubDb.getBooking(id);
+    ok("f7d: tafsa5li status cancelled in db", b && b.status === "cancelled", JSON.stringify(b));
+  }
+
+  // F7e — root-based matching: any vowel spelling of the f-s-5 root is caught
+  {
+    ok("f7e: nefsa5 detected", bot.looksLikeCancellation("n7eb nefsa5 el rendez-vous") === true);
+    ok("f7e: yefsa5 detected", bot.looksLikeCancellation("yefsa5 el 7ajz mte3i") === true);
+    ok("f7e: tafsakh detected", bot.looksLikeCancellation("tafsakh el rendez-vous") === true);
+    ok("f7e: arabic root detected", bot.looksLikeCancellation("ممكن تفسخلي الرونديفو؟") === true);
+    ok("f7e: reschedule still not cancel", bot.looksLikeCancellation("n7eb nbadal el wa9t") === false);
+    ok("f7e: book root ne7jez", bot.looksLikeBookingIntent("n7eb ne7jez rendez-vous") === true);
+    ok("f7e: book root te7jezli", bot.looksLikeBookingIntent("te7jezli rendez-vous") === true);
+    ok("f7e: bare noun 7ajz is not booking intent", bot.looksLikeBookingIntent("el 7ajz mte3i wa9tech?") === false);
+    ok("f7e: reschedule root nbadel", bot.looksLikeReschedule("n7eb nbadel el wa9t") === true);
+    ok("f7e: name Abdallah is not reschedule", bot.looksLikeReschedule("el rendez-vous mta3 abdallah wa9tech?") === false);
+  }
+
   // F8 — FAQ/identity answered before any stale-proposal merge
   {
     ok("f8: price kind", bot.faqKind("9adech el soum?") === "price");

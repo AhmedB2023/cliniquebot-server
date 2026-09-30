@@ -402,13 +402,28 @@ function looksLikeRefusal(text) {
   return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test(raw.toLowerCase());
 }
 
+// ---------- Root-based intent matching ----------
+// Tunisian verbs keep their consonant root across spelling variants:
+//   f-s-5 (فسخ): fasa5, fas5, nfasa5, tafsa5li, yefsa5, nefsakh
+//   7-j-z (حجز): na7jez, ne7jez, te7jez, e7jezli, a7jez
+//   b-d-l (بدل): nbadal, nbadel, badal, ybadel
+// rootRe("fs5") → /f[aeiou]*s[aeiou]*5/ — one pattern catches every vowel
+// spelling, so adding or dropping a letter no longer breaks detection.
+function rootRe(root) {
+  return new RegExp(root.split("").join("[aeiou]*"));
+}
+
 // Booking intent without any date/time ("n7eb na7jez", "nheb na5jez rendez vous", "نحب نحجز").
 function looksLikeBookingIntent(text) {
   const raw = (text || "").trim();
   if (/نحب\s*(نحجز|ناخذ)/.test(raw)) return true;
   if (/(احجز|احجزلي|حجز|موعد)/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
-  if (/(na7jez|na5jez|nahjez|e7jezli|a7jezli|e7jez|a7jez)/.test(t)) return true;
+  // Verb root 7-j-z (حجز), any vowel spelling, with person prefix
+  // (n/t/y/a/e): na7jez, ne7jez, te7jez, ye7jez, a7jez, e7jezli…
+  // The prefix requirement keeps the bare noun "7ajz" (my booking WHEN?)
+  // from matching — that's a status question, not a booking intent.
+  if (/[ntyae][aeiou]*[75][aeiou]*j[aeiou]*z/.test(t)) return true;
   if (/(n7eb|nheb)/.test(t) && /(rendez|rdv|7ajz|hajz|reservation)/.test(t)) return true;
   return false;
 }
@@ -441,13 +456,24 @@ function looksLikeFrustration(text) {
 
 // F7 — Cancellation intent ("n7eb nfassakh el rendez-vous mte3i").
 // Checked BEFORE the status question: cancelling beats asking about status.
+//
+// Root-based: the verb root f-s-5 (فسخ) is matched vowel-tolerant
+// (/f[aeiou]*s[aeiou]*5/), so fasa5, fas5, nfasa5, tafsa5li, yefsa5…
+// are all caught by one pattern — no spelling list to maintain.
 function looksLikeCancellation(text) {
   const raw = (text || "").trim();
-  if (/^(افسخ|أفسخ|الغي|إلغاء)/.test(raw)) return true;
+  if (/فسخ/.test(raw)) return true; // Arabic root: افسخ، تفسخلي، نفسخ…
+  if (/^(الغي|إلغاء|الغاء)/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
-  // "anulih/anuliha" (cancel it) carries the pronoun — no noun needed.
+  // Pronoun-carrying forms ("cancel it [for me]") — no noun needed:
+  // anulih/anuliha/anulha, fasa5li/tafsa5li/nfasa5li…
   if (/(^|\s)(anulih|anuliha|anulha)(\s|$)/.test(t)) return true;
-  return /(nfasakh|nfassakh|nfas5|nfass5|nfsakh|fasakh|fassakh|faskh|fas5|nlaghi|nla8i|annuler|cancel)/
+  if (/(^|\s)\S*f[aeiou]*s[aeiou]*5(li|ha|hom)\b/.test(t)) return true;
+  // Verb root f-s-5 in any spelling + the appointment noun.
+  if (rootRe("fs5").test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t)) return true;
+  // Remaining explicit forms: kh-spelling root f-s-kh (fassakh/nafsakh/tafsakh…),
+  // nlaghi, annuler/cancel.
+  return /(f[aeiou]*s+[aeiou]*kh|nlaghi|nla8i|annuler|cancel)/
     .test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t);
 }
 
@@ -579,7 +605,10 @@ const multiBooking = new Map(); // phone -> extra appointments still to book aft
 // Rescheduling: the patient moves an EXISTING booking (no duplicate row).
 function looksLikeReschedule(text) {
   const t = " " + (text || "").toLowerCase() + " ";
-  if (/(nbadal|n7eb nbadal|nheb nbadel|nbadal el wa9t|n7eb nghayar|badal el rendez)/.test(t)) return true;
+  // Verb roots b-d-l (بدل) and gh-y-r (غير), any vowel spelling, with
+  // person prefix (n/t/y): nbadal, nbadel, badal, ybadel, nghayar…
+  if (/(^|\s)(n|t|y)?b[aeiou]*d[aeiou]*l/.test(t)) return true;
+  if (/(^|\s)(n|t|y)?gh[aeiou]*y[aeiou]*r/.test(t)) return true;
   return /(نبدل|نحب نبدل|نغير)/.test(text || "");
 }
 const rescheduling = new Map(); // phone -> bookingId being rescheduled
