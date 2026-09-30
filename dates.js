@@ -70,7 +70,7 @@ const NUM_WORDS = [
 // weekday name -> JS day number (0 = Sunday)
 const DAYS = [
   ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el 7ad", 0], ["dimanche", 0],
-  ["ethnin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
+  ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["mercredi", 3],
   ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4],

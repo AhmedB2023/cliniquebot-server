@@ -445,6 +445,8 @@ function looksLikeCancellation(text) {
   const raw = (text || "").trim();
   if (/^(افسخ|أفسخ|الغي|إلغاء)/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
+  // "anulih/anuliha" (cancel it) carries the pronoun — no noun needed.
+  if (/(^|\s)(anulih|anuliha|anulha)(\s|$)/.test(t)) return true;
   return /(nfasakh|nfassakh|nfas5|nfass5|nfsakh|fasakh|fassakh|faskh|fas5|nlaghi|nla8i|annuler|cancel)/
     .test(t) && /(rendez|rdv|7ajz|hajz|reservation|mte3i|mta3i)/.test(t);
 }
@@ -798,7 +800,7 @@ async function finishBooking(phone, p, name, clinic) {
   if (dup) {
     reply = ar
       ? `الرونديفو متاعك (${p.display}) مازال يستنى — نأكدلك ونرجعلك.`
-      : `El rendez-vous mte3ek (${p.display}) deja pending — n2akkedlek w narja3lek.`;
+      : `El rendez-vous mte3ek (${p.display}) deja yestanna — n2akkedlek w narja3lek.`;
   } else {
     const id = await db.saveBooking(phone, p.display, p.slot_at || null, name || null, clinic && clinic.id);
     console.log(`[booking] #${id} pending: ${phone} (${name || "sans nom"}) -> ${p.display}`);
@@ -855,7 +857,7 @@ async function handleStatusQuestion(phone, text, clinic) {
   } else {
     reply = ar
       ? `الرونديفو متاعك (${when}) مازال يستنى — نستناو في التأكيد من العيادة. نأكدلك ونرجعلك. ⏳`
-      : `El rendez-vous mte3ek (${when}) mazel pending — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
+      : `El rendez-vous mte3ek (${when}) mazel yestanna — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
   }
   return say(phone, reply, clinic);
 }
@@ -1070,13 +1072,20 @@ async function handleBookingTurn(phone, text, history, clinic) {
         : "D'accord — anhou nhar w anhou wa9t t7eb?", clinic);
     }
     if (!target) {
+      // Don't hijack "ey" answers to non-booking questions (address info,
+      // cancellation confirm, ...): let the AI answer with history context.
+      const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
+      const lastText = (lastAsst && lastAsst.text) || "";
+      if (/(address|adresse|عنوان|tfassakh|nfassakh|fassakh|فسخ|نفسخ|annuler|cancel)/i.test(lastText)) {
+        return { handled: false };
+      }
       // No pending slot — but a booking may already exist (double "ey"):
       // remind instead of inventing a new one.
       const existing = await db.getLatestBooking(phone).catch(() => null);
       if (existing && (existing.status === "pending" || existing.status === "confirmed")) {
         return say(phone, ar2
-          ? `عندك رونديفو deja pending: ${existing.slot} — نأكدلك ونرجعلك.`
-          : `3andek rendez-vous deja pending: ${existing.slot} — n2akkedlek w narja3lek.`, clinic);
+          ? `عندك رونديفو مازال يستنى: ${existing.slot} — نأكدلك ونرجعلك.`
+          : `3andek rendez-vous deja yestanna: ${existing.slot} — n2akkedlek w narja3lek.`, clinic);
       }
       return { handled: false }; // no pending slot: let the AI answer
     }
@@ -1651,7 +1660,8 @@ header h1{font-size:17px;margin:0}
 <script>
 var API=${JSON.stringify(api)};
 function esc(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/'/g,"&#39;");}
-function fmtDate(s){ if(!s) return ""; var d=new Date(s); return isNaN(d.getTime())? s : d.toLocaleString("fr-FR"); }
+function fmtDate(s){ if(!s) return ""; var d=new Date(s); return isNaN(d.getTime())? s : d.toLocaleString("fr-FR",{timeZone:"Africa/Tunis"}); }
+function fmtPhone(p){ p=String(p||""); var m=p.match(/^216(\d{8})$/); return m? m[1] : p; }
 async function load(){
   var r=await fetch(API+"/conversations"); var j=await r.json();
   var list=document.getElementById("list"), th=document.getElementById("thread");
@@ -1659,7 +1669,7 @@ async function load(){
   if(!r.ok){ list.innerHTML="<p class=empty>⚠️ "+esc(j.error||"erreur")+"</p>"; return; }
   if(!j.conversations.length){ list.innerHTML="<p class=empty>Aucune conversation pour le moment.</p>"; return; }
   list.innerHTML=j.conversations.map(function(c){
-    return '<div class=card data-phone="'+esc(c.phone)+'"><b>'+esc(c.phone)+'</b> — '+c.count+' messages<br><small>'+esc(fmtDate(c.last_at))+'</small></div>';
+    return '<div class=card data-phone="'+esc(c.phone)+'"><b>'+esc(fmtPhone(c.phone))+'</b> — '+c.count+' messages<br><small>'+esc(fmtDate(c.last_at))+'</small></div>';
   }).join("");
   Array.prototype.forEach.call(list.querySelectorAll(".card"), function(el){ el.onclick=function(){ viewConv(el.getAttribute("data-phone")); }; });
 }

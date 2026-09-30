@@ -235,7 +235,7 @@ async function run() {
     ok("flow1: name remembered", saved === "ahmed ben salah", saved);
     // double "ey" must NOT create a duplicate
     const r4 = await bot.processPatientText(p, "ey");
-    has("flow1: no duplicate on 2nd ey", r4, "deja pending");
+    has("flow1: no duplicate on 2nd ey", r4, "deja yestanna");
     const n = (await stubDb.getPendingBookings()).filter((x) => x.phone === p).length;
     ok("flow1: exactly 1 pending", n === 1, `n=${n}`);
   }
@@ -310,7 +310,7 @@ async function run() {
   {
     const p = "21600000002"; // has a pending jem3a booking from flow 2
     const r1 = await bot.processPatientText(p, "ca y est?");
-    has("flow6: pending status", r1, "mazel pending");
+    has("flow6: pending status", r1, "mazel yestanna");
     const b = await stubDb.getLatestBooking(p);
     const sec = await bot.processSecretaryText(`ok ${b.id}`);
     has("flow6: secretary ok", sec, "T2akked");
@@ -890,6 +890,44 @@ async function run() {
     // no booking -> honest answer, no crash
     const r2 = await bot.processPatientText("21600000129", "n7eb nfassakh el rendez-vous");
     has("f7: no booking to cancel", r2, "Ma l9it 7atta rendez-vous");
+  }
+
+  // F7b — "ey" answering a NON-booking question is never hijacked by the
+  // booking-acceptance logic (live bug 2026-09-29: "ey" after the address
+  // question and after the cancel question both got "deja yestanna").
+  {
+    // 1) address question: "ey" falls through to the AI, no hijack
+    const p1 = "21600000140";
+    await stubDb.saveBooking(p1, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    await stubDb.saveMessage(p1, "assistant", "Cabinet Dr Ines mawjouda fi Tunis. T7eb ma3loumét akthar 3la l'address?");
+    const r1 = await bot.processPatientText(p1, "ey");
+    ok("f7b: ey-after-address not hijacked", typeof r1 === "string" && !r1.includes("yestanna"), JSON.stringify(r1));
+
+    // 2) cancellation question: "ey" falls through, no hijack
+    const p2 = "21600000141";
+    await stubDb.saveBooking(p2, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    await stubDb.saveMessage(p2, "assistant", "Nchallah labes! T7eb nfassakh el rendez-vous mta3ek?");
+    const r2 = await bot.processPatientText(p2, "ey");
+    ok("f7b: ey-after-cancel-question not hijacked", typeof r2 === "string" && !r2.includes("yestanna"), JSON.stringify(r2));
+
+    // 3) booking context still works: "ey" after a booking question -> reminder
+    const p3 = "21600000142";
+    await stubDb.saveBooking(p3, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    await stubDb.saveMessage(p3, "assistant", "D'accord — 30-09-2026, 09:00, n2akkedlek?");
+    const r3 = await bot.processPatientText(p3, "ey");
+    ok("f7b: ey-after-booking-question still reminds", typeof r3 === "string" && r3.includes("yestanna"), JSON.stringify(r3));
+  }
+
+  // F7c — "anulih/anuliha" (cancel it) detected as cancellation, cancels direct
+  {
+    ok("f7c: anulih detected", bot.looksLikeCancellation("anulih") === true);
+    ok("f7c: anuliha detected", bot.looksLikeCancellation("anuliha") === true);
+    const p = "21600000143";
+    const id = await stubDb.saveBooking(p, "30-09-2026, 09:00", "2026-09-30T08:00:00.000Z", "Test Testi");
+    const r = await bot.processPatientText(p, "anulih");
+    has("f7c: anulih cancels", r, "fassakht");
+    const b = await stubDb.getBooking(id);
+    ok("f7c: anulih status cancelled in db", b && b.status === "cancelled", JSON.stringify(b));
   }
 
   // F8 — FAQ/identity answered before any stale-proposal merge
