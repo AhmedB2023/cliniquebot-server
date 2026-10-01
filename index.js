@@ -532,6 +532,24 @@ function looksLikeFrench(text) {
   return /\b(bonjour|bonsoir|combien)\b/.test(t);
 }
 
+// Lenient French detector for french_auto clinics (2026-10-01).
+// Same idea as looksLikeFrench, but "rendez-vous"/"rdv"/"ey"/"le" don't veto:
+// a French tourist writes "Bonjour, je voudrais un rendez-vous" — real Derja
+// still carries an unmistakable marker (n7eb, chnowa, 9adech...). For tourism
+// clinics a wrong-French reply to a Tunisian beats a wrong-Derja reply to a
+// French tourist.
+function looksLikeFrenchAuto(text) {
+  const raw = text || "";
+  if (/[êëàâçîïôûùœæ]/i.test(raw)) return true; // French diacritics never appear in Arabizi
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|slem|slm)/.test(t)) return false;
+  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je veux|je voudrais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  const hits = (t.match(fr) || []).length;
+  if (hits >= 2) return true;
+  // One unambiguous French opener is enough ("Bonjour" alone = French).
+  return /\b(bonjour|bonsoir|combien)\b/.test(t);
+}
+
 // Explicit French request (revised 2026-09-27): the bot answers in French
 // ONLY when the patient explicitly asks — no auto-detect.
 // ("jewbni bel français", "ektebli bel français", "parle en français", "en français")
@@ -551,7 +569,7 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 - INTERDIT : médicaments, symptômes, diagnostic, conseil médical. Pour une question médicale, dites : "Pour les questions médicales, seul le docteur peut répondre — voulez-vous prendre rendez-vous ?"
 - N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites "Je vérifie avec la clinique et je reviens vers vous."
 - Ne confirmez jamais un rendez-vous définitivement seul : si le patient accepte un créneau, dites "D'accord, je vous confirme et je reviens vers vous" — la confirmation finale vient de la secrétaire.
-- Ne vous excusez jamais de parler français : c'est le patient qui l'a demandé. Répondez directement et utilement.`;
+- Ne vous excusez jamais de parler français : le patient vous a écrit en français. Répondez directement et utilement.`;
 
 // No-AI-key fallback in French (used by the local test; production has the AI key).
 function frenchFallback(text) {
@@ -1293,9 +1311,12 @@ async function processPatientText(phone, text, numberId) {
     return dh.reply;
   }
 
-  // French path (2026-09-29: text-only — the French voice note was removed):
-  // reply in French text ONLY when the patient explicitly asks for French.
-  if (looksLikeFrenchRequest(text)) {
+  // French path (2026-09-29: text-only — the French voice note was removed;
+  // 2026-10-01: auto-detect is GLOBAL — whoever writes in French gets French,
+  // whoever writes Derja gets Derja, per message, no per-clinic flag).
+  // The lenient detector keeps real Derja out: any Derja marker (n7eb,
+  // chnowa, 9adech...) vetoes French.
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
       : frenchFallback(text); // deterministic French without AI key (local tests)
@@ -1923,7 +1944,7 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French text path (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, FRENCH_SYSTEM_PROMPT,
+  looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, FRENCH_SYSTEM_PROMPT,
   // Per-number booking hours (exported for the regression test)
   parseBookingHours, SEED_CLINICS,
   // Dentist viewer token (exported for the regression test)

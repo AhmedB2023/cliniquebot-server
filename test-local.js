@@ -1262,9 +1262,13 @@ async function run() {
   }
 
   // FR — French text path (2026-09-29: voice note removed, text-only).
-  // French ONLY on explicit request. No auto-detect: "Bonjour" alone stays Derja greeting.
+  // 2026-10-01: French auto-detect is GLOBAL. Whoever writes in French gets
+  // French, whoever writes Derja gets Derja — per message, no per-clinic flag.
+  // The lenient detector (looksLikeFrenchAuto, wired into the flow) keeps real
+  // Derja out: any Derja marker (n7eb, chnowa, 9adech...) vetoes French.
+  // The strict looksLikeFrench stays as a utility (unchanged behavior).
   {
-    // auto-detector still exists as a utility (not wired into the flow)
+    // strict detector (utility, unchanged)
     ok("fr: detector 'Bonjour'", bot.looksLikeFrench("Bonjour") === true);
     ok("fr: detector full sentence",
       bot.looksLikeFrench("Bonjour, vous avez une Clio disponible ?") === true);
@@ -1273,6 +1277,15 @@ async function run() {
       bot.looksLikeFrench("n7eb na7jez rendez-vous") === false);
     ok("fr: detector 'rendez-vous' = derja",
       bot.looksLikeFrench("Je veux fixer un rendez-vous") === false);
+    // lenient detector (this is what the flow uses for auto-detect)
+    ok("fr-auto: lenient 'Bonjour' = French",
+      bot.looksLikeFrenchAuto("Bonjour") === true);
+    ok("fr-auto: lenient 'je voudrais un rendez-vous' = French",
+      bot.looksLikeFrenchAuto("Bonjour, je voudrais un rendez-vous") === true);
+    ok("fr-auto: lenient 'n7eb na7jez rendez-vous' = Derja",
+      bot.looksLikeFrenchAuto("n7eb na7jez rendez-vous") === false);
+    ok("fr-auto: lenient 'Bonjour n7eb na7jez' = Derja",
+      bot.looksLikeFrenchAuto("Bonjour n7eb na7jez") === false);
     // explicit-request trigger (this is what the flow uses)
     ok("fr: req 'jewbni bel français'", bot.looksLikeFrenchRequest("jewbni bel français") === true);
     ok("fr: req 'ektebli bel français'", bot.looksLikeFrenchRequest("ektebli bel français") === true);
@@ -1283,10 +1296,22 @@ async function run() {
       bot.looksLikeFrenchRequest("Bonjour") === false);
     ok("fr: req incidental mention not a request",
       bot.looksLikeFrenchRequest("el ordonnance bel français") === false);
-    // flow: no auto-detect
+    // flow: GLOBAL auto-detect (2026-10-01) — "Bonjour" alone -> French
     const pf = "21600000fr1";
     const fr0 = await bot.processPatientText(pf, "Bonjour");
-    has("fr: 'Bonjour' alone -> Derja greeting (no auto-detect)", fr0, "Kifech najmou n3awnouk");
+    has("fr: 'Bonjour' alone -> French reply (global auto-detect)", fr0, "Bonjour");
+    ok("fr: French auto reply is not Derja", !/n3awnek|n3awnouk/.test(fr0),
+      `reply was: ${JSON.stringify(fr0)}`);
+    // flow: full French sentence -> French
+    const pf3 = "21600000fr3";
+    const fr3 = await bot.processPatientText(pf3, "Bonjour, je voudrais un rendez-vous");
+    ok("fr: French sentence -> French reply", /Bonjour/.test(fr3),
+      `reply was: ${JSON.stringify(fr3)}`);
+    // flow: Derja marker wins over auto-detect
+    const pf4 = "21600000fr4";
+    const fr4 = await bot.processPatientText(pf4, "Bonjour n7eb na7jez");
+    ok("fr: Derja marker wins over auto-detect", !/Bonjour/.test(fr4),
+      `reply was: ${JSON.stringify(fr4)}`);
     // flow: explicit request -> French
     const pf2 = "21600000fr2";
     const fr1 = await bot.processPatientText(pf2, "jewbni bel français");

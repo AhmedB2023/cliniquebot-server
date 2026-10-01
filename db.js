@@ -101,6 +101,8 @@ async function initDb() {
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS booking_hours TEXT NOT NULL DEFAULT '';
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS greeting_ar TEXT NOT NULL DEFAULT '';
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS other_doctor TEXT NOT NULL DEFAULT '';
+    -- french_auto: legacy (2026-10-01) — French auto-detect is global now, the
+    -- column is unused but kept so old databases don't break.
     -- Explicit script preference per patient ("aktebli bel 3arbi"): 'ar' | 'latin'.
     CREATE TABLE IF NOT EXISTS script_prefs (
       phone TEXT PRIMARY KEY,
