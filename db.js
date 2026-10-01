@@ -101,6 +101,12 @@ async function initDb() {
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS booking_hours TEXT NOT NULL DEFAULT '';
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS greeting_ar TEXT NOT NULL DEFAULT '';
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS other_doctor TEXT NOT NULL DEFAULT '';
+    -- Salon vertical (2026-10-01): per-number vertical — 'dentist' (default) or
+    -- 'salon'. '' = unset (old rows), falls back to number seeds, then dentist.
+    ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS vertical TEXT NOT NULL DEFAULT '';
+    -- Salon leads (2026-10-01): kind tags the signup source — 'clinic' (default,
+    -- old rows) or 'salon' (salon demo bot lead capture).
+    ALTER TABLE signups ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'clinic';
     -- french_auto: legacy (2026-10-01) — French auto-detect is global now, the
     -- column is unused but kept so old databases don't break.
     -- Explicit script preference per patient ("aktebli bel 3arbi"): 'ar' | 'latin'.
@@ -211,7 +217,7 @@ async function getClinicConfig(numberId) {
   if (!p) return null;
   try {
     const r = await p.query(
-      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor FROM clinic_configs WHERE phone_number_id=$1",
+      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical FROM clinic_configs WHERE phone_number_id=$1",
       [numberId]
     );
     return r.rows[0] || null;
@@ -226,11 +232,11 @@ async function saveClinicConfig(numberId, cfg) {
   if (!p) return;
   try {
     await p.query(
-      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, updated_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical, updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
        ON CONFLICT (phone_number_id) DO UPDATE
-       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, booking_hours=$7, greeting_ar=$8, other_doctor=$9, updated_at=NOW()`,
-      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || "", cfg.booking_hours || "", cfg.greeting_ar || "", cfg.other_doctor || ""]
+       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, booking_hours=$7, greeting_ar=$8, other_doctor=$9, vertical=$10, updated_at=NOW()`,
+      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || "", cfg.booking_hours || "", cfg.greeting_ar || "", cfg.other_doctor || "", cfg.vertical || ""]
     );
   } catch (e) {
     console.error("[db:ERROR] clinicConfig:", e.message);
@@ -241,7 +247,7 @@ async function listClinicConfigs() {
   const p = getPool();
   if (!p) return [];
   try {
-    const r = await p.query("SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor FROM clinic_configs ORDER BY updated_at DESC");
+    const r = await p.query("SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical FROM clinic_configs ORDER BY updated_at DESC");
     return r.rows;
   } catch (e) {
     console.error("[db:ERROR] clinicConfigs:", e.message);
@@ -413,12 +419,12 @@ async function savePatientName(phone, name) {
 }
 
 // ---------- Signup form: doctors who filled the /formulaire page ----------
-async function saveSignup(name, phone, clinic_name, city) {
+async function saveSignup(name, phone, clinic_name, city, kind = "clinic") {
   const p = getPool();
   if (!p) return null;
   const r = await p.query(
-    "INSERT INTO signups(name, phone, clinic_name, city) VALUES($1,$2,$3,$4) RETURNING id",
-    [name, phone, clinic_name, city]
+    "INSERT INTO signups(name, phone, clinic_name, city, kind) VALUES($1,$2,$3,$4,$5) RETURNING id",
+    [name, phone, clinic_name, city, kind || "clinic"]
   );
   return r.rows[0].id;
 }

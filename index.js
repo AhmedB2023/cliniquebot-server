@@ -92,6 +92,26 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "3aslema! Kifech najmou n3awnouk?" / "3aslema! Nchallah labes, kifech najmou n3awnouk?". Ken el patient kteb bel 3arabiya: "عسلامة! كيفاش نجمو نعاونوك؟" / "عسلامة! نشالله لاباس، كيفاش نجمو نعاونوك؟". MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
+// ---------- Salon vertical (2026-10-01) ----------
+// Persona for the salon demo number (53 180 566, in the Meta ad): a DEMO
+// WhatsApp assistant for beauty salons in Tunisia. The audience is salon
+// OWNERS trying the demo + clients playing along. Zero dental/medical
+// vocabulary — this prompt must never mention 3iyada, tbib, mridh, dwe,
+// wji3a, secretaire or consultation.
+const SALON_SYSTEM_PROMPT = `Enti "Assistant Salon" — DEMO mte3 robot WhatsApp lel les salons de beauté fi Tounes.
+- Jaweb dima bel derja tounsiya, w b i5tisar (message 9sir).
+- 9A3DET EL SCRIPT: jewb dima bel script eli kteb bih el 7arif. Ken kteb bel 7rouf el 3arabiya, jewb bel 3arabiya. Ken kteb bel latiniya (arabizi), jewb bel latiniya. Ma t5alletch el zouz fi nafs el message.
+- ANTI-MIXING (mohem barcha): el message el kemel lezem ykoun b script wa7ed 100% — mamnou3 kelma latin w kelma 3arabiya fi nafs el joumla.
+- Enti TWARI chnowa ynajem ya3mel el robot: les services (coiffure, brushing, chignon, maquillage, manucure, pédicure, épilation, soins visage), el prix (demo), w el 7ajz (demo).
+- ECHAFIYA (transparency): enti DEMO, mouch salon 7a9i9i. Ken 7ad yes2el "hedha vrai?", 9oul b wdhuh: "ena demo bech tchouf kifech ye5dem el robot — fel salon el 7a9i9i el 7ajz yousal lel salon direct."
+- El 7ajz fel demo SIMULÉ bark — ma fama 7atta 7ajz 7a9i9i w ma t2akked 7atta 7ajz b tari9a nehe2iya.
+- MAMNOU3: ay kelma tibbiya (3iyada, tbib, mridh, dwe, wji3a, secretaire...). Ken 7ad yes2el 3la tbib wala wji3a, 9oul: "ena mte3 salon bark 💅 — hetha numero demo mte3 robot el salons."
+- PRIX DEMO (indicatif — lezem dima t9oul "prix demo", el prix el s7a7 tet7at mel salon el 7a9i9i): brushing 25 DT, coupe + brushing 45 DT, chignon 60 DT, maquillage 80 DT, manucure 30 DT, pédicure 35 DT, épilation (jambes) 40 DT, soins visage 70 DT, coloration 90 DT.
+- Ken el moula y7eb el robot lel salon mte3ou ("n7eb lel salon mte3i" walla ay sigha o5ra), ra7eb bih w 9ollou: "super! Ekteb «n7eb lel salon mte3i» bech n7adhrouhoulek" — el system yet3amel m3a el b9iya.
+- Ken ma fhemtch el message, 9oul b wdhuh w i9tira7: les services, el prix, 7ajz demo ("n7eb na7jez"), walla "n7eb lel salon mte3i" ken 3andou salon.
+- Ma t5tar3ch ma3loumet: ken ma ta3rafch 7aja, 9oul "fel demo hethi ma 3andich el ma3louma — fel salon el 7a9i9i el robot ykoun m3abbi b les infos mte3ek."
+- Ken el 7arifa met9al9a, ibda b "sama7ni" 9bal ma tkemel.`;
+
 // ---------- Meta: send a WhatsApp text message ----------
 // numberId: which bot number (phone_number_id) sends — defaults to the global
 // PHONE_NUMBER_ID for single-number deployments.
@@ -195,15 +215,69 @@ function parseBookingHours(str) {
   return Object.keys(out).length ? out : null;
 }
 
-async function getClinic(numberId) {
+// ---------------------------------------------------------------------------
+// Verticals (2026-10-01): "dentist" (default — the full clinic behavior below)
+// vs "salon" (demo/sales bot for beauty-salon owners, on the ad number).
+// A bot number's vertical resolves per message, in this order:
+//   1. explicit DB row (POST /api/clinics, field "vertical": "salon"|"dentist")
+//   2. display-number seed (the salon ad number — no phone_number_id needed)
+//   3. phone_number_id seed (SEED_CLINICS)
+//   4. "dentist" (default — current behavior 100% unchanged)
+// ---------------------------------------------------------------------------
+// Normalize a WhatsApp display number to the Tunisian local form (8 digits):
+// "21653180566", "+216 53 180 566" and "53180566" all -> "53180566".
+function localNumber(s) {
+  let d = String(s || "").replace(/\D/g, "");
+  if (d.length > 8 && d.startsWith("216")) d = d.slice(3);
+  return d;
+}
+// Salon demo numbers: the ad number is seeded; more can be added without a
+// code change via SALON_NUMBERS="53180566,52123456".
+const SALON_SEED_NUMBERS = new Set(
+  ["53180566", ...String(process.env.SALON_NUMBERS || "").split(",").map(localNumber)].filter(Boolean)
+);
+function isSalonDisplayNumber(displayNumber) {
+  return SALON_SEED_NUMBERS.has(localNumber(displayNumber));
+}
+
+// Seed config for the salon demo number, keyed by LOCAL number (not
+// phone_number_id — Ahmed never has to dig that up). A DB row for the
+// number's phone_number_id always wins over this seed.
+const SEED_SALON_BY_NUMBER = {
+  "53180566": {
+    vertical: "salon",
+    clinic_name: "Assistant Salon (Demo)",
+    address: "",
+    greeting:
+      "Ahla w sahla! 💇‍♀️ Ena Assistant Salon — demo mte3 robot WhatsApp lel les salons de beauté fi Tounes.\n" +
+      "Jarbni kima 7arifa: 9olli «chnowa el services?» walla «n7eb na7jez» 💅\n" +
+      "W ken 3andek salon w t7eb wa7ed kifou, ekteb «n7eb lel salon mte3i».",
+    greeting_ar:
+      "أهلا وسهلا! 💇‍♀️ أنا مساعد الصالون — ديمو متاع روبوت واتساب لصالونات التجميل في تونس.\n" +
+      "جرّبني كيما حريفة: قولي «شنوة الخدمات؟» ولا «نحب نحجز» 💅\n" +
+      "وكان عندك صالون وتحب واحد كيفو، اكتب «نحب للصالون متاعي».",
+    hours: "",
+    booking_hours: "",
+    secretary_number: "",
+    other_doctor: "",
+  },
+};
+
+async function getClinic(numberId, displayNumber) {
   const id = numberId || DEFAULT_NUMBER_ID;
   const cfg = await db.getClinicConfig(id);
   const seed = SEED_CLINICS[id] || {};
+  const dispSeed = SEED_SALON_BY_NUMBER[localNumber(displayNumber)] || {};
   // A DB row wins over the seed. ?? (not ||) so the partner can CLEAR a
   // seed value by saving "" — only null/undefined fall back to the seed.
-  const pick = (k, fb) => (cfg && cfg[k] != null ? cfg[k] : seed[k] ?? fb ?? "");
+  const pick = (k, fb) => (cfg && cfg[k] != null ? cfg[k] : dispSeed[k] ?? seed[k] ?? fb ?? "");
+  // Vertical: explicit DB value > salon-number seed > id seed > dentist.
+  // "" counts as unset (old DB rows) — only "salon"/"dentist" are real values.
+  const vOf = (o) => (o && (o.vertical === "salon" || o.vertical === "dentist") ? o.vertical : null);
+  const vertical = vOf(cfg) || vOf(dispSeed) || vOf(seed) || "dentist";
   return {
     id,
+    vertical,
     name: pick("clinic_name", CLINIC_NAME),
     address: pick("address", CLINIC_ADDRESS),
     greeting: pick("greeting", CLINIC_GREETING),
@@ -280,7 +354,17 @@ const AI_SAFE_FALLBACK = {
 function guardAiOutput(aiText, aiFailed, fallbackText) {
   if (aiFailed || !aiText) return fallbackText;
   if (aiClaimsBooking(aiText)) return fallbackText;
-  return aiText;
+  return fixKnownTypos(aiText);
+}
+
+// Deterministic typo guard (2026-10-01): the AI keeps inventing "Nchalllah"
+// despite the EL GREETING prompt rule (seen live: "3aslema! Nchalllah labes").
+// Prompts are words, not law — fix it in code, on every AI reply.
+// Only the triple-l typo is rewritten; a correct "nchallah" is left alone,
+// and the original case (N/n) is preserved.
+function fixKnownTypos(s) {
+  return String(s || "").replace(/nchall{2,}ah/gi, (m) =>
+    (m[0] === m[0].toUpperCase() ? "Nchallah" : "nchallah"));
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
@@ -542,12 +626,57 @@ function looksLikeFrenchAuto(text) {
   const raw = text || "";
   if (/[êëàâçîïôûùœæ]/i.test(raw)) return true; // French diacritics never appear in Arabizi
   const t = " " + raw.toLowerCase() + " ";
-  if (/(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|slem|slm)/.test(t)) return false;
-  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je veux|je voudrais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  if (hasDerjaMarker(text)) return false;
+  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
   const hits = (t.match(fr) || []).length;
   if (hits >= 2) return true;
   // One unambiguous French opener is enough ("Bonjour" alone = French).
   return /\b(bonjour|bonsoir|combien)\b/.test(t);
+}
+
+// Derja markers: ANY of these in a message means Derja, full stop.
+function hasDerjaMarker(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  return /(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|slem|slm)/.test(t);
+}
+
+// Semantic fallback (2026-10-01): the word-list detector can't know every
+// French sentence — it matches words, it doesn't understand meaning. When it
+// is UNSURE (no Derja markers, weak/no French hits), ask the AI itself whether
+// the message is standard French. Clear cases never reach the API: Derja
+// markers -> Derja, strong French signal -> French, no extra call, no latency.
+// Skipped without an AI key (local tests) -> Derja default.
+async function aiLangIsFrench(text) {
+  if (!AI_API_KEY) return false;
+  const raw = String(text || "");
+  if (!raw.trim()) return false;
+  if (/[\u0600-\u06FF]/.test(raw)) return false; // Arabic script -> never French
+  if (hasDerjaMarker(raw)) return false; // sure: Derja
+  if (looksLikeFrenchAuto(raw)) return true; // sure: French
+  try {
+    const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: "system", content: "Tu es un détecteur de langue. Le message suivant est-il écrit en FRANÇAIS standard ? Réponds par un seul mot : OUI si c'est du français, NON si c'est de la derja tunisienne (arabe dialectal en lettres latines), de l'arabe, ou autre chose." },
+          { role: "user", content: raw },
+        ],
+        max_tokens: 5,
+        temperature: 0,
+      }),
+    });
+    const data = await res.json();
+    const ans = (data.choices?.[0]?.message?.content || "").trim().toUpperCase();
+    return ans.startsWith("OUI");
+  } catch (e) {
+    console.error("[ai:langDetect]", e.message);
+    return false;
+  }
 }
 
 // Explicit French request (revised 2026-09-27): the bot answers in French
@@ -1272,18 +1401,347 @@ async function handleVendorTurn(phone, text, lead, clinic) {
     : "El charika bech tetassel bik 9rib. Ken 3andek sou2el e5er ekteb houni.", clinic);
 }
 
+// ---------------------------------------------------------------------------
+// SALON VERTICAL — deterministic layer (2026-10-01)
+// Runs ONLY for numbers whose vertical resolves to "salon" (see getClinic).
+// The dentist path below is untouched: these detectors are never consulted
+// for dentist numbers, so no dentist pattern can break.
+// ---------------------------------------------------------------------------
+
+// Salon services (demo list). canonical latin name per service.
+const SALON_SERVICES = [
+  { keys: ["brushing", "broshing", "broching"], name: "brushing" },
+  { keys: ["chignon", "shinyon", "chinyon"], name: "chignon" },
+  { keys: ["maquillage", "makiyaj", "makeup", "make-up"], name: "maquillage" },
+  { keys: ["manucure", "manikur", "manucur"], name: "manucure" },
+  { keys: ["pedicure", "pédicure", "pedikur"], name: "pédicure" },
+  { keys: ["epilation", "épilation", "epilasyon"], name: "épilation" },
+  { keys: ["soin", "visage", "nettoyage"], name: "soins visage" },
+  { keys: ["coupe", "9assa", "9asa"], name: "coupe" },
+  { keys: ["coloration", "sibgha", "sib8a", "colora"], name: "coloration" },
+  { keys: ["coiffure", "kwafir", "coiffeur"], name: "coiffure" },
+];
+
+function parseSalonService(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  for (const s of SALON_SERVICES)
+    if (s.keys.some((k) => t.includes(k))) return s.name;
+  return null;
+}
+
+// Demo price list — ALWAYS labelled "prix demo" in replies. The real prices
+// come from the salon itself when it subscribes.
+const SALON_DEMO_PRICES = [
+  ["brushing", "25 DT"],
+  ["coupe + brushing", "45 DT"],
+  ["chignon", "60 DT"],
+  ["maquillage", "80 DT"],
+  ["manucure", "30 DT"],
+  ["pédicure", "35 DT"],
+  ["épilation (jambes)", "40 DT"],
+  ["soins visage", "70 DT"],
+  ["coloration", "90 DT"],
+];
+
+// The commercial offer (from the salon ad video): 15 days free, then
+// 3 TND per confirmed appointment — pay only per result.
+const SALON_OFFER_LATIN = "El offre: 15 jours blech 🎁, ba3d 3 DT 3la kol rendez-vous m2akked — ma t5alles ken ki el 7arifa tji lel salon mte3ek.";
+const SALON_OFFER_AR = "العرض: 15 يوم بلاش 🎁، وبعد 3 دنانير على كل موعد مؤكد — ما تخلص كان كي الحريفة تجي للصالون متاعك.";
+
+function salonFaqKind(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
+  if (/(n7eb lel salon|salon mte3i|salon mta3i|kifech nechri|kifech neshri|ichtirak|abonnement|نحب للصالون|نشري)/.test(t)) return "subscribe";
+  if (/(9adech|b9adech|kadech|soum|prix|combien|بقداش|سوم|بكام)/.test(t)) return "prix";
+  if (/(service|les services|chnowa el services|chnowa ta3ml|chnowa ta3mel|الخدمات|شنوة الخدمات)/.test(t)) return "services";
+  if (parseSalonService(raw)) return "services";
+  return null;
+}
+
+function salonFaqAnswer(kind, ar, service) {
+  const priceList = SALON_DEMO_PRICES.map(([s, p]) => `• ${s}: ${p}`).join("\n");
+  if (kind === "who") return ar
+    ? "أنا مساعد الصالون 💇‍♀️ — ديمو متاع روبوت واتساب لصالونات التجميل. نجاوب على الخدمات، الأسوام (ديمو)، ونحجز (ديمو). جرّبني: قولي «نحب نحجز»! وكان عندك صالون اكتب «نحب للصالون متاعي»."
+    : "Ena Assistant Salon 💇‍♀️ — demo mte3 robot WhatsApp lel les salons de beauté. Njawb 3al services, el prix (demo), w na7jez (demo). Jarbni: 9olli «n7eb na7jez»! W ken 3andek salon ekteb «n7eb lel salon mte3i».";
+  if (kind === "services") {
+    const intro = service
+      ? (ar ? `أي، نعملو ${service} 💅` : `Ey, na3mlou ${service} 💅`)
+      : (ar ? "الخدمات متاع الديمو 💅" : "El services mte3 el demo 💅");
+    return ar
+      ? `${intro}:\n${priceList}\nهذوما prix demo — الأسوام الحقيقية تتحط من الصالون متاعك. تحب تحجز؟ اكتب «نحب نحجز».`
+      : `${intro}:\n${priceList}\nHedhom prix demo — el prix el s7a7 yet7attou mel salon mte3ek. T7eb ta7jez? Ekteb «n7eb na7jez».`;
+  }
+  if (kind === "prix") return ar
+    ? `الأسوام (prix demo) 💅:\n${priceList}\nهذوما للتجربة برك — الصالون الحقيقي يحط أسوامو. تحب تحجز؟ اكتب «نحب نحجز».`
+    : `El aswem (prix demo) 💅:\n${priceList}\nHedhom lel demo bark — el salon el 7a9i9i y7ott aswemou. T7eb ta7jez? Ekteb «n7eb na7jez».`;
+  // subscribe
+  return ar ? SALON_OFFER_AR + "\nتحب نبداو؟ اكتب «نحب للصالون متاعي» ونحضرولك!"
+    : SALON_OFFER_LATIN + "\nT7eb nebdew? Ekteb «n7eb lel salon mte3i» w n7adhroulek!";
+}
+
+// ---------- Salon demo booking (SIMULATED — never a real booking) ----------
+// Demo bookings are saved with status='demo': they never appear in the
+// secretary's pending list (/bookings, getPendingBookings) and never mix
+// with real clinic bookings (pending/confirmed/cancelled).
+const salonDemo = new Map(); // phone -> { stage, service, slot_at, display }
+
+function looksLikeCustomService(text) {
+  const t = (text || "").trim();
+  if (!t || t.length > 30) return null;
+  if (/[?؟]/.test(t)) return null;
+  if (/\d/.test(t)) return null; // "ghodwa 10" is a slot, not a service
+  return t;
+}
+
+function salonAskServiceMsg(ar) {
+  return ar
+    ? "أنهو service تحب؟ 💅 (brushing، chignon، maquillage، manucure...)"
+    : "Anhou service t7eb? 💅 (brushing, chignon, maquillage, manucure...)";
+}
+function salonAskSlotMsg(ar, service) {
+  const s = service ? ` (${service})` : "";
+  return ar
+    ? `تمام${s}! أنهو نهار ووقت يساعدك؟ (مثال: غدوة 10 متاع الصباح)`
+    : `Tmem${s}! Anhou nhar w wa9t yse3dek? (mthel: ghodwa 10 mta3 sbe7)`;
+}
+
+async function salonSimulateBooking(phone, st, ar, clinic) {
+  salonDemo.delete(phone);
+  const svc = st.service || "service";
+  const display = st.display || "";
+  try {
+    const id = await db.saveBooking(
+      phone, `DEMO salon: ${svc} — ${display}`, st.slot_at || null, null, clinic && clinic.id);
+    if (id) await db.setBookingStatus(id, "demo"); // tagged: never pending
+  } catch (e) { console.error("[salon:demo]", e.message); }
+  return say(phone, ar
+    ? `✅ تم الحجز (ديمو): ${svc} — ${display}.\nهذي ديمو برك! 🎭 في الصالون الحقيقي، الحجز يوصل للصالون ديراكت ويتأكد معاك. تحب واحد كيفو لصالونك؟ اكتب «نحب للصالون متاعي».`
+    : `✅ T7ajzet (demo): ${svc} — ${display}.\nHedhi demo bark! 🎭 Fel salon el 7a9i9i, el 7ajz yousal lel salon direct w yet2akked m3ak. T7eb wa7ed kifou lel salon mte3ek? Ekteb «n7eb lel salon mte3i».`, clinic);
+}
+
+async function handleSalonDemoBooking(phone, text, ar, clinic) {
+  // Cancel mid-demo: drop the state, stay friendly.
+  if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
+    salonDemo.delete(phone);
+    return say(phone, ar
+      ? "داكور، لغيت الديمو. تحب حاجة أخرى؟"
+      : "D'accord, l4it el demo. T7eb 7aja o5ra?", clinic);
+  }
+  const st = salonDemo.get(phone) || {};
+  const r = dates.resolveSlot(text, ar);
+  const concrete = r.found && r.date && !r.needs && !r.past;
+
+  // Continuing: waiting for the service.
+  if (st.stage === "service") {
+    const svc = parseSalonService(text) || looksLikeCustomService(text);
+    if (!svc) return say(phone, salonAskServiceMsg(ar), clinic);
+    st.service = svc;
+    if (st.slot_at) return salonSimulateBooking(phone, st, ar, clinic);
+    st.stage = "slot";
+    salonDemo.set(phone, st);
+    return say(phone, salonAskSlotMsg(ar, svc), clinic);
+  }
+  // Continuing: waiting for the slot.
+  if (st.stage === "slot") {
+    if (r.past) return say(phone, ar
+      ? "الوقت هذا تعدى — قولي نهار ووقت آخر."
+      : "El wa9t hetha 3adda — 9olli nhar w wa9t e5er.", clinic);
+    if (concrete) {
+      st.slot_at = r.iso; st.display = r.display;
+      return salonSimulateBooking(phone, st, ar, clinic);
+    }
+    if (r.date && r.needs) return say(phone, timeQuestionMsg(ar, r, text), clinic);
+    return say(phone, salonAskSlotMsg(ar, st.service), clinic);
+  }
+  // Fresh trigger: grab whatever the message already carries.
+  const svc = parseSalonService(text);
+  if (svc && concrete) return salonSimulateBooking(phone, { service: svc, slot_at: r.iso, display: r.display }, ar, clinic);
+  if (svc) {
+    salonDemo.set(phone, { stage: "slot", service: svc });
+    return say(phone, salonAskSlotMsg(ar, svc), clinic);
+  }
+  if (concrete) {
+    salonDemo.set(phone, { stage: "service", slot_at: r.iso, display: r.display });
+    return say(phone, salonAskServiceMsg(ar), clinic);
+  }
+  salonDemo.set(phone, { stage: "service" });
+  return say(phone, salonAskServiceMsg(ar), clinic);
+}
+
+// ---------- Salon lead capture (owner wants the bot for their salon) ----------
+// Stages live in vendor_leads under "salon_*" — the dentist "جرّب" flow uses
+// other stage names and never touches these. Flow data rides in the
+// clinic_name column as JSON (name -> salon -> city -> phone -> done).
+function salonLeadTrigger(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  const raw = text || "";
+  if (/(n7eb|nheb|n7ebb).{0,40}(lel salon|salon mte3i|salon mta3i|wa7ed kifou|wa7da kifha)/.test(t)) return true;
+  if (/(nechri|neshri|ne5ou|nabonni|neshtarek).{0,20}(robot|service|hedha|hedhi)/.test(t)) return true;
+  if (/(kifech|kifach|kifeh|kifah).{0,25}(nechri|neshri|ne5ou|nabda|nbadal|nbadel)/.test(t)) return true;
+  if (/(b9adech|9adech|prix|soum).{0,25}(ichtirak|abonnement|robot|el service hedha)/.test(t)) return true;
+  if (/\bsubscribe\b/i.test(t)) return true;
+  return /(نحب).{0,20}(للصالون|نشري)/.test(raw);
+}
+
+function salonLeadData(lead) {
+  try { return JSON.parse((lead && lead.clinic_name) || "{}"); }
+  catch { return {}; }
+}
+
+async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
+  // Cancel mid-flow: drop the lead state.
+  if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, ar
+      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للصالون متاعي»."
+      : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel salon mte3i».", clinic);
+  }
+  const d = salonLeadData(lead);
+  const stage = lead.stage;
+
+  if (stage === "salon_ask_name") {
+    const name = parsePatientName(text);
+    if (!name) return say(phone, ar ? "شنوة اسمك؟ (اكتب اسمك)" : "Chnowa esmek? (ekteb esmek)", clinic);
+    await db.saveVendorLead(phone, "salon_ask_salon", JSON.stringify({ name }));
+    const cn = capName(name);
+    return say(phone, ar
+      ? `متشرفين ${cn}! 🌸 شنوة اسم الصالون متاعك؟`
+      : `Mitcharfin ${cn}! 🌸 Chnowa esm el salon mte3ek?`, clinic);
+  }
+
+  if (stage === "salon_ask_salon") {
+    const salon = (text || "").trim().slice(0, 80);
+    if (!salon || salon.length < 2 || /[?؟]/.test(salon))
+      return say(phone, ar ? "شنوة اسم الصالون؟" : "Chnowa esm el salon?", clinic);
+    await db.saveVendorLead(phone, "salon_ask_city", JSON.stringify({ ...d, salon }));
+    return say(phone, ar
+      ? `الصالون "${salon}" — في أنهو مدينة؟`
+      : `El salon "${salon}" — fi anhou mdina?`, clinic);
+  }
+
+  if (stage === "salon_ask_city") {
+    const city = (text || "").trim().slice(0, 60);
+    if (!city || city.length < 2 || /[?؟]/.test(city))
+      return say(phone, ar ? "في أنهو مدينة؟" : "Fi anhou mdina?", clinic);
+    await db.saveVendorLead(phone, "salon_ask_phone", JSON.stringify({ ...d, city }));
+    return say(phone, ar
+      ? `ممتاز! باش نكلموك على النومرو هذا (${phone})؟ ولا عندك نومرو آخر؟ (اكتب «نفسو» ولا النومرو)`
+      : `Momtez! Bech nkallemouk 3al numero hetha (${phone})? Walla 3andek numero e5er? (ekteb «nafsou» walla el numero)`, clinic);
+  }
+
+  if (stage === "salon_ask_phone") {
+    const t = (text || "").trim().toLowerCase();
+    let finalPhone = phone;
+    if (!/^(nafsou|nafs|nafsu|ey|ok|na3m|oui|نفسو|اي|أي)\s*[.,!؟]*$/.test(t)) {
+      const digits = (text || "").replace(/\D/g, "");
+      if (digits.length < 8) return say(phone, ar
+        ? "النومرو هذا ما يبانش صحيح — عاود اكتبو (8 أرقام على الأقل) ولا اكتب «نفسو»."
+        : "El numero hetha ma ybench s7i7 — 3awed ekteb (8 ar9am lel a9al) walla ekteb «nafsou».", clinic);
+      finalPhone = digits;
+    }
+    const name = d.name || "—", salon = d.salon || "—", city = d.city || "—";
+    await db.saveSignup(capName(name), finalPhone, salon, city, "salon");
+    await notifySales(`🏪 Lead SALON jdid: ${capName(name)} — salon "${salon}" (${city}) — numero ${finalPhone}`);
+    await db.saveVendorLead(phone, "salon_done", JSON.stringify(d));
+    const cn = capName(name);
+    return say(phone, ar
+      ? `داكور ${cn}! ✅ باش نتصلو بيك قريب باش نحضرولك الروبوت للصالون "${salon}" (${city}). شكرا! 🙏`
+      : `D'accord ${cn}! ✅ Bech nettaslou bik 9rib bech n7adhroulek el robot lel salon "${salon}" (${city}). Merci! 🙏`, clinic);
+  }
+
+  // stage "salon_done": handoff made, stay quiet-ish.
+  return say(phone, ar
+    ? "الطلب متاعك وصل — باش نتصلو بيك قريب. كان عندك سؤال آخر اكتب هوني."
+    : "El demande mte3ek woslet — bech nettaslou bik 9rib. Ken 3andek sou2el e5er, ekteb houni.", clinic);
+}
+
+// French on the salon number: a short salon fallback — NEVER the dentist
+// FRENCH_SYSTEM_PROMPT (it would pitch a dental clinic).
+function salonFrenchFallback() {
+  return "Salut ! 💇‍♀️ Je suis Assistant Salon — une DÉMO d'assistant WhatsApp pour les salons de beauté en Tunisie.\n" +
+    "Essayez-moi : demandez les services, les prix (démo), ou écrivez « je veux réserver » pour voir une réservation démo 💅\n" +
+    "Vous avez un salon ? Écrivez « n7eb lel salon mte3i » !";
+}
+
+// No-AI-key fallback for the salon vertical (production has the AI key;
+// the local test drives this path).
+function salonFallbackReply(text, ar) {
+  const useAr = ar || isAr(text);
+  if (useAr) {
+    if (/(خدمات|شنوة|شنو)/.test(text))
+      return "الخدمات متاع الديمو: brushing، chignon، maquillage، manucure، pédicure، épilation، soins visage. تحب تحجز؟ اكتب «نحب نحجز».";
+    if (/(سوم|بقداش|فلوس|prix)/.test(text))
+      return "هذوما prix demo: brushing بـ25 DT، chignon بـ60 DT، maquillage بـ80 DT. الأسوام الحقيقية تتحط من الصالون متاعك.";
+    if (/(حجز|رونديفو|موعد|نحجز)/.test(text))
+      return "باش تجرب الحجز (ديمو): قولي أنهو service وأنهو نهار ووقت — مثال «نحب نحجز brushing غدوة 10 متاع الصباح».";
+    return "أنا مساعد الصالون (ديمو) 💇‍♀️ — تنجم تسألني على الخدمات، الأسوام (ديمو)، ولا تقولي «نحب نحجز» باش تشوف الحجز. وكان عندك صالون اكتب «نحب للصالون متاعي».";
+  }
+  const t = (text || "").toLowerCase();
+  if (t.includes("service") || t.includes("chnowa"))
+    return "El services mte3 el demo: brushing, chignon, maquillage, manucure, pédicure, épilation, soins visage. T7eb ta7jez? Ekteb «n7eb na7jez».";
+  if (/(soum|prix|9adech|b9adech)/.test(t))
+    return "Hedhom prix demo: brushing 25 DT, chignon 60 DT, maquillage 80 DT. El prix el s7a7 yet7attou mel salon mte3ek.";
+  if (/(7ajz|7jez|rendez|na7jez)/.test(t))
+    return "Bech tjareb el 7ajz (demo): 9olli anhou service w anhou nhar w wa9t — mthel «n7eb na7jez brushing ghodwa 10 mta3 sbe7».";
+  return "Ena Assistant Salon (demo) 💇‍♀️ — tnajem tes2elni 3al services, el prix (demo), walla t9olli «n7eb na7jez» bech tchouf el 7ajz. W ken 3andek salon ekteb «n7eb lel salon mte3i».";
+}
+
+// Salon router: demo + lead capture. Returns { handled:false } when nothing
+// matched — the caller then falls back to the salon AI prompt (never the
+// dentist booking flow or the dentist French prompt).
+async function handleSalonTurn(phone, text, clinic) {
+  const ar = await scriptAr(phone, text);
+  // 1) lead flow in progress (stages "salon_*").
+  const vlead = await db.getVendorLead(phone).catch(() => null);
+  if (vlead && vlead.stage && vlead.stage.indexOf("salon_") === 0)
+    return handleSalonLeadTurn(phone, text, vlead, ar, clinic);
+  // 2) lead trigger.
+  if (salonLeadTrigger(text)) {
+    salonDemo.delete(phone); // explicit new intent wins over a stale demo
+    await db.saveVendorLead(phone, "salon_ask_name", "{}");
+    return say(phone, ar
+      ? "ممتاز! 🎉 باش نحضرولك الروبوت للصالون متاعك. شنوة اسمك؟"
+      : "Super! 🎉 Bech n7adhroulek el robot lel salon mte3ek. Chnowa esmek?", clinic);
+  }
+  // 3) demo booking in progress.
+  if (salonDemo.has(phone)) return handleSalonDemoBooking(phone, text, ar, clinic);
+  // 4) demo booking trigger.
+  if (looksLikeBookingIntent(text)) return handleSalonDemoBooking(phone, text, ar, clinic);
+  // 5) French -> salon French fallback (never the dentist French prompt).
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text))
+    return say(phone, salonFrenchFallback(), clinic);
+  // 6) pure greeting -> the salon demo greeting (from the number's config).
+  if (looksLikePureGreeting(text))
+    return say(phone, ar
+      ? (clinic.greetingAr || clinic.greeting || "وعليكم السلام! كيفاش نجمو نعاونوك؟")
+      : (clinic.greeting || "3alikom salam! Kifech najmou n3awnouk?"), clinic);
+  // 7) salon FAQ (services / prix / who / subscribe).
+  const fk = salonFaqKind(text);
+  if (fk) return say(phone, salonFaqAnswer(fk, ar, parseSalonService(text)), clinic);
+  return { handled: false };
+}
+
 // Bare greeting ("slm", "bonjour", "عسلامة") -> neutral reply only, no steering.
 // The NEXT message decides: "جرّب" -> vendeur, booking talk -> réceptionniste.
 // Pure greetings only — "sbe7"/"mse" stay out (ambiguous with time-of-day).
+// 2026-10-01: trailing small-talk ("cv", "ça va", "labes") still counts as a
+// greeting — "salut cv" must NOT fall through to the AI (it invented the
+// "Nchalllah" typo there). Anything with real content (booking words etc.)
+// is not a greeting.
 function looksLikePureGreeting(text) {
   const t = (text || "").trim().toLowerCase().replace(/[.,!؟?]/g, "");
-  if (/^(سلام|عسلامة|صباح الخير|مساء الخير|اهلا|أهلا|مرحبا)$/.test(t)) return true;
-  return /^(slm|slem|salem|salam|3aslema|3aslama|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)$/.test(t);
+  if (/^(سلام|عسلامة|صباح الخير|مساء الخير|اهلا|أهلا|مرحبا)( لباس| لاباس)?$/.test(t)) return true;
+  return /^(slm|slem|salem|salam|3aslema|3aslama|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)( cv| ca va| ça va| cava| comment cava| comment ca va| comment ça va| labes| labas| lebes| ch3andek)?$/.test(t);
 }
 
 // Shared by the WhatsApp webhook and the /test page.
-async function processPatientText(phone, text, numberId) {
-  const clinic = await getClinic(numberId);
+// displayNumber: the bot number's display_phone_number from the webhook
+// metadata (optional) — used to resolve the salon vertical without a
+// phone_number_id.
+async function processPatientText(phone, text, numberId, displayNumber) {
+  const clinic = await getClinic(numberId, displayNumber);
+  const vertical = (clinic && clinic.vertical) || "dentist";
   const history = await db.getHistory(phone); // last 15 messages
   await db.saveMessage(phone, "user", text, clinic && clinic.id);
 
@@ -1292,12 +1750,30 @@ async function processPatientText(phone, text, numberId) {
   if (looksLikeScriptRequest(text)) await db.saveScriptPref(phone, "ar").catch(() => {});
   else if (looksLikeLatinRequest(text)) await db.saveScriptPref(phone, "latin").catch(() => {});
 
-  // Vendor (sales) mode first: exact "جرّب" trigger, or an ongoing vendor lead.
-  // Sticky: once a dentist, always vendor for that number (fassa5 resets).
+  // Vendor (sales) mode — DENTIST numbers only. Salon numbers run the salon
+  // demo+lead flow instead; salon lead stages ("salon_*") live in the same
+  // table and must never enter the dentist pitch.
   const vlead = await db.getVendorLead(phone).catch(() => null);
-  if (looksLikeVendorTrigger(text) || vlead) {
+  const salonLeadActive = !!(vlead && vlead.stage && vlead.stage.indexOf("salon_") === 0);
+  if (vertical !== "salon" && !salonLeadActive && (looksLikeVendorTrigger(text) || vlead)) {
     const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead, clinic);
     if (v.handled) return v.reply;
+  }
+
+  // Salon vertical: demo + lead capture. Never touches the dentist booking
+  // flow, the dentist French prompt, or the dentist vendor pitch. Unmatched
+  // messages fall back to the salon AI prompt (sysOverride), never the
+  // dentist SYSTEM_PROMPT.
+  if (vertical === "salon") {
+    const s = await handleSalonTurn(phone, text, clinic);
+    if (s.handled) return s.reply;
+    const pname = await db.getPatientName(phone).catch(() => null);
+    const useAr = await scriptAr(phone, text);
+    const reply = AI_API_KEY
+      ? await aiReply(text, history, pname, clinic.name, useAr, "", SALON_SYSTEM_PROMPT)
+      : salonFallbackReply(text, useAr);
+    await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
+    return reply;
   }
 
   // Shared clinic: the patient asks for the OTHER doctor by name -> never book
@@ -1315,8 +1791,9 @@ async function processPatientText(phone, text, numberId) {
   // 2026-10-01: auto-detect is GLOBAL — whoever writes in French gets French,
   // whoever writes Derja gets Derja, per message, no per-clinic flag).
   // The lenient detector keeps real Derja out: any Derja marker (n7eb,
-  // chnowa, 9adech...) vetoes French.
-  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) {
+  // chnowa, 9adech...) vetoes French. When the word-list is unsure,
+  // aiLangIsFrench asks the AI itself — meaning, not keywords.
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text)) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
       : frenchFallback(text); // deterministic French without AI key (local tests)
@@ -1428,8 +1905,11 @@ app.post("/webhook", async (req, res) => {
 
     // 2) Incoming messages
     // The bot number this message arrived on (multi-number routing).
+    // display_phone_number feeds the vertical resolution (salon ad number)
+    // so no phone_number_id lookup is ever needed for it.
     const numberId = value.metadata?.phone_number_id || DEFAULT_NUMBER_ID;
-    const clinic = await getClinic(numberId);
+    const displayNumber = value.metadata?.display_phone_number || "";
+    const clinic = await getClinic(numberId, displayNumber);
     const messages = value.messages || [];
     for (const msg of messages) {
       const from = msg.from;
@@ -1457,7 +1937,7 @@ app.post("/webhook", async (req, res) => {
         continue;
       }
       console.log(`[msg] from ${from}: ${text}`);
-      const reply = await processPatientText(from, text, numberId);
+      const reply = await processPatientText(from, text, numberId, displayNumber);
       lastWebhook = { at: new Date().toISOString(), from, text, reply };
       await sendWhatsApp(from, reply, numberId);
     }
@@ -1525,7 +2005,10 @@ app.post("/test/chat", async (req, res) => {
     return res.json({ reply, ai: !!AI_API_KEY });
   }
   const ident = "webtest-" + (String(who || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 20) || "x");
-  const reply = await processPatientText(ident, clean);
+  // "number": simulate the message arriving on a bot number (e.g. the salon
+  // ad number "21653180566") — drives the vertical resolution like the webhook.
+  const dispNum = String(req.body.number || "");
+  const reply = await processPatientText(ident, clean, undefined, dispNum);
   res.json({ reply, ai: !!AI_API_KEY });
 });
 
@@ -1870,6 +2353,8 @@ app.post("/api/clinics", async (req, res) => {
   if (b.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
   const numberId = String(b.phone_number_id || "").trim();
   if (!numberId) return res.status(400).json({ error: "phone_number_id lezem." });
+  const vertical = ["salon", "dentist"].includes(String(b.vertical || "").toLowerCase())
+    ? String(b.vertical).toLowerCase() : "";
   await db.saveClinicConfig(numberId, {
     clinic_name: String(b.clinic_name || "").slice(0, 150),
     address: String(b.address || "").slice(0, 300),
@@ -1879,6 +2364,7 @@ app.post("/api/clinics", async (req, res) => {
     booking_hours: String(b.booking_hours || "").slice(0, 200),
     greeting_ar: String(b.greeting_ar || "").slice(0, 500),
     other_doctor: String(b.other_doctor || "").slice(0, 100),
+    vertical,
   });
   res.json({ ok: true });
 });
@@ -1904,7 +2390,7 @@ const r=await fetch('/api/signups?password='+encodeURIComponent(pw));const j=awa
 const el=document.getElementById('list');
 if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
 if(!j.signups.length){el.innerHTML='<p>Ma fama 7atta wa7ed 3ammer. 👍</p>';return;}
-el.innerHTML=j.signups.map(s=>'<div class="card"><b>'+esc(s.name)+'</b> — '+esc(s.phone)+'<br>🏥 '+esc(s.clinic_name)+' — '+esc(s.city)+'<br><small>'+esc(s.created_at||'')+'</small><div class="row"><button class="no" onclick="del('+s.id+')">Fassa5</button></div></div>').join('');}
+el.innerHTML=j.signups.map(s=>'<div class="card"><b>'+esc(s.name)+'</b> — '+esc(s.phone)+'<br>'+(s.kind==='salon'?'🏪 ':'🏥 ')+esc(s.clinic_name)+' — '+esc(s.city)+'<br><small>'+esc(s.created_at||'')+'</small><div class="row"><button class="no" onclick="del('+s.id+')">Fassa5</button></div></div>').join('');}
 async function del(id){if(!confirm('Tfassa5 el signup #'+id+'?'))return;
 const r=await fetch('/api/signups/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
 const j=await r.json();if(!r.ok)alert(j.error||'error');load();}
@@ -1942,10 +2428,14 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS,
   // batch fix 2026-09-25 (exported for the regression test)
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
-  aiClaimsBooking, guardAiOutput, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
+  aiClaimsBooking, guardAiOutput, fixKnownTypos, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French text path (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, FRENCH_SYSTEM_PROMPT,
+  looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, hasDerjaMarker, aiLangIsFrench, FRENCH_SYSTEM_PROMPT,
   // Per-number booking hours (exported for the regression test)
   parseBookingHours, SEED_CLINICS,
   // Dentist viewer token (exported for the regression test)
-  viewerToken };
+  viewerToken,
+  // Salon vertical (exported for the regression test)
+  SALON_SYSTEM_PROMPT, localNumber, isSalonDisplayNumber, SEED_SALON_BY_NUMBER,
+  salonFaqKind, salonFaqAnswer, salonLeadTrigger, salonFallbackReply, salonFrenchFallback,
+  parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN };

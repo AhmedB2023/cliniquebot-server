@@ -69,8 +69,8 @@ function makeStubDb() {
     getVendorLead: async (phone) => vendorLeads.get(phone) || null,
     saveVendorLead: async (phone, stage, clinic_name = null) => { vendorLeads.set(phone, { phone, stage, clinic_name }); },
     clearVendorLead: async (phone) => { vendorLeads.delete(phone); },
-    saveSignup: async (name, phone, clinic_name, city) => {
-      const s = { id: seq++, name, phone, clinic_name, city, created_at: "test" };
+    saveSignup: async (name, phone, clinic_name, city, kind = "clinic") => {
+      const s = { id: seq++, name, phone, clinic_name, city, kind, created_at: "test" };
       signups.push(s);
       return s.id;
     },
@@ -86,7 +86,8 @@ function makeStubDb() {
     listClinicConfigs: async () => [...clinicConfigs.values()],
     getScriptPref: async (phone) => scriptPrefs.get(phone) || null,
     saveScriptPref: async (phone, script) => { scriptPrefs.set(phone, script); },
-    _inspect: () => ({ messages, bookings, proposals }),
+    _inspect: () => ({ messages, bookings, proposals, signups }),
+    clearClinicConfig: async (numberId) => { clinicConfigs.delete(numberId); },
   };
 }
 const stubDb = makeStubDb();
@@ -1312,6 +1313,45 @@ async function run() {
     const fr4 = await bot.processPatientText(pf4, "Bonjour n7eb na7jez");
     ok("fr: Derja marker wins over auto-detect", !/Bonjour/.test(fr4),
       `reply was: ${JSON.stringify(fr4)}`);
+    // regression 2026-10-01 (seen live): "bonjour" -> French, then
+    // "j'ai besoin 'un rendez vous" flipped back to Derja because the
+    // detector didn't know "j'ai besoin". Fixed in the detector itself —
+    // the language is decided PER MESSAGE, no cross-message memory
+    // (a Derja follow-up like "Ok nhar thleth mawjoud?" must stay Derja).
+    ok("fr: detector 'j\\'ai besoin d\\'un rendez vous' = French",
+      bot.looksLikeFrenchAuto("j'ai besoin d'un rendez vous") === true);
+    ok("fr: detector 'je cherche un rendez-vous' = French",
+      bot.looksLikeFrenchAuto("je cherche un rendez-vous") === true);
+    ok("fr: hasDerjaMarker('n7eb na7jez')", bot.hasDerjaMarker("n7eb na7jez") === true);
+    ok("fr: hasDerjaMarker('bonjour') is false", bot.hasDerjaMarker("bonjour") === false);
+    // live case, detector-only: both messages French -> both replies French
+    const pm = "21600000frm";
+    const pmr1 = await bot.processPatientText(pm, "bonjour");
+    ok("fr: 'bonjour' -> French", /Bonjour/.test(pmr1), `reply was: ${JSON.stringify(pmr1)}`);
+    const pmr2 = await bot.processPatientText(pm, "j'ai besoin 'un rendez vous");
+    ok("fr: 'j\\'ai besoin \\'un rendez vous' -> French (no flip to Derja)",
+      /Bonjour|puis-je|pouvez|aider/.test(pmr2), `reply was: ${JSON.stringify(pmr2)}`);
+    // per-message: a Derja follow-up still gets Derja (no memory carry-over)
+    const pmr3 = await bot.processPatientText(pm, "n7eb na7jez nhar lethnin");
+    ok("fr: Derja follow-up gets Derja, not French", !/Bonjour|puis-je/.test(pmr3),
+      `reply was: ${JSON.stringify(pmr3)}`);
+    // semantic fallback (2026-10-01): the word-list matches words, the AI
+    // understands meaning. aiLangIsFrench only fires when the word-list is
+    // unsure — clear cases never reach the API.
+    // (no AI key in tests -> always false, Derja default, no crash)
+    ok("fr: aiLangIsFrench false without AI key",
+      await bot.aiLangIsFrench("je peux venir demain ?") === false);
+    ok("fr: aiLangIsFrench false for Arabic script",
+      await bot.aiLangIsFrench("اكتبلي بالعربي") === false);
+    ok("fr: aiLangIsFrench false for Derja markers",
+      await bot.aiLangIsFrench("n7eb na7jez") === false);
+    ok("fr: aiLangIsFrench false for empty text",
+      await bot.aiLangIsFrench("   ") === false);
+    // unsure message without key -> Derja (the old per-message contract holds)
+    const pu = "21600000fru";
+    const pur = await bot.processPatientText(pu, "je peux venir demain ?");
+    ok("fr: unsure message without AI key -> Derja", !/Bonjour|puis-je/.test(pur),
+      `reply was: ${JSON.stringify(pur)}`);
     // flow: explicit request -> French
     const pf2 = "21600000fr2";
     const fr1 = await bot.processPatientText(pf2, "jewbni bel français");
@@ -1350,6 +1390,31 @@ async function run() {
       /"Nchalllah" ghalta/.test(bot.SYSTEM_PROMPT));
     const pg = await bot.processPatientText("21600000gr1", "slm");
     has("gr: pure greeting uses new phrasing", pg, "Kifech najmou n3awnouk");
+    // regression 2026-10-01 (seen live): "salut cv" fell through to the AI,
+    // which invented "3aslema! Nchalllah labes, kifech najmou n3awnouk?" — the
+    // Nchalllah typo the prompt bans. Greeting + small-talk now uses the
+    // deterministic greeting; the typo guard fixes it in code as backup.
+    const pg2 = await bot.processPatientText("21600000gr2", "salut cv");
+    has("gr: 'salut cv' uses deterministic greeting", pg2, "Kifech najmou n3awnouk");
+    ok("gr: 'salut cv' has no Nchalllah typo", !/nchall+ah/i.test(pg2),
+      `reply was: ${JSON.stringify(pg2)}`);
+    const pg3 = await bot.processPatientText("21600000gr3", "slm labes");
+    has("gr: 'slm labes' uses deterministic greeting", pg3, "Kifech najmou n3awnouk");
+    const pg5 = await bot.processPatientText("21600000gr5", "salut comment cava");
+    has("gr: 'salut comment cava' uses deterministic greeting", pg5, "Kifech najmou n3awnouk");
+    ok("gr: 'salut comment cava' has no Nchalllah typo", !/nchall{2,}ah/i.test(pg5),
+      `reply was: ${JSON.stringify(pg5)}`);
+    // booking content is NOT a greeting
+    const pg4 = await bot.processPatientText("21600000gr4", "slm n7eb na7jez");
+    ok("gr: 'slm n7eb na7jez' is not a pure greeting", !/Kifech najmou n3awnouk/.test(pg4),
+      `reply was: ${JSON.stringify(pg4)}`);
+    // typo guard unit tests (prompts are words, not law)
+    ok("gr: fixKnownTypos fixes 'Nchalllah'",
+      bot.fixKnownTypos("3aslema! Nchalllah labes") === "3aslema! Nchallah labes");
+    ok("gr: fixKnownTypos leaves clean text alone",
+      bot.fixKnownTypos("nchallah ghodwa") === "nchallah ghodwa");
+    ok("gr: guardAiOutput applies the typo fix",
+      bot.guardAiOutput("Nchalllah labes", false, "fallback") === "Nchallah labes");
   }
 
   // PILOT — Dr Ines per-number config (2026-09-29): the pilot number
@@ -1503,6 +1568,149 @@ async function run() {
     try { if (scriptM) { new Function(scriptM[1]); scriptOk = true; scriptErr = ""; } }
     catch (e) { scriptErr = e.message; }
     ok("admin: page script is valid JS", scriptOk, scriptErr);
+  }
+
+  // =================================================================
+  // PART S — SALON vertical (2026-10-01): the 53 180 566 demo number.
+  // The dentist path must be 100% unchanged; every salon test below also
+  // guards that no dental vocabulary or dentist flow leaks into the salon.
+  // =================================================================
+  {
+    const DENTAL_RE = /(3iyada|3yada|tbib|mridh|maridh|mardh|\bdwe\b|douleur|mal de dent|secretaire|سكرتيرة|طبيب|مريض|دواء|وجيعة|سنّة|اسنان|عيادة|dentiste|dentaire|cabinet dentaire|consultation)/i;
+    const zeroDental = (r) => ok("salon: zero dental vocab", !DENTAL_RE.test(r), r.slice(0, 90));
+    const SALON = "21653180566"; // the Meta ad number (display form)
+
+    // S1 — display-number detection
+    ok("S1: localNumber strips 216", bot.localNumber("21653180566") === "53180566");
+    ok("S1: localNumber strips +/spaces", bot.localNumber("+216 53 180 566") === "53180566");
+    ok("S1: salon display number detected", bot.isSalonDisplayNumber(SALON) === true);
+    ok("S1: salon local form detected", bot.isSalonDisplayNumber("53180566") === true);
+    ok("S1: other number not salon", bot.isSalonDisplayNumber("21652123456") === false);
+    ok("S1: empty not salon", bot.isSalonDisplayNumber("") === false);
+    ok("S1: seed vertical is salon", bot.SEED_SALON_BY_NUMBER["53180566"].vertical === "salon");
+
+    // S2 — vertical resolution
+    const vcSalon = await bot.getClinic(undefined, SALON);
+    ok("S2: salon number resolves to salon", vcSalon.vertical === "salon", vcSalon.vertical);
+    const vcDent = await bot.getClinic(undefined, "21652123456");
+    ok("S2: other number stays dentist", vcDent.vertical === "dentist", vcDent.vertical);
+    const vcNone = await bot.getClinic(undefined, undefined);
+    ok("S2: no display number stays dentist", vcNone.vertical === "dentist", vcNone.vertical);
+    // DB row beats the display-number seed (either direction)
+    await stubDb.saveClinicConfig("21600000077", { clinic_name: "X", vertical: "salon" });
+    const vcDbSalon = await bot.getClinic("21600000077", "21652123456");
+    ok("S2: DB salon row wins over non-salon number", vcDbSalon.vertical === "salon");
+    await stubDb.saveClinicConfig("21600000078", { clinic_name: "Y", vertical: "dentist" });
+    const vcDbDent = await bot.getClinic("21600000078", SALON);
+    ok("S2: DB dentist row wins over salon seed", vcDbDent.vertical === "dentist");
+    await stubDb.clearClinicConfig("21600000077");
+    await stubDb.clearClinicConfig("21600000078");
+
+    // S3 — salon greeting (latin + arabic script), no dental vocab
+    const g1 = await bot.processPatientText("salS1", "slm", undefined, SALON);
+    has("S3: latin greeting", g1, "Assistant Salon");
+    zeroDental(g1);
+    const g2 = await bot.processPatientText("salS2", "عسلامة", undefined, SALON);
+    has("S3: arabic greeting", g2, "ديمو");
+    zeroDental(g2);
+
+    // S4 — salon FAQ: services / prix / who / subscribe (demo price list)
+    const f1 = await bot.processPatientText("salS3", "chnowa el services?", undefined, SALON);
+    has("S4: services FAQ", f1, "brushing");
+    has("S4: services FAQ labels demo", f1, "demo");
+    zeroDental(f1);
+    const f2 = await bot.processPatientText("salS3", "b9adech el brushing?", undefined, SALON);
+    has("S4: prix FAQ", f2, "25 DT");
+    zeroDental(f2);
+    const f3 = await bot.processPatientText("salS3", "chkoun enti", undefined, SALON);
+    has("S4: who FAQ", f3, "Assistant Salon");
+    zeroDental(f3);
+    const f4 = await bot.processPatientText("salS3", "chnowa el ichtirak?", undefined, SALON);
+    has("S4: subscribe FAQ has offer", f4, "3 DT");
+    has("S4: subscribe FAQ 15 days free", f4, "15 jours");
+    zeroDental(f4);
+
+    // S5 — demo booking, multi-step (service -> slot -> simulated)
+    const b1a = await bot.processPatientText("salB1", "n7eb na7jez", undefined, SALON);
+    has("S5: demo booking asks service", b1a, "service");
+    zeroDental(b1a);
+    const b1b = await bot.processPatientText("salB1", "brushing", undefined, SALON);
+    has("S5: demo booking asks slot", b1b, "nhar");
+    zeroDental(b1b);
+    const b1c = await bot.processPatientText("salB1", "ghodwa 10 mta3 sbe7", undefined, SALON);
+    has("S5: demo booking simulated", b1c, "demo");
+    has("S5: demo booking names service", b1c, "brushing");
+    zeroDental(b1c);
+    const demoB = stubDb._inspect().bookings.find((b) => b.phone === "salB1");
+    ok("S5: demo booking saved", !!demoB, JSON.stringify(demoB && demoB.slot_text));
+    ok("S5: demo booking tagged status=demo", demoB && demoB.status === "demo", demoB && demoB.status);
+    const pendB = (await stubDb.getPendingBookings()).filter((x) => x.phone === "salB1");
+    ok("S5: demo booking NOT in secretary pending list", pendB.length === 0, `n=${pendB.length}`);
+
+    // S6 — demo booking, one-shot (service + slot in one message)
+    const b2 = await bot.processPatientText("salB2", "n7eb na7jez chignon ghodwa 11 mta3 sbe7", undefined, SALON);
+    has("S6: one-shot demo booking", b2, "chignon");
+    has("S6: one-shot is a demo", b2, "demo");
+    zeroDental(b2);
+    const demoB2 = stubDb._inspect().bookings.find((b) => b.phone === "salB2");
+    ok("S6: one-shot tagged demo", demoB2 && demoB2.status === "demo");
+
+    // S7 — lead capture: owner wants the bot for their salon
+    const _log = [];
+    const _origLog = console.log;
+    console.log = (...a) => { _log.push(a.join(" ")); };
+    const l1 = await bot.processPatientText("salL1", "n7eb lel salon mte3i", undefined, SALON);
+    has("S7: lead trigger asks name", l1, "esmek");
+    zeroDental(l1);
+    const l2 = await bot.processPatientText("salL1", "Ahmed", undefined, SALON);
+    has("S7: lead asks salon name", l2, "salon");
+    zeroDental(l2);
+    const l3 = await bot.processPatientText("salL1", "Salon Lumière", undefined, SALON);
+    has("S7: lead asks city", l3, "mdina");
+    zeroDental(l3);
+    const l4 = await bot.processPatientText("salL1", "Tounes", undefined, SALON);
+    has("S7: lead asks phone", l4, "nafsou");
+    zeroDental(l4);
+    const l5 = await bot.processPatientText("salL1", "nafsou", undefined, SALON);
+    console.log = _origLog;
+    has("S7: lead handoff confirms", l5, "nettaslou");
+    zeroDental(l5);
+    const leadSignup = stubDb._inspect().signups.find((s) => s.phone === "salL1");
+    ok("S7: lead saved as signup", !!leadSignup, JSON.stringify(leadSignup));
+    ok("S7: signup kind=salon", leadSignup && leadSignup.kind === "salon", leadSignup && leadSignup.kind);
+    ok("S7: signup keeps salon + city", leadSignup && leadSignup.clinic_name === "Salon Lumière" && leadSignup.city === "Tounes", JSON.stringify(leadSignup));
+    ok("S7: sales notified of salon lead", _log.some((m) => m.includes("Lead SALON") && m.includes("salL1")), _log.filter((m) => m.includes("sales:SKIP")).slice(-1)[0] || "none");
+
+    // S8 — "جرّب" on the salon number must NOT enter the dentist sales pitch
+    const v1 = await bot.processPatientText("salV1", "جرّب", undefined, SALON);
+    has("S8: jarreb on salon stays salon", v1, "صالون");
+    zeroDental(v1);
+    ok("S8: no dentist vendor pitch on salon number", !/(3iyada|عيادة|tbib|طبيب|دكتور)/i.test(v1), v1.slice(0, 90));
+
+    // S9 — French on the salon number: salon fallback, never the dentist French prompt
+    const fr1 = await bot.processPatientText("salF1", "Bonjour", undefined, SALON);
+    has("S9: french on salon gets salon fallback", fr1, "DÉMO");
+    zeroDental(fr1);
+    ok("S9: no dentist french prompt", !/clinique \(dentiste\)/i.test(fr1), fr1.slice(0, 90));
+
+    // S10 — AI-less fallback for the salon vertical (no AI key in tests)
+    const fb1 = await bot.processPatientText("salX1", "bla bla ma fhemtch", undefined, SALON);
+    has("S10: salon fallback names the demo", fb1, "Assistant Salon");
+    zeroDental(fb1);
+
+    // S11 — dentist regression: the dentist number is 100% dentist
+    const DENTIST_ID = "1364750653386950"; // Cabinet Dr Ines seed
+    await stubDb.clearClinicConfig(DENTIST_ID); // PART P left a stale row for this id
+    const d1 = await bot.processPatientText("dentT1", "slm", DENTIST_ID);
+    has("S11: dentist greeting unchanged", d1, "Cabinet Dr Ines");
+    ok("S11: dentist greeting has no salon leak", !/salon|صالون|Assistant Salon/i.test(d1), d1.slice(0, 90));
+    const d2 = await bot.processPatientText("dentT1", "n7eb na7jez ghodwa 10 mta3 sbe7", DENTIST_ID);
+    has("S11: dentist booking flow confirms slot", d2, "D'accord");
+    ok("S11: dentist booking never says demo", !/demo/i.test(d2), d2.slice(0, 90));
+    const propD = await stubDb.getProposal("dentT1");
+    ok("S11: dentist proposal saved", !!propD, "no proposal");
+    const d3 = await bot.processPatientText("dentV1", "جرّب", DENTIST_ID);
+    ok("S11: dentist vendor pitch still works", !/salon|صالون|Assistant Salon/i.test(d3), d3.slice(0, 90));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
