@@ -1803,6 +1803,38 @@ async function run() {
     ok("S17: le salon=null (not misread)", bot.salonYesNo("le salon") === null);
   }
 
+  // ---- S18 — French qualify: short question, oui/non branch ----
+  {
+    const DENTAL_RE = /(3iyada|3yada|tbib|mridh|maridh|mardh|\bdwe\b|douleur|mal de dent|secretaire|سكرتيرة|طبيب|مريض|دواء|وجيعة|سنّة|اسنان|عيادة|dentiste|dentaire|cabinet dentaire|consultation)/i;
+    const zeroDental = (r) => ok("salon: zero dental vocab", !DENTAL_RE.test(r), r.slice(0, 90));
+    const SALON = "21653180566";
+
+    const fq1 = await bot.processPatientText("salQ5", "Bonjour ! Puis-je en savoir plus à ce sujet ?", undefined, SALON);
+    has("S18: french info -> short qualify", fq1, "Vous avez un salon ?");
+    ok("S18: french qualify is short", fq1.length < 160, `len=${fq1.length}`);
+    ok("S18: french qualify no arabizi CTA", !/n7eb lel salon/.test(fq1), fq1.slice(0, 120));
+    zeroDental(fq1);
+    const fq1lead = await stubDb.getVendorLead("salQ5");
+    ok("S18: qualify lang=fr saved", fq1lead && fq1lead.stage === "salon_qualify", fq1lead && fq1lead.stage);
+    const fq2 = await bot.processPatientText("salQ5", "oui", undefined, SALON);
+    has("S18: oui -> french pitch prix", fq2, "3 DT");
+    has("S18: oui -> french pitch asks name", fq2, "Quel est votre nom ?");
+    ok("S18: french pitch no demo/robot", !/démo|robot/i.test(fq2), fq2.slice(0, 80));
+    zeroDental(fq2);
+    const fq2lead = await stubDb.getVendorLead("salQ5");
+    ok("S18: oui enters lead flow", fq2lead && fq2lead.stage === "salon_ask_name", fq2lead && fq2lead.stage);
+    const fq3 = await bot.processPatientText("salQ6", "Bonjour", undefined, SALON);
+    has("S18: bonjour -> qualify", fq3, "Vous avez un salon ?");
+    const fq4 = await bot.processPatientText("salQ6", "non", undefined, SALON);
+    has("S18: non -> french trial transparency", fq4, "essai");
+    ok("S18: french trial asks service", /service/.test(fq4), fq4.slice(0, 80));
+    zeroDental(fq4);
+    await bot.processPatientText("salQ7", "Bonjour", undefined, SALON);
+    const fq6 = await bot.processPatientText("salQ7", "xyz", undefined, SALON);
+    has("S18: french unclear -> re-ask", fq6, "Vous avez un salon ?");
+    ok("S18: french pitch fn has no banned words", !/demo|démo|robot|ديمو|روبوت/i.test(bot.salonOwnerPitchFr()));
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

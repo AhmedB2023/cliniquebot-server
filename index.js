@@ -1661,8 +1661,15 @@ async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
 // FRENCH_SYSTEM_PROMPT (it would pitch a dental clinic).
 function salonFrenchFallback() {
   return "Salut ! 💇‍♀️ Je suis Assistant Salon — un assistant WhatsApp pour les salons de beauté en Tunisie.\n" +
-    "Essayez-moi : demandez les services, les prix, ou écrivez « je veux réserver » pour voir une réservation d'essai 💅\n" +
-    "Vous avez un salon ? Écrivez « n7eb lel salon mte3i » !";
+    "Vous avez un salon ? (oui/non)";
+}
+
+function salonOwnerPitchFr() {
+  return "Cet assistant travaille sur le WhatsApp de votre salon : il répond à vos clientes, " +
+    "prend leurs rendez-vous et leur envoie des rappels — sans que vous fassiez rien.\n" +
+    "L'offre : 15 jours gratuits 🎁, puis 3 DT par rendez-vous confirmé — " +
+    "vous ne payez que si la cliente vient au salon.\n" +
+    "On vous le prépare ? Quel est votre nom ?";
 }
 
 // No-AI-key fallback for the salon vertical (production has the AI key;
@@ -1696,7 +1703,7 @@ async function handleSalonTurn(phone, text, clinic) {
   // 1) qualify stage (info-seeker: "3andek salon?") — branches before lead flow.
   const vqual = await db.getVendorLead(phone).catch(() => null);
   if (vqual && vqual.stage === "salon_qualify")
-    return handleSalonQualifyTurn(phone, text, ar, clinic);
+    return handleSalonQualifyTurn(phone, text, ar, clinic, vqual);
   // 2) lead flow in progress (stages "salon_*").
   const vlead = vqual;
   if (vlead && vlead.stage && vlead.stage.indexOf("salon_") === 0)
@@ -1713,9 +1720,11 @@ async function handleSalonTurn(phone, text, clinic) {
   if (salonDemo.has(phone)) return handleSalonDemoBooking(phone, text, ar, clinic);
   // 5) demo booking trigger.
   if (looksLikeBookingIntent(text)) return handleSalonDemoBooking(phone, text, ar, clinic);
-  // 6) French -> salon French fallback (never the dentist French prompt).
-  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text))
+  // 6) French -> short qualify (never the dentist French prompt).
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) {
+    await db.saveVendorLead(phone, "salon_qualify", JSON.stringify({ lang: "fr" }));
     return say(phone, salonFrenchFallback(), clinic);
+  }
   // 7) pure greeting -> the salon demo greeting (from the number's config).
   if (looksLikePureGreeting(text))
     return say(phone, ar
@@ -1725,7 +1734,7 @@ async function handleSalonTurn(phone, text, clinic) {
   // the qualify flow: short intro + "3andek salon?" instead of the AI.
   const fk = salonFaqKind(text);
   if (fk === "who") {
-    await db.saveVendorLead(phone, "salon_qualify", "{}");
+    await db.saveVendorLead(phone, "salon_qualify", JSON.stringify({ lang: ar ? "ar" : "latin" }));
     return say(phone, ar
       ? "أنا مساعد الصالون 💇‍♀️ — مساعد واتساب يجاوب على حريفات الصالون، يحجزلهم، ويفكرهم بالمواعيد.\nعندك صالون؟"
       : "Ena Assistant Salon 💇‍♀️ — assistant WhatsApp yjewb 3la 7orfa el salon, ye7jzelhom, w yfakarhom bel rendez-vous.\n3andek salon?", clinic);
@@ -1756,28 +1765,39 @@ function salonOwnerPitch(ar) {
       SALON_OFFER_LATIN + "\nT7eb n7adhrouhoulk? Chnowa esmek?";
 }
 
-async function handleSalonQualifyTurn(phone, text, ar, clinic) {
+async function handleSalonQualifyTurn(phone, text, ar, clinic, lead) {
+  // The qualify question's language rides in the lead data ("oui"/"non" alone
+  // are not detectable as French by the word-list detector).
+  const lang = (lead && salonLeadData(lead).lang) || (ar ? "ar" : "latin");
+  const fr = lang === "fr";
   // yes/no first: "le" here answers "3andek salon?" (no), it is not a cancel.
   const yn = salonYesNo(text);
   if (yn === "yes") {
     // Salon owner -> pitch + prix + CTA, straight into the lead flow.
     await db.saveVendorLead(phone, "salon_ask_name", "{}");
-    return say(phone, salonOwnerPitch(ar), clinic);
+    return say(phone, fr ? salonOwnerPitchFr() : salonOwnerPitch(ar), clinic);
   }
   if (yn === "no") {
     // 7arifa -> demo booking trial only, nothing sold, transparency first.
     await db.clearVendorLead(phone).catch(() => {});
     salonDemo.set(phone, { stage: "service" });
+    if (fr) return say(phone,
+      "D'accord ! La réservation ici est juste un essai, pas une vraie réservation.\n" +
+      "Quel service vous intéresse ? 💅 (brushing, chignon, maquillage, manucure...)", clinic);
     return say(phone, (ar
       ? "داكور! الحجز هوني للتجربة برك (موش حجز حقيقي).\n"
       : "D'accord! El 7ajz houni lel tajrba bark (mouch 7ajz 7a9i9i).\n") + salonAskServiceMsg(ar), clinic);
   }
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     await db.clearVendorLead(phone).catch(() => {});
-    return say(phone, ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
+    return say(phone,
+      fr ? "D'accord, pas de problème." :
+      ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
   }
   // Unclear -> ask again, simply.
-  return say(phone, ar ? "عندك صالون؟ (أي / لا)" : "3andek salon? (ey / le)", clinic);
+  return say(phone,
+    fr ? "Vous avez un salon ? (oui/non)" :
+    ar ? "عندك صالون؟ (أي / لا)" : "3andek salon? (ey / le)", clinic);
 }
 
 // Bare greeting ("slm", "bonjour", "عسلامة") -> neutral reply only, no steering.
@@ -2497,4 +2517,4 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   SALON_SYSTEM_PROMPT, localNumber, isSalonDisplayNumber, SEED_SALON_BY_NUMBER,
   salonFaqKind, salonFaqAnswer, salonLeadTrigger, salonFallbackReply, salonFrenchFallback,
   parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN, SALON_OFFER_AR,
-  salonYesNo, salonOwnerPitch, handleSalonQualifyTurn };
+  salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn };
