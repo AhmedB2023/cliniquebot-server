@@ -1696,9 +1696,9 @@ async function run() {
     zeroDental(fr1);
     ok("S9: no dentist french prompt", !/clinique \(dentiste\)/i.test(fr1), fr1.slice(0, 90));
 
-    // S10 — AI-less fallback for the salon vertical (no AI key in tests)
+    // S10 — no-AI fallback for the salon vertical: random msg -> qualify redirect
     const fb1 = await bot.processPatientText("salX1", "bla bla ma fhemtch", undefined, SALON);
-    has("S10: salon fallback names the demo", fb1, "Assistant Salon");
+    has("S10: random msg funnels to qualify", fb1, "3andek salon?");
     zeroDental(fb1);
 
     // S11 — dentist regression: the dentist number is 100% dentist
@@ -1863,6 +1863,23 @@ async function run() {
     // Normal answers still flow (no regression).
     const m4 = await bot.processPatientText("salM1", "مريم", undefined, SALON);
     has("S19: name still accepted after interrupt", m4, "صالون");
+  }
+
+  // ---- S20 — no AI on the salon number: random msg -> deterministic qualify ----
+  {
+    const SALON = "21653180566";
+    // Latin gibberish -> deterministic redirect, qualify state saved.
+    const r1 = await bot.processPatientText("salR1", "haha lol 123 ???", undefined, SALON);
+    has("S20: random latin -> qualify redirect", r1, "3andek salon?");
+    ok("S20: no AI leak (short reply)", r1.length < 120, String(r1.length));
+    const r1s = await stubDb.getVendorLead("salR1");
+    ok("S20: qualify state saved", r1s && r1s.stage === "salon_qualify", r1s && r1s.stage);
+    // Funnel continues: "ey" -> owner pitch.
+    const r2 = await bot.processPatientText("salR1", "ey", undefined, SALON);
+    has("S20: ey after redirect -> pitch", r2, "3 DT");
+    // Arabic gibberish -> arabic redirect.
+    const r3 = await bot.processPatientText("salR2", "هههه شنوة هالخراب", undefined, SALON);
+    has("S20: random arabic -> qualify redirect", r3, "عندك صالون؟");
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

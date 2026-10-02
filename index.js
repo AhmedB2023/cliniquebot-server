@@ -1878,13 +1878,14 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   if (vertical === "salon") {
     const s = await handleSalonTurn(phone, text, clinic);
     if (s.handled) return s.reply;
-    const pname = await db.getPatientName(phone).catch(() => null);
+    // No AI on the salon number, ever: any unmatched (random) message funnels
+    // back into the qualify ("3andek salon?"). Random messages cost 0 tokens.
     const useAr = await scriptAr(phone, text);
-    const reply = AI_API_KEY
-      ? await aiReply(text, history, pname, clinic.name, useAr, "", SALON_SYSTEM_PROMPT)
-      : salonFallbackReply(text, useAr);
-    await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
-    return reply;
+    await db.saveVendorLead(phone, "salon_qualify", JSON.stringify({ lang: useAr ? "ar" : "latin" })).catch(() => {});
+    const r = await say(phone, useAr
+      ? "ما فهمتكش 🙂 عندك صالون؟ (أي / لا)"
+      : "Ma fhemtkch 🙂 3andek salon? (ey / le)", clinic);
+    return r.reply;
   }
 
   // Shared clinic: the patient asks for the OTHER doctor by name -> never book
