@@ -141,7 +141,7 @@ async function getHistory(phone, limit = 15) {
   if (!p) return [];
   try {
     const r = await p.query(
-      "SELECT role, text FROM messages WHERE phone = $1 ORDER BY id DESC LIMIT $2",
+      "SELECT role, text, created_at FROM messages WHERE phone = $1 ORDER BY id DESC LIMIT $2",
       [phone, limit]
     );
     return r.rows.reverse();

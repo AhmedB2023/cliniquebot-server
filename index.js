@@ -2193,6 +2193,7 @@ input{flex:1;padding:10px;border-radius:8px;border:1px solid #ccc;font-size:16px
 <script>
 let pw="";
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtTime(s){if(!s)return '';var d=new Date(s);if(isNaN(d.getTime()))return s;return d.toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
 let allConvs=[];
 function clinicOf(c){return (c&&c.clinic)||'9dima';}
 async function load(){pw=document.getElementById('pw').value;
@@ -2205,13 +2206,13 @@ const names=[...new Set(allConvs.map(clinicOf))];
 document.getElementById('filter').innerHTML='<select onchange="renderList(this.value)"><option value="">El koll ('+allConvs.length+')</option>'+names.map(n=>'<option value="'+n.split('"').join('&quot;')+'">🏥 '+esc(n)+'</option>').join('')+'</select>';
 renderList('');}
 function renderList(f){const rows=f?allConvs.filter(c=>clinicOf(c)===f):allConvs;
-document.getElementById('list').innerHTML=rows.map(c=>'<div class="card"><b>'+esc(c.phone)+'</b> — '+c.count+' messages<br>🏥 '+esc(clinicOf(c))+'<br><small>'+esc(c.last_at||'')+'</small><div class="row"><button class="ok" onclick="viewConv(\\''+esc(c.phone)+'\\')">Chouf</button><button class="no" onclick="delConv(\\''+esc(c.phone)+'\\')">Fassa5</button></div></div>').join('')||'<p>Ma fama 7atta conversation. 👍</p>';}
+document.getElementById('list').innerHTML=rows.map(c=>'<div class="card"><b>'+esc(c.phone)+'</b> — '+c.count+' messages<br>🏥 '+esc(clinicOf(c))+'<br><small>🕐 '+esc(fmtTime(c.last_at))+'</small><div class="row"><button class="ok" onclick="viewConv(\\''+esc(c.phone)+'\\')">Chouf</button><button class="no" onclick="delConv(\\''+esc(c.phone)+'\\')">Fassa5</button></div></div>').join('')||'<p>Ma fama 7atta conversation. 👍</p>';}
 async function viewConv(phone){const r=await fetch('/api/conversations/'+encodeURIComponent(phone)+'?password='+encodeURIComponent(pw));const j=await r.json();
 const el=document.getElementById('conv');el.style.display='block';
 if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
 const cc=allConvs.find(x=>x.phone===phone);
 el.innerHTML='<div class="row"><button class="back" onclick="back()">← Erja3</button><button class="no" onclick="delConv(\\''+esc(phone)+'\\')">Fassa5 el conversation</button></div><h3>'+esc(phone)+'</h3><p>🏥 '+esc(clinicOf(cc))+'</p>'+
-(j.messages.map(m=>'<div class="msg '+m.role+'"><span class="who">'+(m.role==='user'?'Patient':'Bot')+'</span><br>'+esc(m.text)+'</div>').join('')||'<p>Faragh.</p>');}
+(j.messages.map(m=>'<div class="msg '+m.role+'"><span class="who">'+(m.role==='user'?'Patient':'Bot')+'</span> <small>🕐 '+esc(fmtTime(m.created_at))+'</small><br>'+esc(m.text)+'</div>').join('')||'<p>Faragh.</p>');}
 function back(){document.getElementById('conv').style.display='none';}
 async function delConv(phone){if(!confirm('Tfassa5 el conversation mta3 '+phone+'? El bot bech yenseha jemla.'))return;
 const r=await fetch('/api/conversations/'+encodeURIComponent(phone)+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
