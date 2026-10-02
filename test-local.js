@@ -1611,13 +1611,15 @@ async function run() {
     has("S3: latin greeting", g1, "Assistant Salon");
     zeroDental(g1);
     const g2 = await bot.processPatientText("salS2", "عسلامة", undefined, SALON);
-    has("S3: arabic greeting", g2, "ديمو");
+    has("S3: arabic greeting", g2, "مساعد الصالون");
+    ok("S3: arabic greeting no demo/robot words", !/ديمو|روبوت|demo|robot/i.test(g2), g2.slice(0, 80));
     zeroDental(g2);
 
-    // S4 — salon FAQ: services / prix / who / subscribe (demo price list)
+    // S4 — salon FAQ: services / prix / who / subscribe (example price list)
     const f1 = await bot.processPatientText("salS3", "chnowa el services?", undefined, SALON);
     has("S4: services FAQ", f1, "brushing");
-    has("S4: services FAQ labels demo", f1, "demo");
+    ok("S4: services FAQ no demo word", !/demo/i.test(f1), f1.slice(0, 80));
+    has("S4: services FAQ says mthel", f1, "mthel");
     zeroDental(f1);
     const f2 = await bot.processPatientText("salS3", "b9adech el brushing?", undefined, SALON);
     has("S4: prix FAQ", f2, "25 DT");
@@ -1625,7 +1627,7 @@ async function run() {
     const f3 = await bot.processPatientText("salS3", "chkoun enti", undefined, SALON);
     has("S4: who FAQ", f3, "Assistant Salon");
     zeroDental(f3);
-    const f4 = await bot.processPatientText("salS3", "chnowa el ichtirak?", undefined, SALON);
+    const f4 = await bot.processPatientText("salS4", "chnowa el ichtirak?", undefined, SALON);
     has("S4: subscribe FAQ has offer", f4, "3 DT");
     has("S4: subscribe FAQ 15 days free", f4, "15 jours");
     zeroDental(f4);
@@ -1638,7 +1640,7 @@ async function run() {
     has("S5: demo booking asks slot", b1b, "nhar");
     zeroDental(b1b);
     const b1c = await bot.processPatientText("salB1", "ghodwa 10 mta3 sbe7", undefined, SALON);
-    has("S5: demo booking simulated", b1c, "demo");
+    has("S5: demo booking simulated", b1c, "tajrba");
     has("S5: demo booking names service", b1c, "brushing");
     zeroDental(b1c);
     const demoB = stubDb._inspect().bookings.find((b) => b.phone === "salB1");
@@ -1650,7 +1652,7 @@ async function run() {
     // S6 — demo booking, one-shot (service + slot in one message)
     const b2 = await bot.processPatientText("salB2", "n7eb na7jez chignon ghodwa 11 mta3 sbe7", undefined, SALON);
     has("S6: one-shot demo booking", b2, "chignon");
-    has("S6: one-shot is a demo", b2, "demo");
+    has("S6: one-shot is a tajrba", b2, "tajrba");
     zeroDental(b2);
     const demoB2 = stubDb._inspect().bookings.find((b) => b.phone === "salB2");
     ok("S6: one-shot tagged demo", demoB2 && demoB2.status === "demo");
@@ -1689,7 +1691,8 @@ async function run() {
 
     // S9 — French on the salon number: salon fallback, never the dentist French prompt
     const fr1 = await bot.processPatientText("salF1", "Bonjour", undefined, SALON);
-    has("S9: french on salon gets salon fallback", fr1, "DÉMO");
+    has("S9: french on salon gets salon fallback", fr1, "assistant");
+    ok("S9: french fallback no demo word", !/démo/i.test(fr1), fr1.slice(0, 80));
     zeroDental(fr1);
     ok("S9: no dentist french prompt", !/clinique \(dentiste\)/i.test(fr1), fr1.slice(0, 90));
 
@@ -1711,6 +1714,93 @@ async function run() {
     ok("S11: dentist proposal saved", !!propD, "no proposal");
     const d3 = await bot.processPatientText("dentV1", "جرّب", DENTIST_ID);
     ok("S11: dentist vendor pitch still works", !/salon|صالون|Assistant Salon/i.test(d3), d3.slice(0, 90));
+  }
+
+  // ---- S12-S17 — batch fix 2026-10-01: qualify flow + wording ----
+  {
+    const DENTAL_RE = /(3iyada|3yada|tbib|mridh|maridh|mardh|\bdwe\b|douleur|mal de dent|secretaire|سكرتيرة|طبيب|مريض|دواء|وجيعة|سنّة|اسنان|عيادة|dentiste|dentaire|cabinet dentaire|consultation)/i;
+    const zeroDental = (r) => ok("salon: zero dental vocab", !DENTAL_RE.test(r), r.slice(0, 90));
+    const SALON = "21653180566";
+
+    // S12 — info-seeking questions go deterministic (no AI freestyle)
+    ok("S12: faqKind ma3loumet=who", bot.salonFaqKind("مرحبا هل يمكنني الحصول على مزيد من المعلومات حول هذا؟") === "who");
+    ok("S12: faqKind more info=who", bot.salonFaqKind("I want more info please") === "who");
+    ok("S12: faqKind c'est quoi=who", bot.salonFaqKind("c'est quoi hedha?") === "who");
+    ok("S12: faqKind chnowa hedha=who", bot.salonFaqKind("chnowa hedha b dhabt?") === "who");
+    ok("S12: faqKind kifech ye5dem=who", bot.salonFaqKind("kifech ye5dem?") === "who");
+    const q1 = await bot.processPatientText("salQ1", "مرحبا هل يمكنني الحصول على مزيد من المعلومات حول هذا؟", undefined, SALON);
+    has("S12: arabic info -> qualify question", q1, "عندك صالون؟");
+    ok("S12: arabic qualify no demo/robot", !/ديمو|روبوت|demo|robot/i.test(q1), q1.slice(0, 100));
+    zeroDental(q1);
+    const q1lead = await stubDb.getVendorLead("salQ1");
+    ok("S12: qualify stage saved", q1lead && q1lead.stage === "salon_qualify", q1lead && q1lead.stage);
+    const q2 = await bot.processPatientText("salQ2", "c'est quoi hedha?", undefined, SALON);
+    has("S12: latin info -> qualify question", q2, "3andek salon?");
+    zeroDental(q2);
+
+    // S13 — qualify "yes" (salon owner) -> pitch + prix + CTA -> lead flow
+    // Arabic path: "أي" keeps the arabic script (kif-kif mirrors the message).
+    const p1 = await bot.processPatientText("salQ1", "أي", undefined, SALON);
+    has("S13: owner pitch has prix", p1, "3 دنانير");
+    has("S13: owner pitch has 15 days", p1, "15 يوم");
+    has("S13: owner pitch asks name", p1, "شنوة اسمك؟");
+    ok("S13: pitch says assistant not robot", /مساعد/.test(p1) && !/روبوت/.test(p1), p1.slice(0, 60));
+    zeroDental(p1);
+    const p1lead = await stubDb.getVendorLead("salQ1");
+    ok("S13: owner enters lead flow", p1lead && p1lead.stage === "salon_ask_name", p1lead && p1lead.stage);
+    // Latin path: "oui" -> latin pitch, then the lead flow continues.
+    const p2lat = await bot.processPatientText("salQ2", "oui", undefined, SALON);
+    has("S13: latin oui -> pitch", p2lat, "3 DT");
+    has("S13: latin pitch asks name", p2lat, "Chnowa esmek?");
+    ok("S13: latin pitch no demo/robot", !/demo|robot/i.test(p2lat), p2lat.slice(0, 80));
+    const p2 = await bot.processPatientText("salQ2", "Mariem", undefined, SALON);
+    has("S13: lead continues to salon name", p2, "salon");
+
+    // S14 — qualify "le" (7arifa) -> demo trial only, transparency first
+    const n1 = await bot.processPatientText("salQ3", "n7eb na3ref ma3loumet", undefined, SALON);
+    has("S14: info -> qualify", n1, "3andek salon?");
+    const n2 = await bot.processPatientText("salQ3", "le", undefined, SALON);
+    has("S14: 7arifa gets tajrba transparency", n2, "tajrba");
+    has("S14: 7arifa asked service", n2, "service");
+    ok("S14: no prix sold to 7arifa", !/3 DT|دنانير/.test(n2), n2.slice(0, 80));
+    zeroDental(n2);
+    const n3 = await bot.processPatientText("salQ3", "brushing", undefined, SALON);
+    has("S14: 7arifa trial continues", n3, "nhar");
+    zeroDental(n3);
+
+    // S15 — qualify unclear answer -> re-ask simply
+    await bot.processPatientText("salQ4", "chnowa hedha?", undefined, SALON);
+    const u1 = await bot.processPatientText("salQ4", "xyz", undefined, SALON);
+    has("S15: unclear -> re-ask", u1, "3andek salon?");
+    const u2 = await bot.processPatientText("salQ4", "le salon", undefined, SALON);
+    has("S15: 'le salon' not misread as no", u2, "3andek salon?");
+
+    // S16 — wording: no demo/robot anywhere in salon user-visible replies
+    const NO_BAD = /demo|démo|robot|ديمو|روبوت/i;
+    const salonReplies = [
+      bot.salonFaqAnswer("who", true), bot.salonFaqAnswer("who", false),
+      bot.salonFaqAnswer("services", true), bot.salonFaqAnswer("services", false),
+      bot.salonFaqAnswer("prix", true), bot.salonFaqAnswer("prix", false),
+      bot.salonFaqAnswer("subscribe", true), bot.salonFaqAnswer("subscribe", false),
+      bot.salonFrenchFallback(),
+      bot.salonFallbackReply("xyz", true), bot.salonFallbackReply("xyz", false),
+      bot.salonOwnerPitch(true), bot.salonOwnerPitch(false),
+    ];
+    salonReplies.forEach((r, i) => ok(`S16: reply ${i} no demo/robot`, !NO_BAD.test(r), r.slice(0, 80)));
+    ok("S16: prompt bans robot/demo", /MAMNOU3 kelmet "robot" w "demo"/.test(bot.SALON_SYSTEM_PROMPT));
+
+    // S17 — salonYesNo unit
+    ok("S17: ey=yes", bot.salonYesNo("ey") === "yes");
+    ok("S17: Ey=yes", bot.salonYesNo("Ey") === "yes");
+    ok("S17: oui=yes", bot.salonYesNo("oui") === "yes");
+    ok("S17: نعم=yes", bot.salonYesNo("نعم") === "yes");
+    ok("S17: 3andi salon=yes", bot.salonYesNo("3andi salon") === "yes");
+    ok("S17: le=no", bot.salonYesNo("le") === "no");
+    ok("S17: non=no", bot.salonYesNo("non") === "no");
+    ok("S17: لا=no", bot.salonYesNo("لا") === "no");
+    ok("S17: ma 3andich=no", bot.salonYesNo("ma 3andich") === "no");
+    ok("S17: xyz=null", bot.salonYesNo("xyz") === null);
+    ok("S17: le salon=null (not misread)", bot.salonYesNo("le salon") === null);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
