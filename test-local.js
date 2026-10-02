@@ -1835,6 +1835,36 @@ async function run() {
     ok("S18: french pitch fn has no banned words", !/demo|démo|robot|ديمو|روبوت/i.test(bot.salonOwnerPitchFr()));
   }
 
+  // ---- S19 — info question mid-lead-flow: answer it, return to pending Q ----
+  {
+    const SALON = "21653180566";
+
+    // Exact live case (2026-10-01): ask_name + arabic info question.
+    await stubDb.saveVendorLead("salM1", "salon_ask_name", JSON.stringify({ lang: "ar" }));
+    const m1 = await bot.processPatientText("salM1", "مرحبا هل يمكنني الحصول على مزيد من المعلومات حول هذا؟", undefined, SALON);
+    ok("S19: mid-flow who answered (intro)", /مساعد الصالون/.test(m1), m1.slice(0, 60));
+    ok("S19: mid-flow who has no qualify Q", !/عندك صالون/.test(m1), m1.slice(0, 120));
+    has("S19: mid-flow returns to name Q", m1, "شنوة اسمك؟");
+    const m1s = await stubDb.getVendorLead("salM1");
+    ok("S19: stage unchanged", m1s && m1s.stage === "salon_ask_name", m1s && m1s.stage);
+
+    // Prix question mid-flow (latin).
+    await stubDb.saveVendorLead("salM2", "salon_ask_salon", JSON.stringify({ lang: "latin", name: "Mariem" }));
+    const m2 = await bot.processPatientText("salM2", "b9adech el brushing?", undefined, SALON);
+    has("S19: mid-flow prix answered", m2, "25 DT");
+    has("S19: mid-flow returns to salon Q", m2, "Chnowa esm el salon?");
+
+    // French mid-flow.
+    await stubDb.saveVendorLead("salM3", "salon_ask_name", JSON.stringify({ lang: "fr" }));
+    const m3 = await bot.processPatientText("salM3", "c'est quoi exactement ?", undefined, SALON);
+    ok("S19: french mid-flow intro", /Assistant Salon/.test(m3), m3.slice(0, 60));
+    has("S19: french mid-flow returns to name Q", m3, "Quel est votre nom ?");
+
+    // Normal answers still flow (no regression).
+    const m4 = await bot.processPatientText("salM1", "مريم", undefined, SALON);
+    has("S19: name still accepted after interrupt", m4, "صالون");
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

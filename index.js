@@ -1449,6 +1449,11 @@ const SALON_DEMO_PRICES = [
 const SALON_OFFER_LATIN = "El offre: 15 jours blech 🎁, ba3d 3 DT 3la kol rendez-vous m2akked — ma t5alles ken ki el 7arifa tji lel salon mte3ek.";
 const SALON_OFFER_AR = "العرض: 15 يوم بلاش 🎁، وبعد 3 دنانير على كل موعد مؤكد — ما تخلص كان كي الحريفة تجي للصالون متاعك.";
 
+// Short intro (no question) — shared by the qualify "who" and mid-lead-flow info interrupts.
+const SALON_INTRO_AR = "أنا مساعد الصالون 💇‍♀️ — مساعد واتساب يجاوب على حريفات الصالون، يحجزلهم، ويفكرهم بالمواعيد.";
+const SALON_INTRO_LATIN = "Ena Assistant Salon 💇‍♀️ — assistant WhatsApp yjewb 3la 7orfa el salon, ye7jzelhom, w yfakarhom bel rendez-vous.";
+const SALON_INTRO_FR = "Je suis Assistant Salon — un assistant WhatsApp pour les salons de beauté en Tunisie.";
+
 function salonFaqKind(text) {
   const raw = text || "";
   const t = " " + raw.toLowerCase() + " ";
@@ -1463,8 +1468,8 @@ function salonFaqKind(text) {
 function salonFaqAnswer(kind, ar, service) {
   const priceList = SALON_DEMO_PRICES.map(([s, p]) => `• ${s}: ${p}`).join("\n");
   if (kind === "who") return ar
-    ? "أنا مساعد الصالون 💇‍♀️ — مساعد واتساب يجاوب على حريفات الصالون، يحجزلهم، ويفكرهم بالمواعيد.\nعندك صالون؟"
-    : "Ena Assistant Salon 💇‍♀️ — assistant WhatsApp yjewb 3la 7orfa el salon, ye7jzelhom, w yfakarhom bel rendez-vous.\n3andek salon?";
+    ? SALON_INTRO_AR + "\nعندك صالون؟"
+    : SALON_INTRO_LATIN + "\n3andek salon?";
   if (kind === "services") {
     const intro = service
       ? (ar ? `أي، نعملو ${service} 💅` : `Ey, na3mlou ${service} 💅`)
@@ -1590,6 +1595,26 @@ function salonLeadData(lead) {
   catch { return {}; }
 }
 
+// Pending question per lead stage — used when an info question interrupts
+// the flow: answer it, then return to the pending question (stage unchanged).
+function salonLeadPendingQ(stage, lang, ar, phone) {
+  if (stage === "salon_ask_name")
+    return lang === "fr" ? "Quel est votre nom ?"
+      : ar ? "شنوة اسمك؟ (اكتب اسمك)" : "Chnowa esmek? (ekteb esmek)";
+  if (stage === "salon_ask_salon")
+    return lang === "fr" ? "Quel est le nom de votre salon ?"
+      : ar ? "شنوة اسم الصالون؟" : "Chnowa esm el salon?";
+  if (stage === "salon_ask_city")
+    return lang === "fr" ? "Dans quelle ville se trouve-t-il ?"
+      : ar ? "في أنهو مدينة؟" : "Fi anhou mdina?";
+  if (stage === "salon_ask_phone")
+    return lang === "fr"
+      ? `On vous appelle sur ce numéro (${phone}) ? Ou vous en avez un autre ? (écrivez « pareil » ou le numéro)`
+      : ar ? `باش نكلموك على النومرو هذا (${phone})؟ ولا عندك نومرو آخر؟ (اكتب «نفسو» ولا النومرو)`
+      : `Bech nkallemouk 3al numero hetha (${phone})? Walla 3andek numero e5er? (ekteb «nafsou» walla el numero)`;
+  return "";
+}
+
 async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
   // Cancel mid-flow: drop the lead state.
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
@@ -1600,11 +1625,21 @@ async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
   }
   const d = salonLeadData(lead);
   const stage = lead.stage;
+  const lang = d.lang || (ar ? "ar" : "latin");
+  // Info question mid-flow: answer it, then return to the pending question
+  // (stage unchanged). "who" here = short intro only — they already said yes.
+  const fkInfo = salonFaqKind(text);
+  if (fkInfo === "who" || fkInfo === "services" || fkInfo === "prix") {
+    const ans = fkInfo === "who"
+      ? (lang === "fr" ? SALON_INTRO_FR : lang === "ar" ? SALON_INTRO_AR : SALON_INTRO_LATIN)
+      : salonFaqAnswer(fkInfo, ar, parseSalonService(text));
+    return say(phone, ans + "\n" + salonLeadPendingQ(stage, lang, ar, phone), clinic);
+  }
 
   if (stage === "salon_ask_name") {
     const name = parsePatientName(text);
     if (!name) return say(phone, ar ? "شنوة اسمك؟ (اكتب اسمك)" : "Chnowa esmek? (ekteb esmek)", clinic);
-    await db.saveVendorLead(phone, "salon_ask_salon", JSON.stringify({ name }));
+    await db.saveVendorLead(phone, "salon_ask_salon", JSON.stringify({ ...d, name }));
     const cn = capName(name);
     return say(phone, ar
       ? `متشرفين ${cn}! 🌸 شنوة اسم الصالون متاعك؟`
@@ -1735,9 +1770,7 @@ async function handleSalonTurn(phone, text, clinic) {
   const fk = salonFaqKind(text);
   if (fk === "who") {
     await db.saveVendorLead(phone, "salon_qualify", JSON.stringify({ lang: ar ? "ar" : "latin" }));
-    return say(phone, ar
-      ? "أنا مساعد الصالون 💇‍♀️ — مساعد واتساب يجاوب على حريفات الصالون، يحجزلهم، ويفكرهم بالمواعيد.\nعندك صالون؟"
-      : "Ena Assistant Salon 💇‍♀️ — assistant WhatsApp yjewb 3la 7orfa el salon, ye7jzelhom, w yfakarhom bel rendez-vous.\n3andek salon?", clinic);
+    return say(phone, ar ? SALON_INTRO_AR + "\nعندك صالون؟" : SALON_INTRO_LATIN + "\n3andek salon?", clinic);
   }
   if (fk) return say(phone, salonFaqAnswer(fk, ar, parseSalonService(text)), clinic);
   return { handled: false };
@@ -1773,8 +1806,8 @@ async function handleSalonQualifyTurn(phone, text, ar, clinic, lead) {
   // yes/no first: "le" here answers "3andek salon?" (no), it is not a cancel.
   const yn = salonYesNo(text);
   if (yn === "yes") {
-    // Salon owner -> pitch + prix + CTA, straight into the lead flow.
-    await db.saveVendorLead(phone, "salon_ask_name", "{}");
+    // Salon owner -> pitch + prix + CTA, straight into the lead flow (lang rides along).
+    await db.saveVendorLead(phone, "salon_ask_name", JSON.stringify({ lang }));
     return say(phone, fr ? salonOwnerPitchFr() : salonOwnerPitch(ar), clinic);
   }
   if (yn === "no") {
