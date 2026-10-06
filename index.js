@@ -183,21 +183,30 @@ async function notifySales(text) {
 // needed. booking_hours format: "dow:start-end;..." e.g. "1:8-16;6:8-13"
 // (dow 0=Sunday). other_doctor: name of another doctor sharing the clinic —
 // patients asking for them are handed to the secretary, never booked by bot.
+// Shared VIXA sales greeting (used by the id seed and the display-number
+// seed below — one source of truth so they can never drift apart).
+const VIXA_GREETING =
+  "Ahla w sahla! 👋 Ena Assistant VIXA — n3awen les cliniques fi Tounes bech yjewbou 3la les patients mte3hom 3la WhatsApp.\n" +
+  "Enti tbib walla 3andek 3iyada/cabinet? (ey / le)";
+const VIXA_GREETING_AR =
+  "أهلا وسهلا! 👋 أنا مساعد VIXA — نعاون العيادات في تونس باش يجاوبو على المرضى متاعهم على واتساب.\n" +
+  "انتي طبيب ولا عندك عيادة؟ (أي / لا)";
+
 const SEED_CLINICS = {
-  // Pilot: Cabinet Dr Ines (Dr Inès Zaguia), HI Dental Clinic, L'Aouina.
-  // Hours from the clinic's Facebook page (partner confirming with the doctor).
+  // VIXA SALES (2026-10-06): +216 52 150 093 is now the VIXA sales assistant
+  // for clinic owners (the Meta ad sends doctors to this number). The dead
+  // "Cabinet Dr Ines" pilot is gone — this number must NEVER answer as
+  // Dr Ines's receptionist again.
   "1364750653386950": {
-    clinic_name: "Cabinet Dr Ines",
-    address: "Centre Médical Élégantis, 2ème étage, 22 Avenue Mongi Slim, L'Aouina, Tunis",
-    greeting: "Ahla w sahla fi Cabinet Dr Ines! Kifech najmou n3awnouk?",
-    greeting_ar: "أهلا وسهلا في عيادة الدكتورة إيناس! كيفاش نجمو نعاونوك؟",
-    hours: "Ethneyn–Jem3a: 8:00–16:00, Sebt: 8:00–13:00, 7ad: msakra",
-    booking_hours: "1:8-16;2:8-16;3:8-16;4:8-16;5:8-16;6:8-13",
-    // ⚠️ stays EMPTY until the partner confirms who owns +216 54 178 535
-    // (secretary vs personal). Then set it via POST /api/clinics — no new
-    // ZIP needed. Never notify an unconfirmed number.
+    vertical: "vixa",
+    clinic_name: "VIXA",
+    address: "",
+    greeting: VIXA_GREETING,
+    greeting_ar: VIXA_GREETING_AR,
+    hours: "",
+    booking_hours: "",
     secretary_number: "",
-    other_doctor: "Dakhlaoui",
+    other_doctor: "",
   },
 };
 
@@ -217,13 +226,17 @@ function parseBookingHours(str) {
 }
 
 // ---------------------------------------------------------------------------
-// Verticals (2026-10-01): "dentist" (default — the full clinic behavior below)
-// vs "salon" (demo/sales bot for beauty-salon owners, on the ad number).
+// Verticals (2026-10-01, +vixa 2026-10-06): "dentist" (default — the full
+// clinic behavior below) vs "salon" (demo/sales bot for beauty-salon owners,
+// on the ad number) vs "vixa" (SALES bot for clinic owners, on +216 52 150 093,
+// the Meta ad destination — never the dentist receptionist flow).
 // A bot number's vertical resolves per message, in this order:
-//   1. explicit DB row (POST /api/clinics, field "vertical": "salon"|"dentist")
-//   2. display-number seed (the salon ad number — no phone_number_id needed)
+//   1. explicit DB row (POST /api/clinics, field "vertical": "salon"|"vixa"|"dentist")
+//   2. display-number seed (salon/vixa ad numbers — no phone_number_id needed)
 //   3. phone_number_id seed (SEED_CLINICS)
 //   4. "dentist" (default — current behavior 100% unchanged)
+// EXCEPTION: the VIXA sales display number is ALWAYS "vixa" (forced in
+// getClinic) — a stale DB row can never drag the repurposed SIM back.
 // ---------------------------------------------------------------------------
 // Normalize a WhatsApp display number to the Tunisian local form (8 digits):
 // "21653180566", "+216 53 180 566" and "53180566" all -> "53180566".
@@ -264,19 +277,45 @@ const SEED_SALON_BY_NUMBER = {
   },
 };
 
+// Seed config for the VIXA sales number (+216 52 150 093), keyed by LOCAL
+// number (not phone_number_id — Ahmed never has to dig that up). More sales
+// numbers can be added without a code change via VIXA_NUMBERS="52150093,...".
+const VIXA_SEED_NUMBERS = new Set(
+  ["52150093", ...String(process.env.VIXA_NUMBERS || "").split(",").map(localNumber)].filter(Boolean)
+);
+function isVixaDisplayNumber(displayNumber) {
+  return VIXA_SEED_NUMBERS.has(localNumber(displayNumber));
+}
+const SEED_VIXA_BY_NUMBER = {
+  "52150093": {
+    vertical: "vixa",
+    clinic_name: "VIXA",
+    address: "",
+    greeting: VIXA_GREETING,
+    greeting_ar: VIXA_GREETING_AR,
+    hours: "",
+    booking_hours: "",
+    secretary_number: "",
+    other_doctor: "",
+  },
+};
+
 async function getClinic(numberId, displayNumber) {
   const id = numberId || DEFAULT_NUMBER_ID;
   const cfg = await db.getClinicConfig(id);
   const seed = SEED_CLINICS[id] || {};
-  const dispSeed = SEED_SALON_BY_NUMBER[localNumber(displayNumber)] || {};
+  const dispSeed = SEED_SALON_BY_NUMBER[localNumber(displayNumber)] ||
+    SEED_VIXA_BY_NUMBER[localNumber(displayNumber)] || {};
   // A DB row wins over the seed. ?? (not ||) so the partner can CLEAR a
   // seed value by saving "" — only null/undefined fall back to the seed.
   const pick = (k, fb) => (cfg && cfg[k] != null ? cfg[k] : dispSeed[k] ?? seed[k] ?? fb ?? "");
-  // Vertical: explicit DB value > salon-number seed > id seed > dentist.
-  // "" counts as unset (old DB rows) — only "salon"/"dentist" are real values.
-  const vOf = (o) => (o && (o.vertical === "salon" || o.vertical === "dentist") ? o.vertical : null);
-  const vertical = vOf(cfg) || vOf(dispSeed) || vOf(seed) || "dentist";
-  return {
+  // Vertical: explicit DB value > display-number seed > id seed > dentist.
+  // "" counts as unset (old DB rows) — only "salon"/"vixa"/"dentist" are real.
+  // EXCEPTION: the VIXA sales display number is ALWAYS "vixa" — the physical
+  // SIM was repurposed, so a stale DB row can never drag it back to "dentist".
+  const vOf = (o) => (o && (o.vertical === "salon" || o.vertical === "vixa" || o.vertical === "dentist") ? o.vertical : null);
+  const vertical = isVixaDisplayNumber(displayNumber) ? "vixa" : (vOf(cfg) || vOf(dispSeed) || vOf(seed) || "dentist");
+  const out = {
     id,
     vertical,
     name: pick("clinic_name", CLINIC_NAME),
@@ -288,6 +327,14 @@ async function getClinic(numberId, displayNumber) {
     otherDoctor: pick("other_doctor", ""),
     secretary: pick("secretary_number", "").replace(/\D/g, "") || SECRETARY_NUMBER,
   };
+  // VIXA sales number: the dead "Cabinet Dr Ines" pilot identity must NEVER
+  // leak into a reply (e.g. via a stale DB row) — force the VIXA identity.
+  if (out.vertical === "vixa") {
+    if (/ines/i.test(out.name)) out.name = "VIXA";
+    if (/ines/i.test(out.greeting)) out.greeting = VIXA_GREETING;
+    if (/إيناس|ايناس/i.test(out.greetingAr)) out.greetingAr = VIXA_GREETING_AR;
+  }
+  return out;
 }
 
 // Explicit script request: "aktebli bel 3arbi" / "write in Arabic script".
@@ -1833,6 +1880,304 @@ async function handleSalonQualifyTurn(phone, text, ar, clinic, lead) {
     ar ? "عندك صالون؟ (أي / لا)" : "3andek salon? (ey / le)", clinic);
 }
 
+// ---------------------------------------------------------------------------
+// VIXA SALES VERTICAL (2026-10-06) — +216 52 150 093, Meta ad destination.
+// Sales assistant for CLINIC OWNERS (dentists, GPs, ophthalmologists...).
+// Runs ONLY when vertical === "vixa". NEVER the dentist receptionist flow,
+// NEVER "Cabinet Dr Ines", NEVER the AI (0-token deterministic, like salon).
+// RED LINES: never answer medical questions (redirect, idari=bot/tibbi=insen);
+// never claim reminders/follow-up are live on the doctor's OWN number before
+// they subscribe; price = BLECH — no price mentioned, ever (Ahmed 2026-10-06).
+// ---------------------------------------------------------------------------
+
+// Short intro (no question) — shared by qualify "who" and mid-lead-flow info interrupts.
+const VIXA_INTRO_AR = "أنا مساعد VIXA 🏥 — مساعد واتساب للعيادات: يجاوب على المرضى، يحجزلهم، ويفكرهم بالمواعيد.";
+const VIXA_INTRO_LATIN = "Ena Assistant VIXA 🏥 — assistant WhatsApp lel les cliniques: yjewb 3la les patients, ye7jzelhom, w yfakarhom bel rendez-vous.";
+const VIXA_INTRO_FR = "Je suis Assistant VIXA — un assistant WhatsApp pour les cliniques en Tunisie.";
+
+// The commercial offer: BLECH. No price, no subscription, no per-patient fee
+// — Ahmed's rule 2026-10-06 (free until 3-5 doctors subscribe; #6+ pays, TBD).
+const VIXA_OFFER_LATIN = "El offre: blech! 🎁";
+const VIXA_OFFER_AR = "العرض: بلاش! 🎁";
+const VIXA_OFFER_FR = "L'offre : gratuit ! 🎁";
+
+// Medical questions: NEVER answered on this number — redirect, always.
+const VIXA_MEDICAL_LATIN = "Ena assistant VIXA lel les cliniques — ma njewbch 3la as2la tibbiya 🙂 Ken 3andek mochkla sa7iya, lazem tchouf tbib 7a9i9i. Ken enti tbib w t7eb el assistant lel 3iyada mte3ek, 9olli!";
+const VIXA_MEDICAL_AR = "أنا مساعد VIXA للعيادات — ما نجاوبش على أسئلة طبية 🙂 كان عندك مشكلة صحية، لازم تشوف طبيب حقيقي. وكان انتي طبيب وتحب المساعد للعيادة متاعك، قولي!";
+const VIXA_MEDICAL_FR = "Je suis l'assistant VIXA pour les cliniques — je ne réponds pas aux questions médicales 🙂 Pour un problème de santé, consultez un vrai médecin. Si vous êtes médecin et voulez l'assistant pour votre clinique, dites-le-moi !";
+
+// Not a clinic owner (patient messaging by mistake): brief redirect.
+const VIXA_NOTOWNER_LATIN = "El numero hetha mte3 les propriétaires des cliniques (bech yjarbou el assistant VIXA) 🙂 Ken enti patient, lazem tetassel bel 3iyada mte3ek direct.";
+const VIXA_NOTOWNER_AR = "النومرو هذا مخصص لأصحاب العيادات (باش يجربو مساعد VIXA) 🙂 كان انتي مريض، لازم تتصل بالعيادة متاعك ديراكت.";
+const VIXA_NOTOWNER_FR = "Ce numéro est réservé aux propriétaires de cliniques (pour découvrir l'assistant VIXA) 🙂 Si vous êtes patient, contactez directement votre clinique.";
+
+function vixaFaqKind(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  // Medical FIRST (red line): never answer, always redirect.
+  if (/(wji3a|wjaa|وجع|وجيعة|dwe|دواء|medicament|ordonnance|mardh|mridh|مرض|مريض|symptome|اعراض|أعراض|diagnostic|تشخيص|douleur|malade|maladie)/.test(t)) return "medical";
+  if (/(chkoun enti|chkounek|chkon enti|who are you|what is this|vixa|شكون انت|شكونك|انت شكون|معلومات|معلومة|ma3loum|more info|en savoir plus|à ce sujet|a ce sujet|c'est quoi|c quoi|شنوة هذا|شنيا هذي|شنو هذا|ça sert à quoi|ca sert a quoi|kifech ye5dem|كيفاش يخدم|chnowa hedha|chneya hedhi|plus d.info)/.test(t)) return "who";
+  // prix before subscribe: "b9adech el ichtirak?" is a price question -> blech.
+  if (/(9adech|b9adech|kadech|soum|prix|combien|بقداش|سوم|بكام|flous|gratuit|blech|بلاش)/.test(t)) return "prix";
+  if (/(n7eb lel 3iyada|3iyada mte3i|3iyada mta3i|n7eb wa7ed kifou|kifech nechri|kifech neshri|kifech nabda|nechri|neshri|nabda m3akom|nabda m3ak|ichtirak|abonnement|نحب للعيادة|نشري|نبدا)/.test(t)) return "subscribe";
+  if (/(chnowa ta3ml|chnowa ta3mel|chnowa ye5dem|features|الخدمات|شنوة الخدمات|chnowa el services|chnowa ya3mel)/.test(t)) return "services";
+  return null;
+}
+
+function vixaServicesText(ar) {
+  return ar
+    ? "شنوة يعمل المساعد؟ 🏥\n• يجاوب على المرضى بالدارجة والعربي والفرنسي، 24/7\n• يحجز رونديفو (والسكرتيرة هي اللي تأكد)\n• يفكرهم قبل بنهار\n• يبعث notification للسكرتيرة\n• يعمل suivi بعد الـ visite"
+    : "Chnowa ya3mel el assistant? 🏥\n• Yjewb 3la les patients bel derja wel 3arbi wel français, 24/7\n• Ye7jez rendez-vous (w el secretaire hiya eli t2akked)\n• Yfakarhom 9bal b nhar\n• Yeb3ath notification lel secretaire\n• Ya3mel suivi ba3d el visite";
+}
+
+function vixaFaqAnswer(kind, ar) {
+  if (kind === "who") return ar
+    ? VIXA_INTRO_AR + "\nانتي طبيب ولا عندك عيادة؟ (أي / لا)"
+    : VIXA_INTRO_LATIN + "\nEnti tbib walla 3andek 3iyada? (ey / le)";
+  if (kind === "services") return vixaServicesText(ar) + "\n" + (ar ? VIXA_OFFER_AR : VIXA_OFFER_LATIN);
+  if (kind === "prix") return ar
+    ? VIXA_OFFER_AR + " ما فما حتى سوم — العرض بلاش."
+    : VIXA_OFFER_LATIN + " Ma fama 7atta soum — el offre blech.";
+  // subscribe is handled by the lead flow; this is the fallback answer.
+  return ar ? VIXA_OFFER_AR + "\nتحب نحضروهولك؟ شنوة اسمك؟"
+    : VIXA_OFFER_LATIN + "\nT7eb n7adhrouhoulek? Chnowa esmek?";
+}
+
+// Owner pitch (Ahmed's words, short chat form): what it does + blech + CTA.
+// Describes the PRODUCT (like the salon pitch) — never claims the features
+// are already live on the doctor's own number before they subscribe.
+function vixaOwnerPitch(ar) {
+  const body = ar
+    ? "المساعد هذا يخدم على واتساب العيادة متاعك: يجاوب على المرضى متاعك بالدارجة والعربي والفرنسي 24/7، يحجزلهم رونديفو (والسكرتيرة هي اللي تأكد)، ويفكرهم قبل بنهار — وانتي ما تعمل شي."
+    : "El assistant hedha ye5dem 3la WhatsApp mte3 el 3iyada mte3ek: yjewb 3la les patients mte3ek bel derja wel 3arbi wel français 24/7, ye7jzelhom rendez-vous (w el secretaire hiya eli t2akked), w yfakarhom 9bal b nhar — w enti ma ta3mel chay.";
+  const offer = ar ? VIXA_OFFER_AR : VIXA_OFFER_LATIN;
+  const cta = ar ? "تحب نحضروهولك للعيادة متاعك؟ شنوة اسمك؟" : "T7eb n7adhrouhoulek lel 3iyada mte3ek? Chnowa esmek?";
+  return body + "\n" + offer + "\n" + cta;
+}
+
+function vixaOwnerPitchFr() {
+  return "Cet assistant travaille sur le WhatsApp de votre clinique : il répond à vos patients " +
+    "en derja, arabe et français 24/7, prend leurs rendez-vous (votre secrétaire valide), " +
+    "et leur envoie des rappels — sans que vous fassiez rien.\n" +
+    VIXA_OFFER_FR + "\n" +
+    "On vous le prépare ? Quel est votre nom ?";
+}
+
+function vixaFrenchFallback() {
+  return "Salut ! 🏥 Je suis Assistant VIXA — un assistant WhatsApp pour les cliniques en Tunisie.\n" +
+    "Vous êtes médecin / vous avez une clinique ? (oui/non)";
+}
+
+// ---------- VIXA lead capture (clinic owner wants the assistant) ----------
+// Stages live in vendor_leads under "vixa_*" — the salon "salon_*" and dentist
+// vendor stages never touch these. Flow data rides in the clinic_name column
+// as JSON (name -> clinic -> phone -> time -> done).
+function vixaLeadTrigger(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  const raw = text || "";
+  if (/(n7eb|nheb).{0,40}(lel 3iyada|3iyada mte3i|3iyada mta3i|wa7ed kifou|assistant)/.test(t)) return true;
+  if (/(nechri|neshri|ne5ou|nabda|nbadal).{0,25}(hedha|hedhi|m3akom|m3ak|service)/.test(t)) return true;
+  if (/(kifech|kifach|kifeh).{0,25}(nechri|neshri|ne5ou|nabda|njarreb|n7adher)/.test(t)) return true;
+  if (/\bsubscribe\b/i.test(t)) return true;
+  return /(نحب).{0,20}(للعيادة|نشري|نبدا)/.test(raw);
+}
+
+function vixaLeadData(lead) {
+  try { return JSON.parse((lead && lead.clinic_name) || "{}"); }
+  catch { return {}; }
+}
+
+// Pending question per lead stage — used when an info question interrupts
+// the flow: answer it, then return to the pending question (stage unchanged).
+function vixaLeadPendingQ(stage, lang, ar, phone) {
+  if (stage === "vixa_ask_name")
+    return lang === "fr" ? "Quel est votre nom ?"
+      : ar ? "شنوة اسمك؟ (اكتب اسمك)" : "Chnowa esmek? (ekteb esmek)";
+  if (stage === "vixa_ask_clinic")
+    return lang === "fr" ? "Quel est le nom de votre clinique ? (et la spécialité — ex : dentiste)"
+      : ar ? "شنوة اسم العيادة متاعك؟ (والاختصاص — مثال: dentiste)" : "Chnowa esm el 3iyada mte3ek? (w el e5tisas — mthel: dentiste)";
+  if (stage === "vixa_ask_phone")
+    return lang === "fr"
+      ? `On vous appelle sur ce numéro (${phone}) ? Ou vous en avez un autre ? (écrivez « pareil » ou le numéro)`
+      : ar ? `باش نكلموك على النومرو هذا (${phone})؟ ولا عندك نومرو آخر؟ (اكتب «نفسو» ولا النومرو)`
+      : `Bech nkallemouk 3al numero hetha (${phone})? Walla 3andek numero e5er? (ekteb «nafsou» walla el numero)`;
+  if (stage === "vixa_ask_time")
+    return lang === "fr" ? "Quel moment vous arrange pour un appel de 10 minutes ? (ex : demain 10h)"
+      : ar ? "أنهو وقت يساعدك للمكالمة متاع 10 دقايق؟ (مثال: غدوة 10 متاع الصباح)"
+      : "Anhou wa9t yse3dek lel appel mta3 10 d9aye9? (mthel: ghodwa 10 mta3 sbe7)";
+  return "";
+}
+
+async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
+  // Cancel mid-flow: drop the lead state.
+  if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, ar
+      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
+  }
+  const d = vixaLeadData(lead);
+  const stage = lead.stage;
+  const lang = d.lang || (ar ? "ar" : "latin");
+  // Info question mid-flow: answer it, then return to the pending question
+  // (stage unchanged). Medical mid-flow: redirect, never answer.
+  const fkInfo = vixaFaqKind(text);
+  if (fkInfo === "medical") {
+    const redir = lang === "fr" ? VIXA_MEDICAL_FR : lang === "ar" ? VIXA_MEDICAL_AR : VIXA_MEDICAL_LATIN;
+    return say(phone, redir + "\n" + vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+  }
+  if (fkInfo === "who" || fkInfo === "services" || fkInfo === "prix") {
+    const ans = fkInfo === "who"
+      ? (lang === "fr" ? VIXA_INTRO_FR : lang === "ar" ? VIXA_INTRO_AR : VIXA_INTRO_LATIN)
+      : vixaFaqAnswer(fkInfo, ar);
+    return say(phone, ans + "\n" + vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+  }
+
+  if (stage === "vixa_ask_name") {
+    const name = parsePatientName(text);
+    if (!name) return say(phone, vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+    await db.saveVendorLead(phone, "vixa_ask_clinic", JSON.stringify({ ...d, name, lang }));
+    const cn = capName(name);
+    return say(phone, lang === "fr" ? `Enchanté ${cn} ! 🏥 Quel est le nom de votre clinique ? (et la spécialité — ex : dentiste)`
+      : ar ? `متشرفين ${cn}! 🏥 شنوة اسم العيادة متاعك؟ (والاختصاص — مثال: dentiste)`
+      : `Mitcharfin ${cn}! 🏥 Chnowa esm el 3iyada mte3ek? (w el e5tisas — mthel: dentiste)`, clinic);
+  }
+
+  if (stage === "vixa_ask_clinic") {
+    const cn2 = (text || "").trim().slice(0, 80);
+    if (!cn2 || cn2.length < 2 || /[?؟]/.test(cn2))
+      return say(phone, vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+    await db.saveVendorLead(phone, "vixa_ask_phone", JSON.stringify({ ...d, clinic: cn2, lang }));
+    return say(phone, vixaLeadPendingQ("vixa_ask_phone", lang, ar, phone), clinic);
+  }
+
+  if (stage === "vixa_ask_phone") {
+    const t = (text || "").trim().toLowerCase();
+    let finalPhone = phone;
+    if (!/^(nafsou|nafs|nafsu|ey|ok|na3m|oui|pareil|نفسو|اي|أي)\s*[.,!؟]*$/.test(t)) {
+      const digits = (text || "").replace(/\D/g, "");
+      if (digits.length < 8) return say(phone, ar
+        ? "النومرو هذا ما يبانش صحيح — عاود اكتبو (8 أرقام على الأقل) ولا اكتب «نفسو»."
+        : "El numero hetha ma ybench s7i7 — 3awed ekteb (8 ar9am lel a9al) walla ekteb «nafsou».", clinic);
+      finalPhone = digits;
+    }
+    await db.saveVendorLead(phone, "vixa_ask_time", JSON.stringify({ ...d, finalPhone, lang }));
+    return say(phone, vixaLeadPendingQ("vixa_ask_time", lang, ar, phone), clinic);
+  }
+
+  if (stage === "vixa_ask_time") {
+    const when = (text || "").trim().slice(0, 80) || "—";
+    const name = d.name || "—", cn3 = d.clinic || "—", finalPhone = d.finalPhone || phone;
+    await db.saveSignup(capName(name), finalPhone, cn3, "", "clinic");
+    await notifySales(`🏥 Lead CLINIQUE jdid: ${capName(name)} — 3iyada "${cn3}" — numero ${finalPhone} — y7eb appel: ${when}`);
+    await db.saveVendorLead(phone, "vixa_done", JSON.stringify(d));
+    const cnd = capName(name);
+    return say(phone, lang === "fr" ? `D'accord ${cnd} ! ✅ On vous appellera ${when} pour préparer l'assistant pour la clinique "${cn3}". Merci ! 🙏`
+      : ar ? `داكور ${cnd}! ✅ باش نتصلو بيك ${when} باش نحضرولك المساعد للعيادة "${cn3}". شكرا! 🙏`
+      : `D'accord ${cnd}! ✅ Bech nettaslou bik ${when} bech n7adhroulek el assistant lel 3iyada "${cn3}". Merci! 🙏`, clinic);
+  }
+
+  // stage "vixa_done": handoff made, stay quiet-ish.
+  return say(phone, ar
+    ? "الطلب متاعك وصل — باش نتصلو بيك قريب. كان عندك سؤال آخر اكتب هوني."
+    : "El demande mte3ek woslet — bech nettaslou bik 9rib. Ken 3andek sou2el e5er, ekteb houni.", clinic);
+}
+
+// ---------- VIXA qualify: "3andek 3iyada?" -> branch ----------
+// "ey" (clinic owner) -> pitch (blech, no price) -> lead flow (vixa_ask_name).
+// "le" (patient by mistake) -> redirect to their own clinic, nothing sold.
+// Unclear -> re-ask. Refusal -> polite close.
+function vixaYesNo(text) {
+  const raw = (text || "").trim().toLowerCase().replace(/[.,!؟?]/g, "");
+  const t = " " + raw + " ";
+  // "no" first: "3andi" is a substring of "3andich", so the negative wins.
+  if (/(ma 3andich|ma3andich|m3andich|ma3andish|mani tbib|mani toubib|je n.ai pas|i don.t have|dont have|ما عنديش|ماني طبيب)/.test(t)) return "no";
+  if (/^(le|le2|non|no|لا)$/.test(raw)) return "no";
+  if (/(3andi 3iyada|3andi cabinet|andi 3iyada|ena tbib|ana tbib|j.ai une clinique|j ai une clinique|yes i have|3andi|نعم عندي|أنا طبيب|انا طبيب)/.test(t)) return "yes";
+  if (/^(ey|eyy|oui|yes|ok|na3m|aye|نعم|اي|أي|اه)$/.test(raw)) return "yes";
+  return null;
+}
+
+async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
+  // The qualify question's language rides in the lead data ("oui"/"non" alone
+  // are not detectable as French by the word-list detector).
+  const lang = (lead && vixaLeadData(lead).lang) || (ar ? "ar" : "latin");
+  const fr = lang === "fr";
+  // yes/no first: "le" here answers "3andek 3iyada?" (no), it is not a cancel.
+  const yn = vixaYesNo(text);
+  if (yn === "yes") {
+    // Clinic owner -> pitch (blech, no price) -> straight into the lead flow.
+    await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang }));
+    return say(phone, fr ? vixaOwnerPitchFr() : vixaOwnerPitch(ar), clinic);
+  }
+  if (yn === "no") {
+    // Patient by mistake -> redirect, nothing sold.
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, fr ? VIXA_NOTOWNER_FR : ar ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic);
+  }
+  if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone,
+      fr ? "D'accord, pas de problème." :
+      ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
+  }
+  // Unclear -> ask again, simply.
+  return say(phone,
+    fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)" :
+    ar ? "انتي طبيب ولا عندك عيادة؟ (أي / لا)" : "Enti tbib walla 3andek 3iyada? (ey / le)", clinic);
+}
+
+// VIXA router: qualify + lead capture. Returns { handled:false } when nothing
+// matched — the caller then funnels into the deterministic qualify (no AI).
+async function handleVixaTurn(phone, text, clinic) {
+  const ar0 = await scriptAr(phone, text);
+  // 1) qualify stage ("3andek 3iyada?") — branches before lead flow.
+  const vqual = await db.getVendorLead(phone).catch(() => null);
+  if (vqual && vqual.stage === "vixa_qualify")
+    return handleVixaQualifyTurn(phone, text, ar0, clinic, vqual);
+  // 2) lead flow in progress (stages "vixa_*").
+  if (vqual && vqual.stage && vqual.stage.indexOf("vixa_") === 0)
+    return handleVixaLeadTurn(phone, text, vqual, ar0, clinic);
+  // 3) explicit lead trigger ("n7eb lel 3iyada mte3i" ...).
+  if (vixaLeadTrigger(text)) {
+    await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang: ar0 ? "ar" : "latin" }));
+    return say(phone, ar0
+      ? "ممتاز! 🎉 باش نحضرولك المساعد للعيادة متاعك. شنوة اسمك؟"
+      : "Super! 🎉 Bech n7adhroulek el assistant lel 3iyada mte3ek. Chnowa esmek?", clinic);
+  }
+  // 4) medical question -> redirect, NEVER answered (red line).
+  if (vixaFaqKind(text) === "medical") {
+    const fr = looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text);
+    const arx = !fr && ar0;
+    return say(phone, fr ? VIXA_MEDICAL_FR : arx ? VIXA_MEDICAL_AR : VIXA_MEDICAL_LATIN, clinic);
+  }
+  // 5) French -> short French qualify (never the dentist French prompt).
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) {
+    await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: "fr" }));
+    return say(phone, vixaFrenchFallback(), clinic);
+  }
+  // 6) pure greeting -> the VIXA greeting (from the number's config) + qualify.
+  if (looksLikePureGreeting(text)) {
+    await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: ar0 ? "ar" : "latin" }));
+    return say(phone, ar0
+      ? (clinic.greetingAr || clinic.greeting || VIXA_GREETING_AR)
+      : (clinic.greeting || VIXA_GREETING), clinic);
+  }
+  // 7) VIXA FAQ. "who" (info-seeking) goes to the qualify flow: short intro +
+  // "3andek 3iyada?" — the pitch only comes after they say ey/oui.
+  const fk = vixaFaqKind(text);
+  if (fk === "who") {
+    await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: ar0 ? "ar" : "latin" }));
+    return say(phone, vixaFaqAnswer("who", ar0), clinic);
+  }
+  if (fk === "subscribe") {
+    await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang: ar0 ? "ar" : "latin" }));
+    return say(phone, vixaFaqAnswer("subscribe", ar0), clinic);
+  }
+  if (fk) return say(phone, vixaFaqAnswer(fk, ar0), clinic);
+  return { handled: false };
+}
+
 // Bare greeting ("slm", "bonjour", "عسلامة") -> neutral reply only, no steering.
 // The NEXT message decides: "جرّب" -> vendeur, booking talk -> réceptionniste.
 // Pure greetings only — "sbe7"/"mse" stay out (ambiguous with time-of-day).
@@ -1862,13 +2207,29 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   else if (looksLikeLatinRequest(text)) await db.saveScriptPref(phone, "latin").catch(() => {});
 
   // Vendor (sales) mode — DENTIST numbers only. Salon numbers run the salon
-  // demo+lead flow instead; salon lead stages ("salon_*") live in the same
-  // table and must never enter the dentist pitch.
+  // demo+lead flow instead; vixa numbers run the VIXA sales flow. Vendor lead
+  // stages ("salon_*", "vixa_*") live in the same table and must never enter
+  // the dentist pitch.
   const vlead = await db.getVendorLead(phone).catch(() => null);
   const salonLeadActive = !!(vlead && vlead.stage && vlead.stage.indexOf("salon_") === 0);
-  if (vertical !== "salon" && !salonLeadActive && (looksLikeVendorTrigger(text) || vlead)) {
+  if (vertical === "dentist" && !salonLeadActive && (looksLikeVendorTrigger(text) || vlead)) {
     const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead, clinic);
     if (v.handled) return v.reply;
+  }
+
+  // VIXA SALES vertical (+216 52 150 093): sales assistant for clinic owners.
+  // Never the dentist booking flow, never the dentist vendor pitch, never
+  // "Cabinet Dr Ines". Unmatched messages fall back to the deterministic
+  // qualify — no AI on this number, ever (random messages cost 0 tokens).
+  if (vertical === "vixa") {
+    const v = await handleVixaTurn(phone, text, clinic);
+    if (v.handled) return v.reply;
+    const useAr = await scriptAr(phone, text);
+    await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: useAr ? "ar" : "latin" })).catch(() => {});
+    const r = await say(phone, useAr
+      ? "ما فهمتكش 🙂 انتي طبيب ولا عندك عيادة؟ (أي / لا)"
+      : "Ma fhemtkch 🙂 Enti tbib walla 3andek 3iyada? (ey / le)", clinic);
+    return r.reply;
   }
 
   // Salon vertical: demo + lead capture. Never touches the dentist booking
@@ -2552,4 +2913,9 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   SALON_SYSTEM_PROMPT, localNumber, isSalonDisplayNumber, SEED_SALON_BY_NUMBER,
   salonFaqKind, salonFaqAnswer, salonLeadTrigger, salonFallbackReply, salonFrenchFallback,
   parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN, SALON_OFFER_AR,
-  salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn };
+  salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn,
+  // VIXA sales vertical (exported for the regression test)
+  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER,
+  vixaFaqKind, vixaFaqAnswer, vixaLeadTrigger, vixaFrenchFallback,
+  vixaYesNo, vixaOwnerPitch, vixaOwnerPitchFr, handleVixaQualifyTurn,
+  VIXA_OFFER_LATIN, VIXA_OFFER_AR, VIXA_INTRO_LATIN, VIXA_INTRO_AR };

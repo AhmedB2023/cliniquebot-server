@@ -1417,12 +1417,25 @@ async function run() {
       bot.guardAiOutput("Nchalllah labes", false, "fallback") === "Nchallah labes");
   }
 
-  // PILOT — Dr Ines per-number config (2026-09-29): the pilot number
-  // 1364750653386950 carries its own booking hours (Mon-Fri 8-16, Sat 8-13,
-  // Sun closed), its own greeting (incl. Arabic-script), and a handoff rule
-  // for the other doctor sharing the clinic (Dr Dakhlaoui).
+  // PILOT — per-number config (2026-09-29, mechanism test): a dentist number
+  // carries its own booking hours (Mon-Fri 8-16, Sat 8-13, Sun closed), its
+  // own greeting (incl. Arabic-script), and a handoff rule for the other
+  // doctor sharing the clinic (Dr Dakhlaoui).
+  // NOTE 2026-10-06: the real pilot number 1364750653386950 is now the VIXA
+  // SALES number, so this block uses a fake dentist id + DB row instead.
   {
-    const PILOT = "1364750653386950";
+    const PILOT = "999888777666555";
+    await stubDb.saveClinicConfig(PILOT, {
+      clinic_name: "Cabinet Dr Ines",
+      address: "Test address",
+      greeting: "Ahla w sahla fi Cabinet Dr Ines! Kifech najmou n3awnouk?",
+      greeting_ar: "أهلا وسهلا في عيادة الدكتورة إيناس! كيفاش نجمو نعاونوك؟",
+      hours: "Ethneyn–Jem3a: 8:00–16:00, Sebt: 8:00–13:00, 7ad: msakra",
+      booking_hours: "1:8-16;2:8-16;3:8-16;4:8-16;5:8-16;6:8-13",
+      secretary_number: "",
+      other_doctor: "Dakhlaoui",
+      vertical: "dentist",
+    });
     // parseBookingHours unit checks
     ok("pilot: parse valid", JSON.stringify(bot.parseBookingHours("1:8-16;2:8-16;6:8-13")) === JSON.stringify({ 1: [8, 16], 2: [8, 16], 6: [8, 13] }));
     ok("pilot: parse rejects garbage", bot.parseBookingHours("foo") === null);
@@ -1431,11 +1444,11 @@ async function run() {
     ok("pilot: parse rejects empty", bot.parseBookingHours("") === null);
     // seed config loads with no DB row
     const c = await bot.getClinic(PILOT);
-    ok("pilot: seed name", c.name === "Cabinet Dr Ines", JSON.stringify(c.name));
-    ok("pilot: seed secretary empty until the partner confirms the number", c.secretary === "", JSON.stringify(c.secretary));
-    ok("pilot: seed otherDoctor", c.otherDoctor === "Dakhlaoui", JSON.stringify(c.otherDoctor));
-    ok("pilot: seed bookingHours", JSON.stringify(c.bookingHours) === JSON.stringify({ 1: [8, 16], 2: [8, 16], 3: [8, 16], 4: [8, 16], 5: [8, 16], 6: [8, 13] }), JSON.stringify(c.bookingHours));
-    ok("pilot: seed greetingAr", /إيناس/.test(c.greetingAr || ""), JSON.stringify(c.greetingAr));
+    ok("pilot: row name", c.name === "Cabinet Dr Ines", JSON.stringify(c.name));
+    ok("pilot: row secretary empty until the partner confirms the number", c.secretary === "", JSON.stringify(c.secretary));
+    ok("pilot: row otherDoctor", c.otherDoctor === "Dakhlaoui", JSON.stringify(c.otherDoctor));
+    ok("pilot: row bookingHours", JSON.stringify(c.bookingHours) === JSON.stringify({ 1: [8, 16], 2: [8, 16], 3: [8, 16], 4: [8, 16], 5: [8, 16], 6: [8, 13] }), JSON.stringify(c.bookingHours));
+    ok("pilot: row greetingAr", /إيناس/.test(c.greetingAr || ""), JSON.stringify(c.greetingAr));
     ok("pilot: default number has no override", (await bot.getClinic("no-such-number")).bookingHours === null
       && (await bot.getClinic("no-such-number")).otherDoctor === "");
     // booking hours enforced: Wed 17:30 is outside 8-16 -> rejected
@@ -1470,16 +1483,19 @@ async function run() {
     // a DB row overrides the seed (partner corrections via /api/clinics)
     await stubDb.saveClinicConfig(PILOT, { booking_hours: "1:9-12", hours: "custom" });
     const c2 = await bot.getClinic(PILOT);
-    ok("pilot: DB overrides seed bookingHours", JSON.stringify(c2.bookingHours) === JSON.stringify({ 1: [9, 12] }), JSON.stringify(c2.bookingHours));
-    ok("pilot: DB overrides seed hours text", c2.hours === "custom");
+    ok("pilot: DB row updates bookingHours", JSON.stringify(c2.bookingHours) === JSON.stringify({ 1: [9, 12] }), JSON.stringify(c2.bookingHours));
+    ok("pilot: DB row updates hours text", c2.hours === "custom");
   }
 
   // VW — dentist viewer: private per-number link, read-only, isolated
+  // NOTE 2026-10-06: 1364750653386950 is now the VIXA sales number, so the
+  // viewer isolation test uses a fake dentist id instead.
   {
     const base = "http://127.0.0.1:43117";
     const TEST_PW = "clinic-bot-verify-123";
-    const PILOT = "1364750653386950";
+    const PILOT = "111222333444555";
     const OTHER = "9999999999999999";
+    await stubDb.saveClinicConfig(PILOT, { clinic_name: "Cabinet Viewer Test", vertical: "dentist" });
     const tokP = bot.viewerToken(PILOT);
     const tokO = bot.viewerToken(OTHER);
     ok("vw: token is 32 hex chars", /^[0-9a-f]{32}$/.test(tokP), tokP);
@@ -1524,7 +1540,7 @@ async function run() {
     const rPage = await fetch(`${base}/v/${PILOT}/${tokP}`);
     ok("vw: viewer page 200", rPage.status === 200, `status=${rPage.status}`);
     const pageTxt = await rPage.text();
-    ok("vw: page shows clinic name", pageTxt.includes("Cabinet Dr Ines"), pageTxt.slice(0, 120));
+    ok("vw: page shows clinic name", pageTxt.includes("Cabinet Viewer Test"), pageTxt.slice(0, 120));
     ok("vw: page is read-only (no delete)", !/fassa5|delete/i.test(pageTxt));
     // the page's inline script must be syntactically valid — a broken script = blank page
     const scriptM = pageTxt.match(/<script>([\s\S]*)<\/script>/);
@@ -1555,8 +1571,8 @@ async function run() {
     const TEST_PW = "clinic-bot-verify-123";
     const jAdmin = await (await fetch(`${base}/api/conversations?password=${TEST_PW}`)).json();
     const p = jAdmin.conversations.find((c) => c.phone === "21600000901");
-    ok("admin: conversation carries clinic label", p && p.clinic === "Cabinet Dr Ines", JSON.stringify(p && p.clinic));
-    ok("admin: conversation carries number_id", !!(p && p.number_id === "1364750653386950"), JSON.stringify(p && p.number_id));
+    ok("admin: conversation carries clinic label", p && p.clinic === "Cabinet Viewer Test", JSON.stringify(p && p.clinic));
+    ok("admin: conversation carries number_id", !!(p && p.number_id === "111222333444555"), JSON.stringify(p && p.number_id));
     const o = jAdmin.conversations.find((c) => c.phone === "21600000902");
     ok("admin: other-number conversation labelled", !!(o && o.clinic), JSON.stringify(o && o.clinic));
     const rPage = await fetch(`${base}/messages`);
@@ -1701,12 +1717,13 @@ async function run() {
     has("S10: random msg funnels to qualify", fb1, "3andek salon?");
     zeroDental(fb1);
 
-    // S11 — dentist regression: the dentist number is 100% dentist
-    const DENTIST_ID = "1364750653386950"; // Cabinet Dr Ines seed
-    await stubDb.clearClinicConfig(DENTIST_ID); // PART P left a stale row for this id
+    // S11 — dentist regression: a dentist number is 100% dentist
+    // (NOTE 2026-10-06: 1364750653386950 is now the VIXA sales number, so a
+    // generic dentist id is used here.)
+    const DENTIST_ID = "777666555444333"; // default vertical = dentist
     const d1 = await bot.processPatientText("dentT1", "slm", DENTIST_ID);
-    has("S11: dentist greeting unchanged", d1, "Cabinet Dr Ines");
-    ok("S11: dentist greeting has no salon leak", !/salon|صالون|Assistant Salon/i.test(d1), d1.slice(0, 90));
+    has("S11: dentist greeting works", d1, "3alikom salam!");
+    ok("S11: dentist greeting has no salon/vixa leak", !/salon|صالون|Assistant Salon|VIXA|Ines/i.test(d1), d1.slice(0, 90));
     const d2 = await bot.processPatientText("dentT1", "n7eb na7jez ghodwa 10 mta3 sbe7", DENTIST_ID);
     has("S11: dentist booking flow confirms slot", d2, "D'accord");
     ok("S11: dentist booking never says demo", !/demo/i.test(d2), d2.slice(0, 90));
@@ -1880,6 +1897,127 @@ async function run() {
     // Arabic gibberish -> arabic redirect.
     const r3 = await bot.processPatientText("salR2", "هههه شنوة هالخراب", undefined, SALON);
     has("S20: random arabic -> qualify redirect", r3, "عندك صالون؟");
+  }
+
+  // ---- S21 — VIXA sales vertical (+216 52 150 093): never Dr Ines, blech only ----
+  {
+    const VIXA = "21652150093";
+    const vixReplies = [];
+    const vix = async (ph, txt, numId, disp) => {
+      const r = await bot.processPatientText(ph, txt, numId, disp === undefined ? VIXA : disp);
+      vixReplies.push(r);
+      return r;
+    };
+
+    // Identity: vertical + name via display number.
+    const c1 = await bot.getClinic(undefined, VIXA);
+    ok("S21: vertical is vixa", c1.vertical === "vixa", c1.vertical);
+    ok("S21: name is VIXA", c1.name === "VIXA", c1.name);
+    ok("S21: greeting is VIXA (no Ines)", /VIXA/.test(c1.greeting) && !/ines/i.test(c1.greeting), c1.greeting.slice(0, 60));
+    // Identity via phone_number_id (viewer path, no display number).
+    const c2 = await bot.getClinic("1364750653386950", undefined);
+    ok("S21: id seed vertical is vixa", c2.vertical === "vixa", c2.vertical);
+    ok("S21: id seed name is VIXA", c2.name === "VIXA", c2.name);
+    // Stale DB row (dead pilot) can never leak "Cabinet Dr Ines" back.
+    await stubDb.saveClinicConfig("1364750653386950", { clinic_name: "Cabinet Dr Ines", vertical: "dentist", greeting: "Ahla w sahla fi Cabinet Dr Ines!" });
+    const c3 = await bot.getClinic("1364750653386950", VIXA);
+    ok("S21: stale DB row cannot change vertical", c3.vertical === "vixa", c3.vertical);
+    ok("S21: stale DB row cannot leak Ines name", c3.name === "VIXA", c3.name);
+    ok("S21: stale DB row cannot leak Ines greeting", !/ines/i.test(c3.greeting), c3.greeting.slice(0, 60));
+    await stubDb.clearClinicConfig("1364750653386950");
+
+    // Greeting -> VIXA + qualify state.
+    const g1 = await vix("vixG1", "slm");
+    has("S21: greeting says VIXA", g1, "Assistant VIXA");
+    has("S21: greeting qualifies", g1, "3iyada/cabinet?");
+    const g1s = await stubDb.getVendorLead("vixG1");
+    ok("S21: greeting saves vixa_qualify", g1s && g1s.stage === "vixa_qualify", g1s && g1s.stage);
+
+    // Qualify yes -> pitch (blech, NO price) -> lead flow.
+    const q1 = await vix("vixG1", "ey");
+    has("S21: pitch has blech", q1, "blech");
+    ok("S21: pitch has no price", !/\d+\s*(DT|dt|dinar|tnd)/i.test(q1) && !/2 dinars|3 DT/.test(q1), q1.slice(0, 120));
+    has("S21: pitch asks name", q1, "Chnowa esmek?");
+    const q1s = await stubDb.getVendorLead("vixG1");
+    ok("S21: yes -> vixa_ask_name", q1s && q1s.stage === "vixa_ask_name", q1s && q1s.stage);
+
+    // Full lead flow: name -> clinic -> phone -> time -> signup + notify.
+    const n1 = await vix("vixG1", "Mohamed Trabelsi");
+    has("S21: asks clinic name", n1, "esm el 3iyada");
+    const n2 = await vix("vixG1", "Centre Dentaire El Manar");
+    has("S21: asks phone", n2, "nafsou");
+    const n3 = await vix("vixG1", "nafsou");
+    has("S21: asks call time", n3, "10 d9aye9");
+    const n4 = await vix("vixG1", "ghodwa 10 mta3 sbe7");
+    has("S21: confirms callback", n4, "nettaslou bik");
+    const signups = stubDb._inspect().signups;
+    const last = signups[signups.length - 1];
+    ok("S21: signup saved kind=clinic", last && last.kind === "clinic" && /Trabelsi/i.test(last.name), JSON.stringify(last));
+
+    // Qualify no -> patient redirect, nothing sold.
+    const r1 = await vix("vixN1", "3aslema");
+    const r2 = await vix("vixN1", "le");
+    has("S21: non-owner redirected", r2, "propriétaires des cliniques");
+    ok("S21: non-owner sells nothing", !/blech|pitch|esm/i.test(r2) || /3iyada mte3ek direct/.test(r2), r2.slice(0, 80));
+
+    // Unclear -> re-ask.
+    await vix("vixU1", "salam");
+    const u1 = await vix("vixU1", "mmm chnowa?");
+    has("S21: unclear -> re-ask qualify", u1, "3andek 3iyada?");
+
+    // Medical question -> redirect, NEVER a medical answer.
+    const m1 = await vix("vixM1", "3andi wji3a kbira fel senna, chnowa el dwe?");
+    has("S21: medical redirected", m1, "ma njewbch 3la as2la tibbiya");
+    ok("S21: medical gives no diagnosis", !/diagnostic|تشخيص|ordonnance/i.test(m1), m1.slice(0, 100));
+
+    // Prix -> blech, no numbers.
+    const p1 = await vix("vixP1", "b9adech el ichtirak?");
+    has("S21: prix -> blech", p1, "blech");
+    ok("S21: prix has no amount", !/\d+\s*(dt|dinar|tnd|€|\$)/i.test(p1) && !/2 dinars|50 TND/.test(p1), p1.slice(0, 80));
+
+    // who -> intro + qualify.
+    const w1 = await vix("vixW1", "chkoun enti?");
+    has("S21: who -> intro", w1, "Assistant VIXA");
+    has("S21: who -> qualify Q", w1, "3andek 3iyada?");
+
+    // French: qualify -> oui -> French pitch (gratuit, no price).
+    const f1 = await vix("vixF1", "Bonjour");
+    has("S21: french qualify", f1, "une clinique ? (oui/non)");
+    const f2 = await vix("vixF1", "oui");
+    has("S21: french pitch gratuit", f2, "gratuit");
+    ok("S21: french pitch no price", !/\d+\s*(DT|dt|€)/.test(f2), f2.slice(0, 100));
+    has("S21: french pitch asks name", f2, "Quel est votre nom ?");
+
+    // Arabic: qualify -> pitch with بلاش.
+    const a1 = await vix("vixA1", "شكون انت؟");
+    has("S21: arabic who -> intro", a1, "مساعد VIXA");
+    const a2 = await vix("vixA1", "أي");
+    has("S21: arabic pitch blech", a2, "بلاش");
+
+    // Random gibberish -> deterministic qualify redirect (no AI, short).
+    const z1 = await vix("vixZ1", "haha xyz 123 ???");
+    has("S21: random -> qualify redirect", z1, "3andek 3iyada?");
+    ok("S21: vixa no AI leak (short)", z1.length < 120, String(z1.length));
+
+    // Old dentist "جرّب" trigger must NOT fire the stale 2-dinar pricing here.
+    const j1 = await vix("vixJ1", "جرّب");
+    ok("S21: no stale vendor pricing", !/2 dinars|2 دنانير|3 DT/.test(j1), j1.slice(0, 100));
+
+    // Mid-flow info interrupt: answer + return to pending Q, stage unchanged.
+    await stubDb.saveVendorLead("vixI1", "vixa_ask_name", JSON.stringify({ lang: "latin" }));
+    const i1 = await vix("vixI1", "b9adech?");
+    has("S21: mid-flow prix answered", i1, "blech");
+    has("S21: mid-flow returns to name Q", i1, "Chnowa esmek?");
+    const i1s = await stubDb.getVendorLead("vixI1");
+    ok("S21: vixa stage unchanged", i1s && i1s.stage === "vixa_ask_name", i1s && i1s.stage);
+
+    // "Cabinet Dr Ines" must appear in ZERO vixa replies.
+    ok("S21: Ines never appears", vixReplies.every((r) => !/ines/i.test(r || "")),
+      vixReplies.find((r) => /ines/i.test(r || "")));
+
+    // Salon number untouched by the vixa change.
+    const s1 = await bot.processPatientText("vixS1", "slm", undefined, "21653180566");
+    has("S21: salon still salon", s1, "Assistant Salon");
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
