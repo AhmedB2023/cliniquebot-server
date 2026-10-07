@@ -115,6 +115,18 @@ async function initDb() {
       script TEXT NOT NULL,
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Doctor suggestions (2026-10-07): free-text instructions from the supervisor
+    -- number ("badel hedhi / a3mel hedhi") — Ahmed reviews them on /suggestions
+    -- and folds them into the bot prompt on the next deploy.
+    CREATE TABLE IF NOT EXISTS suggestions (
+      id SERIAL PRIMARY KEY,
+      number_id TEXT,                   -- bot number (phone_number_id) the doctor supervises
+      from_phone TEXT,                 -- supervisor number that sent it
+      text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'new', -- new | done
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_suggestions_number ON suggestions(number_id, id);
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -280,6 +292,54 @@ async function saveScriptPref(phone, script) {
     );
   } catch (e) {
     console.error("[db:ERROR] scriptPref:", e.message);
+  }
+}
+
+// ---------- Doctor suggestions (supervisor free-text -> Ahmed's /suggestions page) ----------
+
+async function saveSuggestion(numberId, fromPhone, text) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query(
+      "INSERT INTO suggestions(number_id, from_phone, text) VALUES($1,$2,$3) RETURNING id",
+      [numberId || null, fromPhone || null, String(text || "").slice(0, 1000)]
+    );
+    return r.rows[0].id;
+  } catch (e) {
+    console.error("[db:ERROR] saveSuggestion:", e.message);
+    return null;
+  }
+}
+
+async function getSuggestions(numberId = null) {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = numberId
+      ? await p.query(
+          "SELECT id, number_id, from_phone, text, status, created_at FROM suggestions WHERE number_id=$1 ORDER BY id DESC",
+          [numberId]
+        )
+      : await p.query(
+          "SELECT id, number_id, from_phone, text, status, created_at FROM suggestions ORDER BY id DESC"
+        );
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] getSuggestions:", e.message);
+    return [];
+  }
+}
+
+async function deleteSuggestion(id) {
+  const p = getPool();
+  if (!p) return 0;
+  try {
+    const r = await p.query("DELETE FROM suggestions WHERE id=$1", [id]);
+    return r.rowCount;
+  } catch (e) {
+    console.error("[db:ERROR] deleteSuggestion:", e.message);
+    return 0;
   }
 }
 
@@ -522,5 +582,8 @@ module.exports = {
   listClinicConfigs,
   getScriptPref,
   saveScriptPref,
+  saveSuggestion,
+  getSuggestions,
+  deleteSuggestion,
   hasDb: () => !!DATABASE_URL,
 };

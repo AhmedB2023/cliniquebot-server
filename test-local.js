@@ -19,6 +19,7 @@ function makeStubDb() {
   const signups = [];
   const clinicConfigs = new Map();
   const scriptPrefs = new Map();
+  const suggestions = [];
   let seq = 1;
   return {
     initDb: async () => true,
@@ -84,6 +85,18 @@ function makeStubDb() {
       return 0;
     },
     hasDb: () => true,
+    saveSuggestion: async (numberId, fromPhone, text) => {
+      const s = { id: seq++, number_id: numberId || null, from_phone: fromPhone || null, text, status: "new", created_at: "test" };
+      suggestions.push(s);
+      return s.id;
+    },
+    getSuggestions: async (numberId = null) =>
+      suggestions.filter((s) => !numberId || s.number_id === numberId).slice().reverse(),
+    deleteSuggestion: async (id) => {
+      const i = suggestions.findIndex((s) => s.id === id);
+      if (i >= 0) { suggestions.splice(i, 1); return 1; }
+      return 0;
+    },
     getClinicConfig: async (numberId) => clinicConfigs.get(numberId) || null,
     saveClinicConfig: async (numberId, cfg) => { clinicConfigs.set(numberId, { phone_number_id: numberId, ...cfg }); },
     listClinicConfigs: async () => [...clinicConfigs.values()],
@@ -381,6 +394,31 @@ async function run() {
     // patient starts fresh, no old memory
     const r = await bot.processPatientText(p, "slm");
     has("flow9b: fresh start after delete", r, "Kifech najmou n3awnouk");
+  }
+
+  // Flow 9c — supervisor free-text becomes a suggestion ("badel hedhi...")
+  {
+    const clinic = { id: "1364750653386950", secretary: "21698800749" };
+    const r1 = await bot.processSecretaryText("badel el message mta3 el 7ajz", clinic, "21698800749");
+    has("flow9c: ack reply", r1, "modification en cours");
+    const all = await stubDb.getSuggestions();
+    ok("flow9c: suggestion saved", all.length === 1, `n=${all.length}`);
+    ok("flow9c: suggestion text", all[0].text === "badel el message mta3 el 7ajz", JSON.stringify(all[0]));
+    ok("flow9c: suggestion number", all[0].number_id === "1364750653386950", JSON.stringify(all[0]));
+    ok("flow9c: suggestion from", all[0].from_phone === "21698800749", JSON.stringify(all[0]));
+    // commands still work — not saved as suggestions
+    const nBefore = (await stubDb.getSuggestions()).length;
+    await bot.processSecretaryText("list", clinic, "21698800749");
+    const nAfter = (await stubDb.getSuggestions()).length;
+    ok("flow9c: 'list' not saved as suggestion", nAfter === nBefore, `${nBefore} -> ${nAfter}`);
+    // delete works
+    const del = await stubDb.deleteSuggestion(all[0].id);
+    ok("flow9c: delete returns 1", del === 1, `del=${del}`);
+    ok("flow9c: deleted", (await stubDb.getSuggestions()).length === 0, "empty");
+    // no clinic (admin test path) -> ack but no save
+    const r2 = await bot.processSecretaryText("hedhi test mel admin");
+    has("flow9c: admin path acks", r2, "modification en cours");
+    ok("flow9c: admin path not saved", (await stubDb.getSuggestions()).length === 0, "empty");
   }
 
   // Flow 10 — past slot is refused clearly
@@ -1941,6 +1979,20 @@ async function run() {
     has("S21: pitch asks name", q1, "Chnowa esmek?");
     const q1s = await stubDb.getVendorLead("vixG1");
     ok("S21: yes -> vixa_ask_name", q1s && q1s.stage === "vixa_ask_name", q1s && q1s.stage);
+
+    // French "je suis un dentiste" (live ad case 2026-10-07) -> yes + French pitch.
+    const qf = await vix("vixFR1", "slm");
+    ok("S21: fr greet qualifies", qf.includes("3iyada"), qf.slice(0, 60));
+    const qf2 = await vix("vixFR1", "je suis un dentiste");
+    const qf2s = await stubDb.getVendorLead("vixFR1");
+    ok("S21: 'je suis un dentiste' -> vixa_ask_name", qf2s && qf2s.stage === "vixa_ask_name", qf2s && qf2s.stage);
+    ok("S21: fr yes -> lang fr", qf2s && JSON.parse(qf2s.clinic_name || "{}").lang === "fr", qf2s && qf2s.clinic_name);
+    // vixaYesNo unit checks
+    ok("S21: yesno je suis dentiste", bot.vixaYesNo("je suis dentiste") === "yes");
+    ok("S21: yesno dentiste", bot.vixaYesNo("dentiste") === "yes");
+    ok("S21: yesno je suis médecin", bot.vixaYesNo("je suis médecin") === "yes");
+    ok("S21: yesno ena dentiste", bot.vixaYesNo("ena dentiste") === "yes");
+    ok("S21: yesno still no", bot.vixaYesNo("ma 3andich") === "no");
 
     // Full lead flow: name -> clinic -> phone -> time -> signup + notify.
     const n1 = await vix("vixG1", "Mohamed Trabelsi");

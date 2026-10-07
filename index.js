@@ -2104,7 +2104,9 @@ function vixaYesNo(text) {
   // "no" first: "3andi" is a substring of "3andich", so the negative wins.
   if (/(ma 3andich|ma3andich|m3andich|ma3andish|mani tbib|mani toubib|je n.ai pas|i don.t have|dont have|ما عنديش|ماني طبيب)/.test(t)) return "no";
   if (/^(le|le2|non|no|لا)$/.test(raw)) return "no";
-  if (/(3andi 3iyada|3andi cabinet|andi 3iyada|ena tbib|ana tbib|j.ai une clinique|j ai une clinique|yes i have|3andi|نعم عندي|أنا طبيب|انا طبيب)/.test(t)) return "yes";
+  if (/(3andi 3iyada|3andi cabinet|andi 3iyada|ena tbib|ana tbib|ena dentiste|ena docteur|j.ai une clinique|j ai une clinique|je suis (un |une )?(dentiste|m[eé]decin|docteur|doctor|chirurgien)|yes i have|3andi|نعم عندي|أنا طبيب|انا طبيب)/.test(t)) return "yes";
+  // Standalone profession in the qualify context ("3andek 3iyada?" -> "dentiste" = "I'm a dentist" = yes).
+  if (/^(dentiste|m[eé]decin|docteur|doctor|chirurgien( dentiste)?|طبيب|دكتور)$/.test(raw)) return "yes";
   if (/^(ey|eyy|oui|yes|ok|na3m|aye|نعم|اي|أي|اه)$/.test(raw)) return "yes";
   return null;
 }
@@ -2118,8 +2120,11 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
   const yn = vixaYesNo(text);
   if (yn === "yes") {
     // Clinic owner -> pitch (blech, no price) -> straight into the lead flow.
-    await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang }));
-    return say(phone, fr ? vixaOwnerPitchFr() : vixaOwnerPitch(ar), clinic);
+    // If the yes came in French ("je suis un dentiste"), pitch in French too.
+    const yesFr = fr || looksLikeFrenchRequest(text) || /je suis|dentiste|m[eé]decin|docteur/i.test(text);
+    const lang2 = yesFr ? "fr" : lang;
+    await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang: lang2 }));
+    return say(phone, yesFr ? vixaOwnerPitchFr() : vixaOwnerPitch(ar), clinic);
   }
   if (yn === "no") {
     // Patient by mistake -> redirect, nothing sold.
@@ -2306,7 +2311,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
 }
 
 // Secretary commands: "ok <id>" / "le <id>" / "list"
-async function processSecretaryText(text, clinic) {
+async function processSecretaryText(text, clinic, from) {
   const t = (text || "").trim();
   let m = t.match(/^(ok|okay|na3m|ey)\s+(\d+)$/i);
   if (m) return settleBooking(parseInt(m[2], 10), true, clinic);
@@ -2325,7 +2330,13 @@ async function processSecretaryText(text, clinic) {
     console.log(`[secretary] deleted conversation ${phone} (${n} messages)`);
     return `Tfass5et el conversation mta3 ${phone} (${n} messages). El rendez-vous el ma7jouza ma tfass5etch. ✅`;
   }
-  return "Ekteb: 'ok <numero>' bech tvalidi, 'le <numero>' bech tl4i, 'list' bech tchouf el pending, 'fassa5 <numero>' bech tfassa5 conversation.";
+  // Anything else from the supervisor = a suggestion ("badel hedhi / a3mel hedhi").
+  // Saved for Ahmed's /suggestions page; the bot only acknowledges.
+  if (clinic && clinic.id) {
+    await db.saveSuggestion(clinic.id, from || null, t).catch(() => {});
+    console.log(`[suggestion] saved from ${from || "?"} (${clinic.id})`);
+  }
+  return "Ok, modification en cours ✅\n(Ekteb: 'ok <numero>' bech tvalidi, 'le <numero>' bech tl4i, 'list' bech tchouf el pending.)";
 }
 
 async function settleBooking(id, approve, clinic) {
@@ -2407,7 +2418,7 @@ app.post("/webhook", async (req, res) => {
       if (clinic.secretary && from === clinic.secretary) {
         console.log(`[secretary] ${from}: ${text}`);
         await db.saveMessage(from, "user", text, clinic && clinic.id);
-        const reply = await processSecretaryText(text, clinic);
+        const reply = await processSecretaryText(text, clinic, from);
         lastWebhook = { at: new Date().toISOString(), from, text, reply };
         await sendWhatsApp(from, reply, numberId);
         await db.saveMessage(from, "assistant", reply, clinic && clinic.id);
@@ -2894,6 +2905,67 @@ app.post("/api/signups/:id/delete", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) return res.status(400).json({ error: "bad id" });
   const deleted = await db.deleteSignup(id).catch(() => 0);
+  res.json({ deleted });
+});
+
+// ---------- /suggestions: doctor suggestions inbox (Ahmed only) ----------
+// The supervisor number's free-text ("badel hedhi / a3mel hedhi") lands here,
+// grouped per bot number. Ahmed folds them into the prompt, then deploys.
+const SUGGESTIONS_PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Suggestions</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:0 auto;padding:12px;background:#f5f5f5}
+.card{background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;margin:8px 0}
+.clinic{font-size:12px;color:#666}
+.txt{font-size:16px;margin:6px 0;white-space:pre-wrap}
+.row{display:flex;gap:6px;margin-top:8px}
+button{padding:8px 12px;border-radius:8px;border:0;font-size:14px;color:#fff;cursor:pointer}
+.no{background:#c33}
+#pwrow{display:flex;gap:6px;margin-bottom:8px}
+input,select{padding:10px;border-radius:8px;border:1px solid #ccc;font-size:16px}
+input{flex:1}
+small{color:#888}</style></head><body>
+<h2>💡 Suggestions</h2>
+<div id="pwrow"><input id="pw" type="password" placeholder="password (verify token)"><button class="no" onclick="load()">Load</button></div>
+<div id="filters" style="margin-bottom:8px"></div>
+<div id="list"></div>
+<script>
+let pw="",all=[],clinics={};
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+async function load(){pw=document.getElementById('pw').value;
+const r=await fetch('/api/suggestions?password='+encodeURIComponent(pw));const j=await r.json();
+const el=document.getElementById('list');
+if(!r.ok){el.innerHTML='<p>⚠️ '+(j.error||'error')+'</p>';return;}
+all=j.suggestions||[];clinics=j.clinics||{};
+if(!all.length){el.innerHTML='<p>Ma fama 7atta suggestion. 👍</p>';document.getElementById('filters').innerHTML='';return;}
+const ids=[...new Set(all.map(s=>s.number_id||'?'))];
+document.getElementById('filters').innerHTML='<select id="f" onchange="render()"><option value="">El kol</option>'+
+ids.map(id=>'<option value="'+esc(id)+'">'+esc(clinics[id]||id)+'</option>').join('')+'</select>';
+render();}
+function render(){const f=(document.getElementById('f')||{}).value||'';
+const rows=all.filter(s=>!f||(s.number_id||'?')===f);
+document.getElementById('list').innerHTML=rows.map(s=>'<div class="card"><div class="clinic">🏥 '+esc(clinics[s.number_id]||s.number_id||'?')+
+' — mel: '+esc(s.from_phone||'?')+'</div><div class="txt">'+esc(s.text)+'</div><small>'+esc(s.created_at||'')+'</small>'+
+'<div class="row"><button class="no" onclick="del('+s.id+')">Fassa5</button></div></div>').join('');}
+async function del(id){if(!confirm('Tfassa5 el suggestion #'+id+'?'))return;
+const r=await fetch('/api/suggestions/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+const j=await r.json();if(!r.ok)alert(j.error||'error');load();}
+</script></body></html>`;
+
+app.get("/suggestions", (req, res) => res.send(SUGGESTIONS_PAGE));
+
+app.get("/api/suggestions", async (req, res) => {
+  if (req.query.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const suggestions = await db.getSuggestions().catch(() => []);
+  const rows = await db.listClinicConfigs().catch(() => []);
+  const clinics = {};
+  for (const r of rows) clinics[r.phone_number_id] = r.clinic_name || r.phone_number_id;
+  res.json({ suggestions, clinics });
+});
+
+app.post("/api/suggestions/:id/delete", async (req, res) => {
+  if ((req.body || {}).password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "bad id" });
+  const deleted = await db.deleteSuggestion(id).catch(() => 0);
   res.json({ deleted });
 });
 
