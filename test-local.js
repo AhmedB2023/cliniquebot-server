@@ -3,6 +3,9 @@
 // plus a wide matrix of Derja date/time expressions through the REAL dates.js.
 // Usage: node test-local.js   (exit 0 = all green)
 process.env.PORT = "43117";
+// VIXA sales test number (fake): the real 52150093 moved to the Dr Mahjoub
+// dentist pilot on 2026-10-07, so S21 drives the vixa vertical via env var.
+process.env.VIXA_NUMBERS = "52999999";
 
 const path = require("path");
 
@@ -1899,9 +1902,10 @@ async function run() {
     has("S20: random arabic -> qualify redirect", r3, "عندك صالون؟");
   }
 
-  // ---- S21 — VIXA sales vertical (+216 52 150 093): never Dr Ines, blech only ----
+  // ---- S21 — VIXA sales vertical (fake 52999999 via VIXA_NUMBERS env): never Dr Ines, blech only ----
+  // (2026-10-07: the real 52150093 moved back to the Dr Mahjoub dentist pilot.)
   {
-    const VIXA = "21652150093";
+    const VIXA = "21652999999";
     const vixReplies = [];
     const vix = async (ph, txt, numId, disp) => {
       const r = await bot.processPatientText(ph, txt, numId, disp === undefined ? VIXA : disp);
@@ -1914,17 +1918,14 @@ async function run() {
     ok("S21: vertical is vixa", c1.vertical === "vixa", c1.vertical);
     ok("S21: name is VIXA", c1.name === "VIXA", c1.name);
     ok("S21: greeting is VIXA (no Ines)", /VIXA/.test(c1.greeting) && !/ines/i.test(c1.greeting), c1.greeting.slice(0, 60));
-    // Identity via phone_number_id (viewer path, no display number).
-    const c2 = await bot.getClinic("1364750653386950", undefined);
-    ok("S21: id seed vertical is vixa", c2.vertical === "vixa", c2.vertical);
-    ok("S21: id seed name is VIXA", c2.name === "VIXA", c2.name);
-    // Stale DB row (dead pilot) can never leak "Cabinet Dr Ines" back.
-    await stubDb.saveClinicConfig("1364750653386950", { clinic_name: "Cabinet Dr Ines", vertical: "dentist", greeting: "Ahla w sahla fi Cabinet Dr Ines!" });
-    const c3 = await bot.getClinic("1364750653386950", VIXA);
+    // Stale DB row on a vixa display number: display-number seed wins for
+    // vertical, and the Ines-leak guard forces the VIXA identity.
+    await stubDb.saveClinicConfig("99999999999999999", { clinic_name: "Cabinet Dr Ines", vertical: "dentist", greeting: "Ahla w sahla fi Cabinet Dr Ines!" });
+    const c3 = await bot.getClinic("99999999999999999", VIXA);
     ok("S21: stale DB row cannot change vertical", c3.vertical === "vixa", c3.vertical);
     ok("S21: stale DB row cannot leak Ines name", c3.name === "VIXA", c3.name);
     ok("S21: stale DB row cannot leak Ines greeting", !/ines/i.test(c3.greeting), c3.greeting.slice(0, 60));
-    await stubDb.clearClinicConfig("1364750653386950");
+    await stubDb.clearClinicConfig("99999999999999999");
 
     // Greeting -> VIXA + qualify state.
     const g1 = await vix("vixG1", "slm");
@@ -2018,6 +2019,37 @@ async function run() {
     // Salon number untouched by the vixa change.
     const s1 = await bot.processPatientText("vixS1", "slm", undefined, "21653180566");
     has("S21: salon still salon", s1, "Assistant Salon");
+  }
+
+  // ---- S22 — Dr Mahjoub dentist pilot (+216 52 150 093): receptionist, never sales ----
+  {
+    const MAH = "21652150093";
+    const mah = async (ph, txt, numId, disp) => {
+      const r = await bot.processPatientText(ph, txt, numId, disp === undefined ? MAH : disp);
+      return r;
+    };
+
+    // Identity: dentist vertical, Mahjoub name/address/hours, no VIXA sales.
+    const m1 = await bot.getClinic(undefined, MAH);
+    ok("S22: vertical is dentist", m1.vertical === "dentist", m1.vertical);
+    ok("S22: name is Mahjoub", /Mahjoub/.test(m1.name), m1.name);
+    ok("S22: address is Sousse", /Ghannouchi/.test(m1.address), m1.address);
+    ok("S22: hours mention Sebt", /Sebt/.test(m1.hours), m1.hours);
+    ok("S22: secretary is the doctor", m1.secretary === "98800749", m1.secretary);
+    ok("S22: no VIXA sales pitch", !/VIXA/.test(m1.greeting), m1.greeting.slice(0, 40));
+    // Identity via phone_number_id too (viewer path).
+    const m2 = await bot.getClinic("1364750653386950", undefined);
+    ok("S22: id seed vertical is dentist", m2.vertical === "dentist", m2.vertical);
+    ok("S22: id seed name is Mahjoub", /Mahjoub/.test(m2.name), m2.name);
+    // Booking hours parsed: Mon-Fri 8-17, Sat 8-13, Sun closed.
+    ok("S22: bookingHours Mon", m1.bookingHours && m1.bookingHours[1] && m1.bookingHours[1][0] === 8 && m1.bookingHours[1][1] === 17, JSON.stringify(m1.bookingHours));
+    ok("S22: bookingHours Sat", m1.bookingHours && m1.bookingHours[6] && m1.bookingHours[6][1] === 13, JSON.stringify(m1.bookingHours));
+    ok("S22: bookingHours Sun closed", !m1.bookingHours || !m1.bookingHours[0], JSON.stringify(m1.bookingHours));
+
+    // Patient flow: greeting names the clinic, booking intent proposes slots.
+    const g = await mah("mahG1", "slm");
+    has("S22: greeting names Mahjoub", g, "Mahjoub");
+    ok("S22: greeting has no sales qualify", typeof g === "string" && !/3andek 3iyada/.test(g), JSON.stringify(g));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -192,23 +192,29 @@ const VIXA_GREETING_AR =
   "أهلا وسهلا! 👋 أنا مساعد VIXA — نعاون العيادات في تونس باش يجاوبو على المرضى متاعهم على واتساب.\n" +
   "انتي طبيب ولا عندك عيادة؟ (أي / لا)";
 
-const SEED_CLINICS = {
-  // VIXA SALES (2026-10-06): +216 52 150 093 is now the VIXA sales assistant
-  // for clinic owners (the Meta ad sends doctors to this number). The dead
-  // "Cabinet Dr Ines" pilot is gone — this number must NEVER answer as
-  // Dr Ines's receptionist again.
-  "1364750653386950": {
-    vertical: "vixa",
-    clinic_name: "VIXA",
-    address: "",
-    greeting: VIXA_GREETING,
-    greeting_ar: VIXA_GREETING_AR,
-    hours: "",
-    booking_hours: "",
-    secretary_number: "",
-    other_doctor: "",
-  },
+const SEED_CLINICS = {};
+// DENTIST PILOT (2026-10-07): Dr Issam Mahjoub's config, shared by the
+// phone_number_id seed and the display-number seed below (one source of
+// truth). +216 52 150 093 answers as his Derja receptionist.
+const SEED_MAHJOUB = {
+  vertical: "dentist",
+  clinic_name: "Cabinet Dr Issam Mahjoub",
+  address: "4ème étage, Immeuble Ghannouchi, Rue Tarek Ibn Zied - Sousse",
+  greeting:
+    "Ahla w sahla! 👋 Ena l'assistant mta3 Cabinet Dr Issam Mahjoub 🦷\n" +
+    "T7eb ta7jez rendez-vous? 9olli nhar w wa9et, w ena nchouflek el disponibilité.",
+  greeting_ar:
+    "أهلا وسهلا! 👋 أنا مساعد عيادة الدكتور عصام محجوب 🦷\n" +
+    "تحب تحجز موعد؟ قولي نهار ووقت، وأنا نشوفلك المواعيد المتاحة.",
+  hours: "Thenin lel Jom3a: 08:30 - 17:30, Sebt: 08:30 - 13:00, Ahad: msakker",
+  booking_hours: "1:8-17;2:8-17;3:8-17;4:8-17;5:8-17;6:8-13",
+  secretary_number: "98800749",
+  other_doctor: "",
 };
+SEED_CLINICS["1364750653386950"] = SEED_MAHJOUB;
+// Display-number seed (no phone_number_id needed): the pilot identity
+// resolves even when only the display number is known.
+const SEED_DENTIST_BY_NUMBER = { "52150093": SEED_MAHJOUB };
 
 // Parse "1:8-16;2:8-16;6:8-13" into {1:[8,16],2:[8,16],6:[8,13]}.
 // Returns null on empty/invalid input (caller falls back to CLINIC_HOURS).
@@ -227,16 +233,14 @@ function parseBookingHours(str) {
 
 // ---------------------------------------------------------------------------
 // Verticals (2026-10-01, +vixa 2026-10-06): "dentist" (default — the full
-// clinic behavior below) vs "salon" (demo/sales bot for beauty-salon owners,
-// on the ad number) vs "vixa" (SALES bot for clinic owners, on +216 52 150 093,
-// the Meta ad destination — never the dentist receptionist flow).
+// clinic behavior below) vs "salon" (demo/sales bot for beauty-salon owners)
+// vs "vixa" (SALES bot for clinic owners — assign via VIXA_NUMBERS env var,
+// was on +216 52 150 093 until 2026-10-07, now Dr Mahjoub's dentist pilot).
 // A bot number's vertical resolves per message, in this order:
 //   1. explicit DB row (POST /api/clinics, field "vertical": "salon"|"vixa"|"dentist")
 //   2. display-number seed (salon/vixa ad numbers — no phone_number_id needed)
 //   3. phone_number_id seed (SEED_CLINICS)
 //   4. "dentist" (default — current behavior 100% unchanged)
-// EXCEPTION: the VIXA sales display number is ALWAYS "vixa" (forced in
-// getClinic) — a stale DB row can never drag the repurposed SIM back.
 // ---------------------------------------------------------------------------
 // Normalize a WhatsApp display number to the Tunisian local form (8 digits):
 // "21653180566", "+216 53 180 566" and "53180566" all -> "53180566".
@@ -277,27 +281,33 @@ const SEED_SALON_BY_NUMBER = {
   },
 };
 
-// Seed config for the VIXA sales number (+216 52 150 093), keyed by LOCAL
-// number (not phone_number_id — Ahmed never has to dig that up). More sales
-// numbers can be added without a code change via VIXA_NUMBERS="52150093,...".
+// Seed config for the VIXA sales number, keyed by LOCAL number (not
+// phone_number_id — Ahmed never has to dig that up). More sales numbers can
+// be added without a code change via VIXA_NUMBERS="52150093,...".
+// (2026-10-07: 52150093 moved back to dentist pilot for Dr Mahjoub — the set
+// is empty until the next sales number is assigned.)
 const VIXA_SEED_NUMBERS = new Set(
-  ["52150093", ...String(process.env.VIXA_NUMBERS || "").split(",").map(localNumber)].filter(Boolean)
+  [...String(process.env.VIXA_NUMBERS || "").split(",").map(localNumber)].filter(Boolean)
 );
 function isVixaDisplayNumber(displayNumber) {
   return VIXA_SEED_NUMBERS.has(localNumber(displayNumber));
 }
 const SEED_VIXA_BY_NUMBER = {
-  "52150093": {
-    vertical: "vixa",
-    clinic_name: "VIXA",
-    address: "",
-    greeting: VIXA_GREETING,
-    greeting_ar: VIXA_GREETING_AR,
-    hours: "",
-    booking_hours: "",
-    secretary_number: "",
-    other_doctor: "",
-  },
+  // (2026-10-07: 52150093 entry removed — back to dentist pilot.
+  // Future sales numbers get their entry here.)
+};
+// Default identity for VIXA sales numbers added via VIXA_NUMBERS env var
+// (no hardcoded entry): vertical vixa + VIXA name/greeting.
+const SEED_VIXA_DEFAULT = {
+  vertical: "vixa",
+  clinic_name: "VIXA",
+  address: "",
+  greeting: VIXA_GREETING,
+  greeting_ar: VIXA_GREETING_AR,
+  hours: "",
+  booking_hours: "",
+  secretary_number: "",
+  other_doctor: "",
 };
 
 async function getClinic(numberId, displayNumber) {
@@ -305,14 +315,14 @@ async function getClinic(numberId, displayNumber) {
   const cfg = await db.getClinicConfig(id);
   const seed = SEED_CLINICS[id] || {};
   const dispSeed = SEED_SALON_BY_NUMBER[localNumber(displayNumber)] ||
-    SEED_VIXA_BY_NUMBER[localNumber(displayNumber)] || {};
+    SEED_DENTIST_BY_NUMBER[localNumber(displayNumber)] ||
+    SEED_VIXA_BY_NUMBER[localNumber(displayNumber)] ||
+    (isVixaDisplayNumber(displayNumber) ? SEED_VIXA_DEFAULT : {}) || {};
   // A DB row wins over the seed. ?? (not ||) so the partner can CLEAR a
   // seed value by saving "" — only null/undefined fall back to the seed.
   const pick = (k, fb) => (cfg && cfg[k] != null ? cfg[k] : dispSeed[k] ?? seed[k] ?? fb ?? "");
   // Vertical: explicit DB value > display-number seed > id seed > dentist.
   // "" counts as unset (old DB rows) — only "salon"/"vixa"/"dentist" are real.
-  // EXCEPTION: the VIXA sales display number is ALWAYS "vixa" — the physical
-  // SIM was repurposed, so a stale DB row can never drag it back to "dentist".
   const vOf = (o) => (o && (o.vertical === "salon" || o.vertical === "vixa" || o.vertical === "dentist") ? o.vertical : null);
   const vertical = isVixaDisplayNumber(displayNumber) ? "vixa" : (vOf(cfg) || vOf(dispSeed) || vOf(seed) || "dentist");
   const out = {
@@ -327,8 +337,9 @@ async function getClinic(numberId, displayNumber) {
     otherDoctor: pick("other_doctor", ""),
     secretary: pick("secretary_number", "").replace(/\D/g, "") || SECRETARY_NUMBER,
   };
-  // VIXA sales number: the dead "Cabinet Dr Ines" pilot identity must NEVER
-  // leak into a reply (e.g. via a stale DB row) — force the VIXA identity.
+  // VIXA sales guard (kept for future sales numbers): the "Cabinet Dr Ines"
+  // pilot identity must NEVER leak into a VIXA sales reply (e.g. via a stale
+  // DB row) — force the VIXA identity when vertical is vixa.
   if (out.vertical === "vixa") {
     if (/ines/i.test(out.name)) out.name = "VIXA";
     if (/ines/i.test(out.greeting)) out.greeting = VIXA_GREETING;
