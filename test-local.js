@@ -466,6 +466,12 @@ async function run() {
       has("flow9c: ok without space", rOk, "T2akked");
       ok("flow9c: ok without space status", (await stubDb.getBooking(id4)).status === "confirmed");
     }
+    // Auto-rapport scheduler: due once/day within 30 min after target (2026-10-08)
+    ok("flow9c: auto due exact", bot.autoRapportDue("21:40", "21:40", "", "2026-10-08") === true);
+    ok("flow9c: auto due late 20m", bot.autoRapportDue("22:00", "21:40", "", "2026-10-08") === true);
+    ok("flow9c: auto not before", bot.autoRapportDue("21:39", "21:40", "", "2026-10-08") === false);
+    ok("flow9c: auto not 40m late", bot.autoRapportDue("22:20", "21:40", "", "2026-10-08") === false);
+    ok("flow9c: auto not twice", bot.autoRapportDue("21:40", "21:40", "2026-10-08", "2026-10-08") === false);
   }
 
   // Flow 9b — secretary deletes a conversation by message
