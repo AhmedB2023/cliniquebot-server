@@ -366,7 +366,7 @@ async function run() {
   // Flow 9 — secretary list / reject / unknown id
   {
     const list = await bot.processSecretaryText("list");
-    has("flow9: list shows pending", list, "Pending");
+    has("flow9: list shows en cours", list, "En cours");
     // list shows patient_name when phone is empty (agenda-photo bookings, 2026-10-08)
     const namedId = await stubDb.saveBooking("", "slot-named", null, "SamerTest", "C1");
     const list2 = await bot.processSecretaryText("list");
