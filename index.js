@@ -3369,6 +3369,50 @@ app.post("/api/signups/:id/delete", async (req, res) => {
   res.json({ deleted });
 });
 
+// ---------- /feedback: public web form for doctors (problem / suggestion) ----------
+// The form POSTs to /api/feedback; submissions land in the same suggestions
+// inbox Ahmed already checks (/suggestions). Pure formatter, exported for tests.
+function formatFeedback(name, clinic, kind, message) {
+  const k = kind === "probleme" ? "mouchkla" : "i9tira7";
+  const n = String(name || "").trim().slice(0, 80) || "?";
+  const c = String(clinic || "").trim().slice(0, 80);
+  const m = String(message || "").trim().slice(0, 1000);
+  return `[${k}] ${n}${c ? " (" + c + ")" : ""}: ${m}`;
+}
+
+async function submitFeedback({ name, clinic, kind, message }) {
+  const m = String(message || "").trim();
+  if (!m) return { ok: false, error: "message vide" };
+  if (!["probleme", "suggestion"].includes(kind)) return { ok: false, error: "kind invalide" };
+  const text = formatFeedback(name, clinic, kind, m);
+  const id = await db.saveSuggestion(null, "web", text).catch(() => null);
+  console.log(`[feedback] web submission ${id || "FAILED"}: ${text.slice(0, 60)}`);
+  return id ? { ok: true, id } : { ok: false, error: "save failed" };
+}
+
+const FEEDBACK_PAGE = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feedback — Assistant</title>
+<style>body{font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:20px;background:#f6f6f6}h2{margin-top:0}.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.1)}label{display:block;margin:12px 0 4px;font-weight:600}input,select,textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:16px}textarea{min-height:120px}button{margin-top:16px;width:100%;padding:12px;background:#25D366;color:#fff;border:0;border-radius:8px;font-size:17px;font-weight:700}#ok{display:none;background:#e6f9ec;border:1px solid #25D366;border-radius:8px;padding:12px;margin-top:12px}#err{display:none;background:#fdecec;border:1px solid #e66;border-radius:8px;padding:12px;margin-top:12px}</style></head>
+<body><div class="card"><h2>💬 Un problème ? Une idée ?</h2><p>Dites-le nous ici — on lit tout.</p>
+<label>Votre nom</label><input id="name" placeholder="Dr ...">
+<label>Clinique</label><input id="clinic" placeholder="Cabinet ...">
+<label>Type</label><select id="kind"><option value="probleme">Problème technique</option><option value="suggestion">Suggestion / idée</option></select>
+<label>Message</label><textarea id="msg" placeholder="Décrivez le problème ou votre idée..."></textarea>
+<button onclick="send()">Envoyer</button>
+<div id="ok">✅ Merci ! Votre message a bien été envoyé.</div><div id="err"></div></div>
+<script>async function send(){const b={name:document.getElementById('name').value,clinic:document.getElementById('clinic').value,kind:document.getElementById('kind').value,message:document.getElementById('msg').value};
+const e=document.getElementById('err');e.style.display='none';
+if(!b.message.trim()){e.textContent='Écrivez votre message d\\u2019abord.';e.style.display='block';return;}
+try{const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();
+if(j.ok){document.getElementById('ok').style.display='block';document.getElementById('msg').value='';}else{e.textContent='Erreur : '+(j.error||'?');e.style.display='block';}
+}catch(x){e.textContent='Erreur réseau, réessayez.';e.style.display='block';}}</script></body></html>`;
+
+app.get("/feedback", (req, res) => res.send(FEEDBACK_PAGE));
+
+app.post("/api/feedback", async (req, res) => {
+  const r = await submitFeedback(req.body || {});
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
 // ---------- /suggestions: doctor suggestions inbox (Ahmed only) ----------
 // The supervisor number's free-text ("badel hedhi / a3mel hedhi") lands here,
 // grouped per bot number. Ahmed folds them into the prompt, then deploys.
@@ -3485,7 +3529,7 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, formatFeedback, submitFeedback, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
