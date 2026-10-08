@@ -408,12 +408,23 @@ const AI_SAFE_FALLBACK = {
   arabic: "تفضل، شنوة تحب بالضبط؟ نحب نساعدك نحجزلك موعد ولا نجاوبك على سؤال.",
 };
 
-// Deterministic guard over every AI reply: if the AI invented a booking,
-// date, time, or price, cut it — the deterministic flow owns those words.
+// Deterministic guard over every AI reply (2026-10-07): the AI must never
+// invent a booking, date, time, or price — the deterministic flow owns those
+// words. But it strips ONLY the invented sentence(s) and keeps the true
+// answer: "Nsakrou el 17:30. T7eb n7ajzlek rendez-vous ghodwa?"
+// -> "Nsakrou el 17:30." (Before: the whole reply was nuked and the patient
+// got the dumb "Tfadhel, chnowa t7eb bedhabt?" fallback.)
+function stripPhantomSentences(text) {
+  const parts = String(text || "").split(/(?<=[.!?؟])\s+/);
+  const kept = parts.filter((s) => !aiClaimsBooking(s));
+  return kept.join(" ").trim();
+}
+
 function guardAiOutput(aiText, aiFailed, fallbackText) {
   if (aiFailed || !aiText) return fallbackText;
-  if (aiClaimsBooking(aiText)) return fallbackText;
-  return fixKnownTypos(aiText);
+  if (!aiClaimsBooking(aiText)) return fixKnownTypos(aiText);
+  const stripped = stripPhantomSentences(aiText);
+  return stripped ? fixKnownTypos(stripped) : fallbackText;
 }
 
 // Deterministic typo guard (2026-10-01): the AI keeps inventing "Nchalllah"
@@ -427,7 +438,7 @@ function fixKnownTypos(s) {
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
-async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "", sysOverride = null) {
+async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "", sysOverride = null, clinicAddress = "", clinicHours = "") {
   // Resolved script: explicit patient request > saved preference > message script.
   const ar = useAr !== null ? useAr : isAr(patientText);
 
@@ -444,6 +455,17 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
     ? `\n- el patient tlab sara7atan bech tektbelou bel 3arbi (Arabic script) — ektbelou bel 3arbi, ma t7awelch lel 7rouf el latiniya.`
     : "") + extraSys);
   sys = sys.split("{CLINIC_NAME}").join(clinicName || "el 3iyada");
+  // True clinic facts in EVERY AI call (2026-10-07): the AI used to invent
+  // address/hours because it never knew them — the guard then nuked the whole
+  // reply. With the real facts in the prompt, FAQ answers are truthful and
+  // the guard has nothing to block. French prompt -> French facts.
+  const fr = !!sysOverride;
+  if (clinicAddress) sys += fr
+    ? `\n- Adresse de la clinique : "${clinicAddress}" — si on vous demande l'adresse, donnez exactement celle-ci, n'en inventez jamais d'autre.`
+    : `\n- 3onwen el 3iyada: "${clinicAddress}" — ki yse2lou 3la el blasa wel 3onwen, jaweb bel 3onwen hedha bedhabt, ma t5alla9ch 3onwen e5er.`;
+  if (clinicHours) sys += fr
+    ? `\n- Horaires de la clinique : "${clinicHours}" — si on vous demande les horaires, donnez exactement ceux-ci, n'en inventez jamais d'autres.`
+    : `\n- wa9t el 5edma: "${clinicHours}" — ki yse2lou 3la el wa9t, jaweb b hedha bedhabt, ma t5alla9ch wa9t e5er.`;
 
   let data = null;
   let ok = false;
@@ -640,7 +662,7 @@ function faqKind(text) {
   if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
   if (/(chnowa esm|chneya esm|chno esm|esm el 3iyada|what('| i)s the (clinic|practice)( name)?|اسم العيادة|شنوة اسم)/.test(t)) return "clinic_name";
   if (/(te5dem m3a chkoun|te5dem m3a|m3a chkoun te5dem|taba3 chkoun|with (whom|who)|مع شكون|تخدم مع)/.test(t)) return "works_with";
-  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|horaires|وقت الخدمة|وقتاش تحل)/.test(t)) return "hours";
+  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|wa9tech tsakrou|tsakrou|tsekrou|sakrou|ysakrou|7atta wa9tech|ma7loul|horaires|وقت الخدمة|وقتاش تحل|وقتاش تسكر)/.test(t)) return "hours";
   if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
   if (/(win |win mawjouda|blasa|3onwen|adresse|ou se trouve|c'est o[uù]|elle est o[uù]|feyn|feya |وين|بلاصة|عنوان|فين|وين موجودة)/.test(t)) return "place";
   return null;
@@ -1305,10 +1327,8 @@ async function handleBookingTurn(phone, text, history, clinic) {
       // proposal so the booking thread isn't lost.
       const reAsk = ar2 ? `تحب نحجزلك ${disp}؟ اكتب "اي".` : `T7eb n7ajzlek ${disp}? Ekteb "ey".`;
       const extraSys =
-        (clinic.address ? `\n- 3onwen el 3iyada: "${clinic.address}" — ki yse2lou 3la el blasa wel 3onwen, jaweb bel 3onwen hedha bedhabt, ma t5alla9ch 3onwen e5er.` : "") +
-        (clinic.hours ? `\n- wa9t el 5edma: "${clinic.hours}" — ki yse2lou 3la el wa9t, jaweb b hedha bedhabt, ma t5alla9ch wa9t e5er.` : "") +
         `\n- 3andek proposal mta3 rendez-vous pending: "${disp}" — ba3d ma tjewb 3al sou2el, kamel b joumla wa7da: "${reAsk}"`;
-      const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys);
+      const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys, null, clinic.address, clinic.hours);
       return say(phone, ans, clinic);
     }
   }
@@ -2440,7 +2460,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // aiLangIsFrench asks the AI itself — meaning, not keywords.
   if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text)) {
     const freply = AI_API_KEY
-      ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
+      ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours)
       : frenchFallback(text, clinic.name); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply, clinic && clinic.id);
     return freply;
@@ -2461,7 +2481,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
 
   const pname = await db.getPatientName(phone).catch(() => null);
   const useAr = await scriptAr(phone, text);
-  const reply = await aiReply(text, history, pname, clinic.name, useAr);
+  const reply = await aiReply(text, history, pname, clinic.name, useAr, "", null, clinic.address, clinic.hours);
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return reply;
 }
