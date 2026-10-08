@@ -241,6 +241,7 @@ function resolveSlot(rawText, preferAr) {
   }
   let hour = null;
   let minute = 0;
+  let badHour = null; // an explicit invalid time ("ghodwa 25", "10:99") — never silently clarified
   if (/\bnos\s+(el\s+)?nhar\b/.test(t) || t.includes(" نص النهار ")) { hour = 12; minute = 0; }
   else if (/\bnos\s+(el\s+)?lil\b/.test(t) || t.includes(" نص الليل ")) { hour = 0; minute = 0; }
   else {
@@ -248,7 +249,10 @@ function resolveSlot(rawText, preferAr) {
     if (tm) {
       hour = parseInt(tm[1], 10);
       minute = tm[2] ? parseInt(tm[2], 10) : 0;
-      if (minute > 59) { hour = null; minute = 0; }
+      if (minute > 59) { badHour = tm[1] + ":" + tm[2]; hour = null; minute = 0; }
+      // ">23" can only be an hour when a date is already fixed ("ghodwa 25");
+      // a bare number with no date ("25") keeps the old not-found behavior.
+      else if (hour > 23 && dateUTC !== null) { badHour = String(tm[1]); hour = null; }
     }
   }
 
@@ -299,6 +303,7 @@ function resolveSlot(rawText, preferAr) {
   return { found: true, date: dateUTC !== null, needs, past, dateDisplay, display, iso,
     morning, afternoon, night, ar, nextWeek, // nextWeek: "jem3a jeya" = next week (Tunisian), no specific day
     hour: finalHour, minute, // 24h hour (null when no time parsed) — for the no-date out-of-hours reject
+    badHour, // explicit invalid time ("25", "10:99") — the bot must flag it, never clarify around it
     dateUTC, // Tunis-midnight ms (null when no date) — for weekday/hours checks
     dow: dateUTC !== null ? new Date(dateUTC).getUTCDay() : null }; // 0 = Sunday
 }
