@@ -240,6 +240,115 @@ function samePhone(a, b) {
   return !!x && !!y && x === y;
 }
 
+// ---------- Agenda photo -> bookings (2026-10-08) ----------
+// The supervisor photographs the paper agenda -> the bot reads it (vision AI),
+// lists what it found, and saves on "ey". One photo a day, no typing.
+// Shared code: works on every line, each with its own supervisor.
+const pendingAgenda = new Map(); // supervisorPhone -> [{name, date, time, unsure}]
+
+async function downloadWhatsAppMedia(mediaId) {
+  if (!WHATSAPP_TOKEN || !mediaId) return null;
+  try {
+    const meta = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    const j = await meta.json();
+    if (!j.url) { console.error("[agenda:MEDIA_URL_ERROR]", JSON.stringify(j).slice(0, 200)); return null; }
+    const dl = await fetch(j.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
+    if (!dl.ok) return null;
+    return Buffer.from(await dl.arrayBuffer());
+  } catch (e) {
+    console.error("[agenda:DOWNLOAD_ERROR]", e.message);
+    return null;
+  }
+}
+
+async function extractAgendaFromImage(buffer) {
+  if (!AI_API_KEY || !buffer) return null;
+  const today = todayInTunis().split("-").reverse().join("-"); // DD-MM-YYYY
+  const prompt =
+    "Tu lis un agenda papier d'une clinique. Extrais tous les rendez-vous visibles. " +
+    "Reponds UNIQUEMENT avec un JSON array, sans texte autour: " +
+    '[{"name":"nom du patient","date":"DD-MM-YYYY","time":"HH:MM","unsure":false}]. ' +
+    `Si la date n'est pas visible, utilise ${today}. ` +
+    "Si un nom ou une heure est illisible, mets unsure:true. " +
+    "Si aucun rendez-vous visible, reponds [].";
+  try {
+    const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [{ role: "user", content: [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${buffer.toString("base64")}` } },
+        ] }],
+        max_tokens: 1000,
+        temperature: 0,
+      }),
+    });
+    const j = await res.json();
+    return j.choices?.[0]?.message?.content || null;
+  } catch (e) {
+    console.error("[agenda:VISION_ERROR]", e.message);
+    return null;
+  }
+}
+
+// Pure: parses the vision model's JSON (tolerates markdown fences). Exported for tests.
+function parseAgendaJson(text) {
+  if (!text || typeof text !== "string") return [];
+  const m = text.match(/\[[\s\S]*\]/);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[0]);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((it) => it && (it.name || it.time))
+      .map((it) => ({
+        name: String(it.name || "").slice(0, 80),
+        date: /^\d{2}-\d{2}-\d{4}$/.test(it.date || "") ? it.date : todayInTunis().split("-").reverse().join("-"),
+        time: /^\d{1,2}:\d{2}$/.test(it.time || "") ? it.time : "",
+        unsure: !!it.unsure,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function agendaItemSlot(it) {
+  // it.date = DD-MM-YYYY, it.time = HH:MM -> display + ISO (Tunis, UTC+1 no DST)
+  const [dd, mm, yyyy] = it.date.split("-");
+  const [hh, mi] = (it.time || "09:00").split(":");
+  const p = (s) => String(s).padStart(2, "0");
+  return {
+    display: `${p(dd)}-${p(mm)}-${yyyy}, ${p(hh)}:${p(mi)}`,
+    iso: `${yyyy}-${p(mm)}-${p(dd)}T${p(hh)}:${p(mi)}:00+01:00`,
+  };
+}
+
+async function processSupervisorImage(from, mediaId, clinic, numberId) {
+  const buf = await downloadWhatsAppMedia(mediaId);
+  if (!buf) return "Ma najjamtch n7ell el taswira. 3awed ab3athha. ❌";
+  const raw = await extractAgendaFromImage(buf);
+  if (!raw) return "Ma najjamtch na9ra el taswira tawa (AI). 3awed ba3d chwaya. ❌";
+  const items = parseAgendaJson(raw);
+  if (!items.length) return "Ma l9it 7atta rendez-vous fi el taswira. 📷";
+  pendingAgenda.set(from, items);
+  const lines = items.map((it, i) => {
+    const s = agendaItemSlot(it);
+    return `${i + 1}. ${it.name || "?"} — ${s.display}${it.unsure ? " (?) " : ""}`;
+  });
+  const unsure = items.filter((it) => it.unsure).length;
+  console.log(`[agenda] ${items.length} items from ${from} (${unsure} unsure)`);
+  return `L9it ${items.length} rendez-vous fi el taswira:\n${lines.join("\n")}\n` +
+    (unsure ? `⚠️ ${unsure} mech wadh7in — thabbet fihom.\n` : "") +
+    `Nsajelhom? (ey / le)`;
+}
+
 // ---------- French voice note (REMOVED 2026-09-29) ----------
 // The French TTS voice note was removed: French is now text-only.
 // The bot still understands French and replies in French text when the
@@ -2595,9 +2704,30 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   return reply;
 }
 
-// Secretary commands: "ok <id>" / "le <id>" / "list"
+// Secretary commands: "ok <id>" / "le <id>" / "list" / "rapport"
 async function processSecretaryText(text, clinic, from) {
   const t = (text || "").trim();
+  // Pending agenda-photo confirmation (2026-10-08): "ey" saves the batch.
+  // Phone unknown from a photo -> recorded for rapport/conflicts (no reminder).
+  if (pendingAgenda.has(from)) {
+    const items = pendingAgenda.get(from);
+    if (/^(ey|oui|na3m|ok)$/i.test(t)) {
+      pendingAgenda.delete(from);
+      let n = 0;
+      for (const it of items) {
+        const s = agendaItemSlot(it);
+        await db.saveBooking("", s.display, s.iso, it.name || null, clinic && clinic.id).catch(() => {});
+        n++;
+      }
+      console.log(`[agenda] saved ${n} bookings (from photo) for ${from}`);
+      return `Tsajlou ${n} rendez-vous mel taswira. ✅\nValidihom b "ok <numero>" kima el 3ada.`;
+    }
+    if (/^(le|la|non)$/i.test(t)) {
+      pendingAgenda.delete(from);
+      return "Ok, ma sajelt chay. Ab3ath taswira o5ra walla 9olli el corrections. 👍";
+    }
+    // Anything else: keep the pending batch, fall through to normal commands.
+  }
   let m = t.match(/^(ok|okay|na3m|ey)\s+(\d+)$/i);
   if (m) return settleBooking(parseInt(m[2], 10), true, clinic);
   m = t.match(/^(le|la|non|faskh|cancel)\s+(\d+)$/i);
@@ -2709,6 +2839,16 @@ app.post("/webhook", async (req, res) => {
     const messages = value.messages || [];
     for (const msg of messages) {
       const from = msg.from;
+      // 1b) Agenda photo from the supervisor -> read it (2026-10-08)
+      if (msg.type === "image" && msg.image?.id && clinic.secretary && samePhone(from, clinic.secretary)) {
+        console.log(`[agenda] photo from supervisor ${from}`);
+        await db.saveMessage(from, "user", "[photo agenda]", clinic && clinic.id).catch(() => {});
+        const reply = await processSupervisorImage(from, msg.image.id, clinic, numberId);
+        lastWebhook = { at: new Date().toISOString(), from, text: "[photo]", reply };
+        await sendWhatsApp(from, reply, numberId);
+        await db.saveMessage(from, "assistant", reply, clinic && clinic.id).catch(() => {});
+        continue;
+      }
       if (msg.type !== "text" || !msg.text?.body) {
         console.log(`[msg] non-text from ${from} (${msg.type}) -> skipped`);
         continue;
@@ -3286,7 +3426,7 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
