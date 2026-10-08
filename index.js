@@ -2748,7 +2748,7 @@ async function processSecretaryText(text, clinic, from) {
   if (/^(list|liste|pending|chouf)/i.test(t)) {
     const pending = await db.getPendingBookings();
     if (!pending.length) return "Ma fama 7atta rendez-vous pending. 👍";
-    return "⏳ Pending:\n" + pending.map((b) => `#${b.id} — ${b.phone} — ${b.slot}`).join("\n");
+    return "⏳ Pending:\n" + pending.map((b) => `#${b.id} — ${b.patient_name || b.phone || "?"} — ${b.slot}`).join("\n");
   }
   m = t.match(/^(fassa5|effacer|delete)\s+(\d+)$/i);
   if (m) {
