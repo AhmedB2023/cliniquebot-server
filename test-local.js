@@ -408,6 +408,11 @@ async function run() {
     ok("flow9c: samePhone TN reversed", bot.samePhone("98800749", "21698800749"));
     ok("flow9c: samePhone different", !bot.samePhone("17174204057", "17174204058"));
     ok("flow9c: samePhone empty", !bot.samePhone("", "7174204057"));
+    // 53/VIXA seed resolves by phone_number_id even with no env var (2026-10-08).
+    ok("flow9c: vixa seed by id", bot.SEED_VIXA_BY_ID["1322286220971446"] &&
+      bot.SEED_VIXA_BY_ID["1322286220971446"].secretary_number === "17174204057");
+    ok("flow9c: vixa seed supervisor matches", bot.samePhone("17174204057",
+      bot.SEED_VIXA_BY_ID["1322286220971446"].secretary_number));
   }
 
   // Flow 9b — secretary deletes a conversation by message
