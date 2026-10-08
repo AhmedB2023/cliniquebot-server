@@ -400,7 +400,7 @@ const SEED_VIXA_DEFAULT = {
   greeting_ar: VIXA_GREETING_AR,
   hours: "",
   booking_hours: "",
-  secretary_number: "",
+  secretary_number: "17174204057",
   other_doctor: "",
 };
 
@@ -429,7 +429,15 @@ async function getClinic(numberId, displayNumber) {
     hours: pick("hours", CLINIC_HOURS_TXT_ENV),
     bookingHours: parseBookingHours(pick("booking_hours", "")) || null,
     otherDoctor: pick("other_doctor", ""),
-    secretary: pick("secretary_number", "").replace(/\D/g, "") || SECRETARY_NUMBER,
+    // Secretary: an empty DB value falls back to the seed (a missing supervisor
+    // is never intentional — without it no supervisor command can ever run).
+    // 2026-10-08: 53/VIXA seed carries Ahmed's number so "rapport" works there.
+    secretary: (() => {
+      const fromDb = (cfg && cfg.secretary_number != null ? String(cfg.secretary_number) : "").replace(/\D/g, "");
+      if (fromDb) return fromDb;
+      const fromSeed = String(dispSeed.secretary_number || seed.secretary_number || "").replace(/\D/g, "");
+      return fromSeed || SECRETARY_NUMBER;
+    })(),
   };
   // VIXA sales guard (kept for future sales numbers): the "Cabinet Dr Ines"
   // pilot identity must NEVER leak into a VIXA sales reply (e.g. via a stale
@@ -3131,7 +3139,13 @@ app.get("/api/clinics", async (req, res) => {
   res.json({ ok: true, clinics });
 });
 
+app.options("/api/clinics", (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  res.sendStatus(204);
+});
 app.post("/api/clinics", async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
   const b = req.body || {};
   if (b.password !== VERIFY_TOKEN) return res.status(403).json({ error: "wrong password" });
   const numberId = String(b.phone_number_id || "").trim();
