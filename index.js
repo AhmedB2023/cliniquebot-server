@@ -403,12 +403,19 @@ const SEED_VIXA_DEFAULT = {
   secretary_number: "17174204057",
   other_doctor: "",
 };
+// Direct seed by phone_number_id (2026-10-08): does not depend on the
+// VIXA_NUMBERS env var or on the display-number format — the ID never changes.
+// 53 = VIXA sales line, supervisor = Ahmed.
+const SEED_VIXA_BY_ID = {
+  "1322286220971446": SEED_VIXA_DEFAULT,
+};
 
 async function getClinic(numberId, displayNumber) {
   const id = numberId || DEFAULT_NUMBER_ID;
   const cfg = await db.getClinicConfig(id);
   const seed = SEED_CLINICS[id] || {};
-  const dispSeed = SEED_SALON_BY_NUMBER[localNumber(displayNumber)] ||
+  const dispSeed = SEED_VIXA_BY_ID[id] ||
+    SEED_SALON_BY_NUMBER[localNumber(displayNumber)] ||
     SEED_DENTIST_BY_NUMBER[localNumber(displayNumber)] ||
     SEED_VIXA_BY_NUMBER[localNumber(displayNumber)] ||
     (isVixaDisplayNumber(displayNumber) ? SEED_VIXA_DEFAULT : {}) || {};
@@ -3299,7 +3306,7 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN, SALON_OFFER_AR,
   salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn,
   // VIXA sales vertical (exported for the regression test)
-  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER,
+  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID,
   vixaFaqKind, vixaFaqAnswer, vixaLeadTrigger, vixaFrenchFallback,
   vixaYesNo, vixaOwnerPitch, vixaOwnerPitchFr, handleVixaQualifyTurn,
   VIXA_OFFER_LATIN, VIXA_OFFER_AR, VIXA_INTRO_LATIN, VIXA_INTRO_AR };
