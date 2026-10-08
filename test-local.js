@@ -54,7 +54,7 @@ function makeStubDb() {
       const l = bookings.filter((b) => b.phone === phone);
       return l[l.length - 1] || null;
     },
-    getPendingBookings: async () => bookings.filter((b) => b.status === "pending"),
+    getPendingBookings: async (numberId) => bookings.filter((b) => b.status === "pending" && (!numberId || b.number_id === numberId)),
     getBookingsForDay: async (numberId, dateStr) =>
       bookings.filter((b) => (!numberId || b.number_id === numberId) &&
         b.slot_at && String(b.slot_at).slice(0, 10) === dateStr),
@@ -533,6 +533,32 @@ async function run() {
     const r2 = await bot.processSecretaryText("hedhi test mel admin");
     has("flow9c: admin path acks", r2, "modification en cours");
     ok("flow9c: admin path not saved", (await stubDb.getSuggestions()).length === 0, "empty");
+  }
+
+  // Flow 9d — cross-clinic booking isolation (2026-10-08): a supervisor only
+  // sees and settles her own clinic's pending bookings.
+  {
+    const idA = await stubDb.saveBooking("21600000901", "slot-A", null, "PatientA", "CLINIC_A");
+    const idB = await stubDb.saveBooking("21600000902", "slot-B", null, "PatientB", "CLINIC_B");
+    const clinicA = { id: "CLINIC_A", name: "Clinique A" };
+    const clinicB = { id: "CLINIC_B", name: "Clinique B" };
+    const listA = await bot.processSecretaryText("list", clinicA, "21611111111");
+    has("flow9d: A list shows own", listA, "PatientA");
+    ok("flow9d: A list hides B", !listA.includes("PatientB"), "no leak A->B");
+    const listB = await bot.processSecretaryText("list", clinicB, "21622222222");
+    has("flow9d: B list shows own", listB, "PatientB");
+    ok("flow9d: B list hides A", !listB.includes("PatientA"), "no leak B->A");
+    const cross = await bot.processSecretaryText(`ok ${idB}`, clinicA, "21611111111");
+    has("flow9d: A cannot ok B booking", cross, "mech teba3");
+    const bAfter = await stubDb.getBooking(idB);
+    ok("flow9d: B booking still pending", bAfter.status === "pending", bAfter.status);
+    const crossLe = await bot.processSecretaryText(`le ${idB}`, clinicA, "21611111111");
+    has("flow9d: A cannot le B booking", crossLe, "mech teba3");
+    const own = await bot.processSecretaryText(`ok ${idA}`, clinicA, "21611111111");
+    has("flow9d: A can ok own booking", own, "T2akked");
+    // admin path (no clinic) stays global on purpose
+    const adminList = await bot.processSecretaryText("list");
+    ok("flow9d: admin list global", adminList.includes("PatientB"), "admin sees all");
   }
 
   // Flow 10 — past slot is refused clearly
