@@ -1449,6 +1449,29 @@ async function run() {
     const pg4 = await bot.processPatientText("21600000gr4", "slm n7eb na7jez");
     ok("gr: 'slm n7eb na7jez' is not a pure greeting", !/Kifech najmou n3awnouk/.test(pg4),
       `reply was: ${JSON.stringify(pg4)}`);
+    // regression 2026-10-07 (seen live on 52): the AI greeted "3aslema! Kif
+    // int? Kifech najmou n3awnouk?" — no clinic name, and the "kif int?" small
+    // talk a clinic bot should never ask. The greeting must carry the clinic
+    // name and never ask after the patient's health.
+    ok("gr: AI greeting rule uses {CLINIC_NAME}",
+      /EL GREETING[^]*\{CLINIC_NAME\}/.test(bot.SYSTEM_PROMPT));
+    ok("gr: AI greeting bans 'kif int'",
+      /MAMNOU3[^]*kif int/.test(bot.SYSTEM_PROMPT));
+    ok("gr: aiReply substitutes {CLINIC_NAME}",
+      /split\("\{CLINIC_NAME\}"\)/.test(require("fs").readFileSync(__dirname + "/index.js", "utf8")));
+    ok("gr: French prompt greeting uses {CLINIC_NAME}",
+      /l'assistant de \{CLINIC_NAME\}/.test(bot.FRENCH_SYSTEM_PROMPT));
+    ok("gr: French prompt bans 'comment allez-vous'",
+      /INTERDIT[^]*comment allez-vous/i.test(bot.FRENCH_SYSTEM_PROMPT));
+    const mc52 = await bot.getClinic("1364750653386950", "21652150093");
+    ok("gr: 52 seed greeting carries the clinic name",
+      /Cabinet Dr Issam Mahjoub/.test(mc52.greeting), mc52.greeting.slice(0, 60));
+    ok("gr: 52 seed greeting never asks 'kif int'",
+      !/kif int/i.test(mc52.greeting));
+    const ff = bot.frenchFallback("bonjour", "Cabinet Dr Issam Mahjoub");
+    has("gr: frenchFallback greeting carries the clinic name", ff, "Cabinet Dr Issam Mahjoub");
+    ok("gr: frenchFallback greeting never asks 'comment allez-vous'",
+      !/comment allez-vous/i.test(ff));
     // typo guard unit tests (prompts are words, not law)
     ok("gr: fixKnownTypos fixes 'Nchalllah'",
       bot.fixKnownTypos("3aslema! Nchalllah labes") === "3aslema! Nchallah labes");
