@@ -3430,6 +3430,52 @@ app.post("/api/suggestions/:id/delete", async (req, res) => {
   res.json({ deleted });
 });
 
+// ---------- Automatic daily rapport (2026-10-08) ----------
+// TEST phase: 53 only, target AUTO_RAPPORT_TIME (default 21:40 Tunis tonight).
+// Production target: 08:00 Tunis. 52 (Mahjoub) is EXCLUDED until Ahmed approves.
+// Pure helper (exported for tests): due once per day, within 30 min after target
+// (the window lets a slow Render deploy still catch it).
+function autoRapportDue(nowHM, targetHM, lastDay, todayDay) {
+  if (!nowHM || !targetHM || lastDay === todayDay) return false;
+  const toMin = (s) => { const [h, m] = String(s).split(":").map(Number); return h * 60 + m; };
+  const diff = toMin(nowHM) - toMin(targetHM);
+  return diff >= 0 && diff <= 30;
+}
+const AUTO_RAPPORT_TIME = process.env.AUTO_RAPPORT_TIME || "21:40"; // TEST -> "08:00" after test
+const AUTO_RAPPORT_NUMBERS = (process.env.AUTO_RAPPORT_NUMBERS || "1322286220971446") // 53 only; 52 excluded
+  .split(",").map((s) => s.trim()).filter(Boolean);
+let lastAutoRapportDay = "";
+
+function tunisHHMM(d = new Date()) {
+  return new Intl.DateTimeFormat("fr-FR", { timeZone: "Africa/Tunis", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+}
+
+async function sendAutoRapports() {
+  const day = todayInTunis();
+  for (const numberId of AUTO_RAPPORT_NUMBERS) {
+    try {
+      const clinic = await getClinic(numberId, "");
+      if (!clinic || !clinic.secretary) { console.log(`[auto-rapport] skip ${numberId}: no supervisor`); continue; }
+      const bookings = await db.getBookingsForDay(clinic.id, day).catch(() => []);
+      const pdf = await buildRapportPdf({ clinicName: clinic.name || "Clinique", dateLabel: day, bookings }).catch(() => null);
+      if (!pdf) { console.log(`[auto-rapport] skip ${numberId}: pdf failed`); continue; }
+      const ok = await sendWhatsAppDocument(clinic.secretary, pdf, `rapport-${day}.pdf`, `🤖 Rapport automatique du ${day}`, numberId);
+      console.log(`[auto-rapport] ${numberId} -> ${clinic.secretary}: ${ok ? "sent" : "FAILED"}`);
+    } catch (e) { console.error(`[auto-rapport:ERROR] ${numberId}`, e.message); }
+  }
+  lastAutoRapportDay = day;
+}
+
+setInterval(async () => {
+  try {
+    if (autoRapportDue(tunisHHMM(), AUTO_RAPPORT_TIME, lastAutoRapportDay, todayInTunis())) {
+      console.log(`[auto-rapport] firing (target ${AUTO_RAPPORT_TIME} Tunis)`);
+      await sendAutoRapports();
+    }
+  } catch (e) { console.error("[auto-rapport:TICK_ERROR]", e.message); }
+}, 30000);
+console.log(`[auto-rapport] armed: ${AUTO_RAPPORT_TIME} Tunis -> ${AUTO_RAPPORT_NUMBERS.join(",") || "(none)"}`);
+
 app.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
   db.initDb(); // create tables if needed (memory + bookings)
@@ -3439,7 +3485,7 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
