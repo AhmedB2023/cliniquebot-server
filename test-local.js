@@ -413,6 +413,12 @@ async function run() {
       bot.SEED_VIXA_BY_ID["1322286220971446"].secretary_number === "17174204057");
     ok("flow9c: vixa seed supervisor matches", bot.samePhone("17174204057",
       bot.SEED_VIXA_BY_ID["1322286220971446"].secretary_number));
+    // 52/Mahjoub: supervisor resolves by phone_number_id via SEED_CLINICS —
+    // no env var, no display-number dependency (2026-10-08).
+    ok("flow9c: 52 seed exists", bot.SEED_CLINICS["1364750653386950"] === bot.SEED_MAHJOUB);
+    ok("flow9c: 52 supervisor is 98", bot.SEED_MAHJOUB.secretary_number === "98800749");
+    ok("flow9c: 52 supervisor matches WhatsApp format",
+      bot.samePhone("21698800749", bot.SEED_MAHJOUB.secretary_number));
   }
 
   // Flow 9b — secretary deletes a conversation by message
