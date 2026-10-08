@@ -419,6 +419,33 @@ async function run() {
     ok("flow9c: 52 supervisor is 98", bot.SEED_MAHJOUB.secretary_number === "98800749");
     ok("flow9c: 52 supervisor matches WhatsApp format",
       bot.samePhone("21698800749", bot.SEED_MAHJOUB.secretary_number));
+    // Agenda photo: parse vision JSON (2026-10-08)
+    const aj = bot.parseAgendaJson('[{"name":"Ahmed","date":"09-10-2026","time":"10:00","unsure":false},{"name":"Meriem","date":"09-10-2026","time":"11:30","unsure":true}]');
+    ok("flow9c: agenda parse count", aj.length === 2, JSON.stringify(aj));
+    ok("flow9c: agenda parse unsure", aj[1].unsure === true && aj[0].unsure === false);
+    const ajFenced = bot.parseAgendaJson('```json\n[{"name":"Ali","time":"09:00"}]\n```');
+    ok("flow9c: agenda parse fenced", ajFenced.length === 1 && ajFenced[0].name === "Ali");
+    ok("flow9c: agenda parse invalid", bot.parseAgendaJson("no json here").length === 0);
+    ok("flow9c: agenda parse empty", bot.parseAgendaJson("").length === 0);
+    const slot = bot.agendaItemSlot({ name: "Ahmed", date: "09-10-2026", time: "10:00" });
+    ok("flow9c: agenda slot display", slot.display === "09-10-2026, 10:00", slot.display);
+    ok("flow9c: agenda slot iso", slot.iso === "2026-10-09T10:00:00+01:00", slot.iso);
+    // Agenda "ey" confirmation saves the batch (2026-10-08)
+    {
+      bot._pendingAgenda.set("21699999999", [
+        { name: "TestA", date: "09-10-2026", time: "10:00", unsure: false },
+        { name: "TestB", date: "09-10-2026", time: "11:00", unsure: false },
+      ]);
+      const rEy = await bot.processSecretaryText("ey", { id: "CLINIC1", name: "Cabinet Test" }, "21699999999");
+      has("flow9c: agenda ey saves", rEy, "Tsajlou 2 rendez-vous");
+      ok("flow9c: agenda pending cleared", !bot._pendingAgenda.has("21699999999"));
+      const day = await stubDb.getBookingsForDay("CLINIC1", "2026-10-09");
+      ok("flow9c: agenda bookings in db", day.length >= 2, `n=${day.length}`);
+      bot._pendingAgenda.set("21699999999", [{ name: "X", date: "09-10-2026", time: "12:00", unsure: false }]);
+      const rLe = await bot.processSecretaryText("le", { id: "CLINIC1", name: "Cabinet Test" }, "21699999999");
+      has("flow9c: agenda le discards", rLe, "ma sajelt chay");
+      ok("flow9c: agenda le clears", !bot._pendingAgenda.has("21699999999"));
+    }
   }
 
   // Flow 9b — secretary deletes a conversation by message
