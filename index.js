@@ -89,7 +89,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - 3andek el conversation el 9dima (history) — 9bal ma tjewb chouf chnowa t9al 9balek. MAMNOU3 t3awed nafs el sou2el 7arfiyan: ken s2elt el patient 3la 7aja w ma jewbch 3liha b wdhuh, ma t3awedch nafs el sou2el — fassrou b tari9a o5ra w a3tih mthel wadh7 (kima "jem3a 10 mta3 sbe7").
 - Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".
-- EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "3aslema! Kifech najmou n3awnouk?" / "3aslema! Nchallah labes, kifech najmou n3awnouk?". Ken el patient kteb bel 3arabiya: "عسلامة! كيفاش نجمو نعاونوك؟" / "عسلامة! نشالله لاباس، كيفاش نجمو نعاونوك؟". MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
+- EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), 9oul 7arfiyan: "3aslema! Ena l'assistant mta3 {CLINIC_NAME} — Kifech najmou n3awnouk?" (badel {CLINIC_NAME} b esm el 3iyada eli 3tithoulek mel fou9). Ken el patient kteb bel 3arabiya: "عسلامة! أنا مساعد {CLINIC_NAME} — كيفاش نجمو نعاونوك؟". MAMNOU3: ma tzidch "kif int"/"kifek"/"labes"/"chnowa 7alek" — ma tes2elch 3la 7al el patient, od5el direct fel moudhou3. MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
 // ---------- Salon vertical (2026-10-01) ----------
@@ -432,16 +432,18 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
   const ar = useAr !== null ? useAr : isAr(patientText);
 
   // Fallback: keyword replies so the webhook loop works even without an AI key
-  if (!AI_API_KEY) return fallbackReply(patientText, ar);
+  if (!AI_API_KEY) return fallbackReply(patientText, ar, clinicName);
 
   // sysOverride (French test): full replacement — never layered on SYSTEM_PROMPT.
-  const sys = sysOverride || (SYSTEM_PROMPT + (patientName
+  // {CLINIC_NAME} in any prompt is replaced with the real clinic name (greeting).
+  let sys = sysOverride || (SYSTEM_PROMPT + (patientName
     ? `\n- esm el patient: ${patientName} — esta3mel el esm ki ykoun naturel (kima "Ahlan Ahmed!"), ama el script yab9a 7asb el 9a3da (ma t5alletch).`
     : "") + (clinicName
     ? `\n- esm el 3iyada: "${clinicName}" — ki yse2lou 3la esm el 3iyada, jaweb bel esm hedha bedhabt, ma t5alla9ch esm e5er.`
     : "") + (ar && !isAr(patientText)
     ? `\n- el patient tlab sara7atan bech tektbelou bel 3arbi (Arabic script) — ektbelou bel 3arbi, ma t7awelch lel 7rouf el latiniya.`
     : "") + extraSys);
+  sys = sys.split("{CLINIC_NAME}").join(clinicName || "el 3iyada");
 
   let data = null;
   let ok = false;
@@ -484,8 +486,8 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
   );
 }
 
-function fallbackReply(text, forceAr) {
-  if (looksLikeFrench(text)) return frenchFallback(text);
+function fallbackReply(text, forceAr, clinicName = "") {
+  if (looksLikeFrench(text)) return frenchFallback(text, clinicName);
   if (forceAr !== undefined ? forceAr : isAr(text)) {
     if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text))
       return "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)";
@@ -753,6 +755,7 @@ function looksLikeFrenchRequest(text) {
 // is not a guardrail, so French gets its own prompt.
 const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clinique (dentiste) en Tunisie.
 - Répondez TOUJOURS EN FRANÇAIS, jamais en derja ni en arabe. Messages courts et polis.
+- ACCUEIL : si le patient vous salue (bonjour/salut...), dites exactement : "Bonjour ! Je suis l'assistant de {CLINIC_NAME} — comment puis-je vous aider ?" (remplacez {CLINIC_NAME} par le nom de la clinique). INTERDIT de demander "comment allez-vous" — allez droit au but.
 - Vous aidez pour : prise de rendez-vous, horaires, adresse, prix.
 - INTERDIT : médicaments, symptômes, diagnostic, conseil médical. Pour une question médicale, dites : "Pour les questions médicales, seul le docteur peut répondre — voulez-vous prendre rendez-vous ?"
 - N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites "Je vérifie avec la clinique et je reviens vers vous."
@@ -760,11 +763,12 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 - Ne vous excusez jamais de parler français : le patient vous a écrit en français. Répondez directement et utilement.`;
 
 // No-AI-key fallback in French (used by the local test; production has the AI key).
-function frenchFallback(text) {
+function frenchFallback(text, clinicName = "") {
+  const cn = clinicName || "la clinique";
   const t = (text || "").toLowerCase();
   if (/bonjour|bonsoir|salut/.test(t))
-    return "Bonjour ! 👋 Comment puis-je vous aider ? (rendez-vous, horaires, adresse...)";
-  return "Bonjour ! Je suis l'assistant de la clinique — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?";
+    return `Bonjour ! 👋 Je suis l'assistant de ${cn} — comment puis-je vous aider ? (rendez-vous, horaires, adresse...)`;
+  return `Bonjour ! Je suis l'assistant de ${cn} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`;
 }
 
 // F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
@@ -2395,7 +2399,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text)) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT)
-      : frenchFallback(text); // deterministic French without AI key (local tests)
+      : frenchFallback(text, clinic.name); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply, clinic && clinic.id);
     return freply;
   }
@@ -3097,7 +3101,7 @@ module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcc
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, fixKnownTypos, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
   // French text path (exported for the regression test)
-  looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, hasDerjaMarker, aiLangIsFrench, FRENCH_SYSTEM_PROMPT,
+  looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, hasDerjaMarker, aiLangIsFrench, FRENCH_SYSTEM_PROMPT, frenchFallback,
   // Per-number booking hours (exported for the regression test)
   parseBookingHours, SEED_CLINICS,
   // Dentist viewer token (exported for the regression test)
