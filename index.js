@@ -2746,7 +2746,7 @@ async function processSecretaryText(text, clinic, from) {
     return outs.join("\n");
   }
   if (/^(list|liste|pending|chouf)/i.test(t)) {
-    const pending = await db.getPendingBookings();
+    const pending = await db.getPendingBookings(clinic && clinic.id);
     if (!pending.length) return "Ma fama 7atta rendez-vous en cours. 👍";
     return "⏳ En cours:\n" + pending.map((b) => `#${b.id} — ${b.patient_name || b.phone || "?"} — ${b.slot}`).join("\n");
   }
@@ -2787,6 +2787,10 @@ async function settleBooking(id, approve, clinic) {
   const b = await db.getBooking(id).catch(() => null);
   if (!b) return `Ma l9it 7atta rendez-vous b numero ${id}.`;
   if (b.status !== "pending") return `Rendez-vous ${id} deja: ${b.status}.`;
+  // Cross-clinic guard (2026-10-08): a supervisor can only settle her own
+  // clinic's bookings. No clinic = Ahmed's admin page -> allowed on purpose.
+  if (clinic && clinic.id && b.number_id && b.number_id !== clinic.id)
+    return `Rendez-vous #${id} mech teba3 el 3iyada mte3ek. ❌`;
   await db.setBookingStatus(id, approve ? "confirmed" : "cancelled");
   const ar = isAr(b.slot); // the slot display carries the patient's script
   const patientMsg = approve
