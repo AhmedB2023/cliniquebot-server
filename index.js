@@ -2019,6 +2019,28 @@ function vixaLeadPendingQ(stage, lang, ar, phone) {
   return "";
 }
 
+// General off-script handler for the VIXA flow ("kifech ye5dem" logic, 2026-10-07):
+// the deterministic layer keeps ALL decisions (stages, prices, medical red
+// line); the AI only phrases the nudge — acknowledge briefly in the user's
+// language, then ask pendingQ. No per-message regex needed anymore.
+async function vixaAiNudge(phone, text, pendingQ, ar, clinic) {
+  if (!AI_API_KEY) return say(phone, pendingQ, clinic); // tests / no key: old behavior
+  const replyLang = ar ? "ar"
+    : (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) ? "fr" : "latin";
+  const langName = replyLang === "ar" ? "Arabic script"
+    : replyLang === "fr" ? "French" : "Tunisian Derja in Latin script (arabizi)";
+  const sys =
+    `You are VIXA, a friendly WhatsApp assistant for clinics in Tunisia, mid-conversation with a doctor or clinic owner. ` +
+    `Reply in ${langName}. ` +
+    `Acknowledge what they just wrote in ONE short warm sentence, then ask EXACTLY this question: "${pendingQ}" ` +
+    `Rules: never invent prices, offers, discounts or promises (the offer is free: blech/gratuit); ` +
+    `never answer medical questions — say a doctor must answer those; keep it under 40 words.`;
+  let r = null;
+  try { r = await aiReply(text, [], null, "", replyLang === "ar", "", sys); }
+  catch (e) { r = null; }
+  return say(phone, (r && String(r).trim()) || pendingQ, clinic);
+}
+
 async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   // Cancel mid-flow: drop the lead state.
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
@@ -2046,7 +2068,7 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
 
   if (stage === "vixa_ask_name") {
     const name = parsePatientName(text);
-    if (!name) return say(phone, vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+    if (!name) return vixaAiNudge(phone, text, vixaLeadPendingQ(stage, lang, ar, phone), ar, clinic);
     await db.saveVendorLead(phone, "vixa_ask_clinic", JSON.stringify({ ...d, name, lang }));
     const cn = capName(name);
     return say(phone, lang === "fr" ? `Enchanté ${cn} ! 🏥 Quel est le nom de votre clinique ? (et la spécialité — ex : dentiste)`
@@ -2057,7 +2079,7 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   if (stage === "vixa_ask_clinic") {
     const cn2 = (text || "").trim().slice(0, 80);
     if (!cn2 || cn2.length < 2 || /[?؟]/.test(cn2))
-      return say(phone, vixaLeadPendingQ(stage, lang, ar, phone), clinic);
+      return vixaAiNudge(phone, text, vixaLeadPendingQ(stage, lang, ar, phone), ar, clinic);
     await db.saveVendorLead(phone, "vixa_ask_phone", JSON.stringify({ ...d, clinic: cn2, lang }));
     return say(phone, vixaLeadPendingQ("vixa_ask_phone", lang, ar, phone), clinic);
   }
@@ -2067,9 +2089,8 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
     let finalPhone = phone;
     if (!/^(nafsou|nafs|nafsu|ey|ok|na3m|oui|pareil|نفسو|اي|أي)\s*[.,!؟]*$/.test(t)) {
       const digits = (text || "").replace(/\D/g, "");
-      if (digits.length < 8) return say(phone, ar
-        ? "النومرو هذا ما يبانش صحيح — عاود اكتبو (8 أرقام على الأقل) ولا اكتب «نفسو»."
-        : "El numero hetha ma ybench s7i7 — 3awed ekteb (8 ar9am lel a9al) walla ekteb «nafsou».", clinic);
+      if (digits.length < 8) return vixaAiNudge(phone, text,
+        "El numero hetha ma ybench s7i7 — 3awed ekteb (8 ar9am lel a9al) walla ekteb «nafsou».", ar, clinic);
       finalPhone = digits;
     }
     await db.saveVendorLead(phone, "vixa_ask_time", JSON.stringify({ ...d, finalPhone, lang }));
@@ -2137,10 +2158,10 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
       fr ? "D'accord, pas de problème." :
       ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
   }
-  // Unclear -> ask again, simply.
-  return say(phone,
-    fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)" :
-    ar ? "انتي طبيب ولا عندك عيادة؟ (أي / لا)" : "Enti tbib walla 3andek 3iyada? (ey / le)", clinic);
+  // Unclear -> AI nudge (acknowledge + re-ask), no per-message regex.
+  const vqq = fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)"
+    : ar ? "انتي طبيب ولا عندك عيادة؟ (أي / لا)" : "Enti tbib walla 3andek 3iyada? (ey / le)";
+  return vixaAiNudge(phone, text, vqq, ar, clinic);
 }
 
 // VIXA router: qualify + lead capture. Returns { handled:false } when nothing
