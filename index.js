@@ -3306,7 +3306,7 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN, SALON_OFFER_AR,
   salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn,
   // VIXA sales vertical (exported for the regression test)
-  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID,
+  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID, SEED_MAHJOUB, SEED_CLINICS,
   vixaFaqKind, vixaFaqAnswer, vixaLeadTrigger, vixaFrenchFallback,
   vixaYesNo, vixaOwnerPitch, vixaOwnerPitchFr, handleVixaQualifyTurn,
   VIXA_OFFER_LATIN, VIXA_OFFER_AR, VIXA_INTRO_LATIN, VIXA_INTRO_AR };
