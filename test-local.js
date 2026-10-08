@@ -55,6 +55,9 @@ function makeStubDb() {
       return l[l.length - 1] || null;
     },
     getPendingBookings: async () => bookings.filter((b) => b.status === "pending"),
+    getBookingsForDay: async (numberId, dateStr) =>
+      bookings.filter((b) => (!numberId || b.number_id === numberId) &&
+        b.slot_at && String(b.slot_at).slice(0, 10) === dateStr),
     setBookingStatus: async (id, status) => {
       const b = bookings.find((b) => b.id === id);
       if (b) b.status = status;
@@ -372,6 +375,39 @@ async function run() {
     has("flow9: patient sees cancellation", rp, "ma 3adech disponible");
     const unk = await bot.processSecretaryText("ok 99999");
     has("flow9: unknown id", unk, "Ma l9it");
+  }
+
+  // Flow 9c — supervisor "rapport" builds a daily PDF (2026-10-08)
+  {
+    // Pure PDF builder: valid PDF, clinic name inside, works with empty list.
+    const empty = await bot.buildRapportPdf({ clinicName: "Cabinet Test", dateLabel: "2026-10-08", bookings: [] });
+    ok("flow9c: pdf is a Buffer", Buffer.isBuffer(empty));
+    ok("flow9c: pdf header", empty.slice(0, 4).toString() === "%PDF", empty.slice(0, 4).toString());
+    const withB = await bot.buildRapportPdf({
+      clinicName: "Cabinet Test", dateLabel: "2026-10-08",
+      bookings: [{ slot_at: "2026-10-08T09:00:00", slot: "08-10-2026, 09:00", patient_name: "Ahmed", phone: "21600000001", status: "confirmed" }],
+    });
+    ok("flow9c: pdf with booking", withB.length > empty.length, `${withB.length} vs ${empty.length}`);
+    // Command path: supervisor asks "rapport" -> confirmation text mentions PDF.
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Tunis", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    await stubDb.saveBooking("21600000002", `${day} 10:00`, `${day}T10:00:00`, "Meriem", "CLINIC1");
+    const r1 = await bot.processSecretaryText("rapport", { id: "CLINIC1", name: "Cabinet Test" }, "21699999999");
+    has("flow9c: rapport confirms", r1, "rapport");
+    ok("flow9c: rapport counts booking", /1 rendez-vous/.test(r1), `reply was: ${JSON.stringify(r1)}`);
+    // Other clinic's bookings don't leak in.
+    await stubDb.saveBooking("21600000003", `${day} 11:00`, `${day}T11:00:00`, "Ali", "CLINIC2");
+    const r2 = await bot.processSecretaryText("rapport", { id: "CLINIC1", name: "Cabinet Test" }, "21699999999");
+    ok("flow9c: rapport is per-clinic", /1 rendez-vous/.test(r2), `reply was: ${JSON.stringify(r2)}`);
+    // Empty day still answers.
+    const r3 = await bot.processSecretaryText("rapport", { id: "EMPTY", name: "Cabinet Vide" }, "21699999999");
+    ok("flow9c: rapport empty day", /0 rendez-vous/.test(r3), `reply was: ${JSON.stringify(r3)}`);
+    // Country-code-agnostic supervisor match (2026-10-08): US + TN numbers.
+    ok("flow9c: samePhone US", bot.samePhone("17174204057", "7174204057"));
+    ok("flow9c: samePhone US reversed", bot.samePhone("7174204057", "17174204057"));
+    ok("flow9c: samePhone TN", bot.samePhone("21698800749", "98800749"));
+    ok("flow9c: samePhone TN reversed", bot.samePhone("98800749", "21698800749"));
+    ok("flow9c: samePhone different", !bot.samePhone("17174204057", "17174204058"));
+    ok("flow9c: samePhone empty", !bot.samePhone("", "7174204057"));
   }
 
   // Flow 9b — secretary deletes a conversation by message
