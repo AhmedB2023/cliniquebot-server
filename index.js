@@ -622,6 +622,18 @@ function looksLikeCancellation(text) {
 
 // F8 — FAQ / identity ("9adech el soum?", "win el 3iyada?", "chkoun enti?").
 // Pure questions only (no date): answered directly, never merged into a proposal.
+// A question is NEVER booking info. "?" / "؟" or a leading question word
+// (derja / French / Arabic script). Protects the proposal merge: a question
+// asked while a proposal is pending is answered, never merged into the slot.
+// (2026-10-07: "win mawjouda el3iyeda?" was merged and the bot re-sent the
+// proposal without answering — one general rule, no more whack-a-mole.)
+function looksLikeQuestion(text) {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (t.includes("?") || t.includes("؟")) return true;
+  return /^(win|wen|winech|chkoun|chkon|chnowa|chneya|chno|9adech|kadech|b9adech|kifech|kif |wakteh|wa9tech|3lech|alech|où|comment|combien|quel|quelle|quels|quelles|est-ce|شنوة|شكون|وين|كيفاش|قداش|وقتاش|علاش|هل |شنهي)/i.test(t);
+}
+
 function faqKind(text) {
   if (looksLikeStatusQuestion(text)) return null; // "win wsol el 7ajz" stays a status question
   const t = " " + (text || "").toLowerCase() + " ";
@@ -630,7 +642,7 @@ function faqKind(text) {
   if (/(te5dem m3a chkoun|te5dem m3a|m3a chkoun te5dem|taba3 chkoun|with (whom|who)|مع شكون|تخدم مع)/.test(t)) return "works_with";
   if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|horaires|وقت الخدمة|وقتاش تحل)/.test(t)) return "hours";
   if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
-  if (/(win el|win jeya|blasa|3onwen|adresse|وين|بلاصة|عنوان|فين)/.test(t)) return "place";
+  if (/(win |win mawjouda|blasa|3onwen|adresse|ou se trouve|c'est o[uù]|elle est o[uù]|feyn|feya |وين|بلاصة|عنوان|فين|وين موجودة)/.test(t)) return "place";
   return null;
 }
 
@@ -1269,6 +1281,36 @@ async function handleBookingTurn(phone, text, history, clinic) {
     return say(phone, ar2
       ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
       : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.", clinic);
+  }
+
+  // Q) Question during a pending proposal — THE GENERAL RULE: a question is
+  // NEVER booking info. Answer it, keep the proposal alive, re-present it.
+  // One rule covers every phrasing — no more whack-a-mole per message.
+  // (2026-10-07, seen live: "win mawjouda el3iyeda?" was merged into the slot
+  // and the bot re-sent the proposal without answering.)
+  if (proposal && proposal.slot_text && !proposal.awaiting_name
+      && looksLikeQuestion(text) && !looksLikeAcceptance(text) && !looksLikeRefusal(text)) {
+    const rq = dates.resolveSlot(text, ar);
+    if (!rq.date && !looksLikeBookingIntent(text)) {
+      const fkq = faqKind(text);
+      const pname = await db.getPatientName(phone).catch(() => null);
+      const disp = proposal.display || proposal.slot_text;
+      if (fkq) {
+        // Known FAQ (address, hours, price...) — deterministic answer with the
+        // real clinic data; the proposal stays pending for the "ey".
+        return say(phone, faqAnswer(fkq, ar2, clinic), clinic);
+      }
+      // Unknown question -> the AI answers with the real clinic data in its
+      // prompt (address/hours — never invented), then re-presents the pending
+      // proposal so the booking thread isn't lost.
+      const reAsk = ar2 ? `تحب نحجزلك ${disp}؟ اكتب "اي".` : `T7eb n7ajzlek ${disp}? Ekteb "ey".`;
+      const extraSys =
+        (clinic.address ? `\n- 3onwen el 3iyada: "${clinic.address}" — ki yse2lou 3la el blasa wel 3onwen, jaweb bel 3onwen hedha bedhabt, ma t5alla9ch 3onwen e5er.` : "") +
+        (clinic.hours ? `\n- wa9t el 5edma: "${clinic.hours}" — ki yse2lou 3la el wa9t, jaweb b hedha bedhabt, ma t5alla9ch wa9t e5er.` : "") +
+        `\n- 3andek proposal mta3 rendez-vous pending: "${disp}" — ba3d ma tjewb 3al sou2el, kamel b joumla wa7da: "${reAsk}"`;
+      const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys);
+      return say(phone, ans, clinic);
+    }
   }
 
   // Merge follow-ups into a pending proposal — but never a pure acceptance:
@@ -3094,7 +3136,7 @@ app.listen(PORT, () => {
 // Exported for the local regression test (test-local.js). No effect on the running server.
 module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // batch fix 2026-09-24 detectors (exported for the regression test)
-  looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeWalkin,
+  looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
   stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS,
   // batch fix 2026-09-25 (exported for the regression test)
