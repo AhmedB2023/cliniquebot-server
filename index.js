@@ -2774,6 +2774,19 @@ async function processSecretaryText(text, clinic, from) {
       ? `Tbe3ath el rapport mta3 el youm (${bookings.length} rendez-vous) ka PDF. ✅`
       : `El rapport tgenera ka PDF (${bookings.length} rendez-vous) ama ma tbe3athch — thabbet el configuration. ⚠️`;
   }
+  // GENERAL RULE (2026-10-08, live bug): a question is never a suggestion.
+  // The supervisor asking "chnowa ta3mel tawa?" got "modification en cours" —
+  // wrong. Answer the question (or say you can't), never file it as a suggestion.
+  if (looksLikeQuestion(t)) {
+    // "chnowa ta3mel tawa?" / "status?" -> live status of THIS clinic
+    if (/chnowa|chowa|chneya|chno\b|status/i.test(t)) {
+      const pending = await db.getPendingBookings(clinic && clinic.id).catch(() => []);
+      const day = todayInTunis();
+      const todays = await db.getBookingsForDay(clinic && clinic.id, day).catch(() => []);
+      return `El tawa: ${pending.length} rendez-vous en cours, ${todays.length} lyoum (${day}).`;
+    }
+    return "Ma najjamch njeweb 3la el sou2el hetha. El commandes: ok <numero>, le <numero>, list, rapport.";
+  }
   // Anything else from the supervisor = a suggestion ("badel hedhi / a3mel hedhi").
   // Saved for Ahmed's /suggestions page; the bot only acknowledges.
   if (clinic && clinic.id) {
