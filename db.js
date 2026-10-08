@@ -394,6 +394,18 @@ async function getPendingBookings() {
   return r.rows;
 }
 
+// Bookings of one clinic (number_id) on a calendar day (YYYY-MM-DD, Tunis time).
+// Used by the supervisor "rapport" command to build the daily PDF report.
+async function getBookingsForDay(numberId, dateStr) {
+  const p = getPool();
+  if (!p) return [];
+  const r = await p.query(
+    "SELECT * FROM bookings WHERE number_id=$1 AND (slot_at AT TIME ZONE 'Africa/Tunis')::date = $2::date ORDER BY slot_at ASC",
+    [numberId, dateStr]
+  );
+  return r.rows;
+}
+
 async function setBookingStatus(id, status) {
   const p = getPool();
   if (!p) return;
@@ -564,6 +576,7 @@ module.exports = {
   getBooking,
   getLatestBooking,
   getPendingBookings,
+  getBookingsForDay,
   setBookingStatus,
   updateBookingSlot,
   saveProposal,
