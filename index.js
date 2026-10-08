@@ -146,6 +146,100 @@ async function sendWhatsApp(to, text, numberId) {
   }
 }
 
+// ---------- Supervisor PDF report ("rapport") — 2026-10-08 ----------
+// The supervisor (per-number config) sends "rapport" -> the bot builds a PDF
+// with today's bookings for THIS clinic number and sends it back as a WhatsApp
+// document. Shared code: works on every line, each with its own supervisor.
+function todayInTunis() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Tunis", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+
+// Pure: builds the PDF, no network. Exported for the regression test.
+function buildRapportPdf({ clinicName, dateLabel, bookings }) {
+  const PDFDocument = require("pdfkit");
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50 });
+    const chunks = [];
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+    doc.fontSize(20).text("Rapport du jour", { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(12).text(String(clinicName || "Clinique"));
+    doc.text("Date: " + String(dateLabel || ""));
+    doc.moveDown();
+    const list = Array.isArray(bookings) ? bookings : [];
+    doc.fontSize(14).text(`Rendez-vous: ${list.length}`);
+    doc.moveDown(0.5);
+    if (!list.length) {
+      doc.fontSize(12).fillColor("gray").text("Ma fama 7atta rendez-vous lyoum.");
+    } else {
+      doc.fontSize(12).fillColor("black");
+      for (const b of list) {
+        const when = b.slot_at
+          ? new Intl.DateTimeFormat("fr-FR", { timeZone: "Africa/Tunis", hour: "2-digit", minute: "2-digit" }).format(new Date(b.slot_at))
+          : (b.slot || "");
+        const who = b.patient_name || b.phone || "";
+        doc.text(`  ${when} — ${who} (${b.status || ""})`);
+      }
+    }
+    doc.moveDown();
+    doc.fontSize(10).fillColor("gray").text("Genere par l'assistant — " + new Date().toISOString().slice(0, 10));
+    doc.end();
+  });
+}
+
+// Uploads a PDF to Meta media endpoint, then sends it as a WhatsApp document.
+async function sendWhatsAppDocument(to, pdfBuffer, filename, caption, numberId) {
+  const nid = numberId || DEFAULT_NUMBER_ID;
+  if (!WHATSAPP_TOKEN || !nid) {
+    console.log(`[sendDoc:SKIP] no token/phone_number_id. Would send PDF to ${to}`);
+    return false;
+  }
+  try {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("file", new Blob([pdfBuffer], { type: "application/pdf" }), filename || "rapport.pdf");
+    const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: form,
+    });
+    const upData = await up.json();
+    if (!up.ok || !upData.id) { console.error("[sendDoc:UPLOAD_ERROR]", JSON.stringify(upData)); return false; }
+    const res = await fetch(`https://graph.facebook.com/v21.0/${nid}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "document",
+        document: { id: upData.id, filename: filename || "rapport.pdf", caption: caption || "" },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { console.error("[sendDoc:ERROR]", JSON.stringify(data)); return false; }
+    console.log(`[sendDoc:OK] PDF to ${to}`);
+    return true;
+  } catch (e) {
+    console.error("[sendDoc:ERROR]", e.message);
+    return false;
+  }
+}
+
+// Normalize a phone for comparison: strip the country code so "+1 717..." and
+// "717..." (or "+216 98..." and "98...") always match. General rule, not per-number.
+function normPhoneForCompare(s) {
+  let d = String(s || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("216")) d = d.slice(3); // TN -> 8 digits
+  else if (d.length === 11 && d.startsWith("1")) d = d.slice(1); // US -> 10 digits
+  return d;
+}
+function samePhone(a, b) {
+  const x = normPhoneForCompare(a), y = normPhoneForCompare(b);
+  return !!x && !!y && x === y;
+}
+
 // ---------- French voice note (REMOVED 2026-09-29) ----------
 // The French TTS voice note was removed: French is now text-only.
 // The bot still understands French and replies in French text when the
@@ -2506,6 +2600,22 @@ async function processSecretaryText(text, clinic, from) {
     console.log(`[secretary] deleted conversation ${phone} (${n} messages)`);
     return `Tfass5et el conversation mta3 ${phone} (${n} messages). El rendez-vous el ma7jouza ma tfass5etch. ✅`;
   }
+  m = t.match(/^(rapport|report|تقرير)$/i);
+  if (m) {
+    const day = todayInTunis();
+    const bookings = await db.getBookingsForDay(clinic && clinic.id, day).catch(() => []);
+    const pdf = await buildRapportPdf({
+      clinicName: (clinic && clinic.name) || "Clinique",
+      dateLabel: day,
+      bookings,
+    }).catch(() => null);
+    if (!pdf) return "Ma najjamtch ngeneri el PDF. ❌";
+    const sent = await sendWhatsAppDocument(from, pdf, `rapport-${day}.pdf`, `Rapport du ${day}`, clinic && clinic.id);
+    console.log(`[rapport] ${bookings.length} bookings -> ${from} (sent=${sent})`);
+    return sent
+      ? `Tbe3ath el rapport mta3 el youm (${bookings.length} rendez-vous) ka PDF. ✅`
+      : `El rapport tgenera ka PDF (${bookings.length} rendez-vous) ama ma tbe3athch — thabbet el configuration. ⚠️`;
+  }
   // Anything else from the supervisor = a suggestion ("badel hedhi / a3mel hedhi").
   // Saved for Ahmed's /suggestions page; the bot only acknowledges.
   if (clinic && clinic.id) {
@@ -2591,7 +2701,8 @@ app.post("/webhook", async (req, res) => {
       const text = msg.text.body;
 
       // 2a) Secretary command (from her recognized number for this clinic)
-      if (clinic.secretary && from === clinic.secretary) {
+      // samePhone: "+1717..." matches "717..." — country-code agnostic (2026-10-08).
+      if (clinic.secretary && samePhone(from, clinic.secretary)) {
         console.log(`[secretary] ${from}: ${text}`);
         await db.saveMessage(from, "user", text, clinic && clinic.id);
         const reply = await processSecretaryText(text, clinic, from);
@@ -3154,7 +3265,7 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
