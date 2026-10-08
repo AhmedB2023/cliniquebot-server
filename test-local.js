@@ -1536,6 +1536,32 @@ async function run() {
       /T7eb n7ajzlek\?/.test(qC2), qC2.slice(0, 60));
   }
 
+  // GF — guard strips, not nukes (2026-10-07, seen live on 52): the AI
+  // answered "wa9tech tsakrou la3chia?" with true hours + one invented
+  // booking sentence — the guard nuked the WHOLE reply and the patient got
+  // the dumb fallback. Now only the invented sentence is stripped.
+  {
+    const g1 = bot.guardAiOutput("Nsakrou el 17:30. T7eb n7ajzlek rendez-vous ghodwa?", false, "FALLBACK");
+    ok("gf: true answer survives, invented sentence stripped",
+      g1 === "Nsakrou el 17:30.", JSON.stringify(g1));
+    const g2 = bot.guardAiOutput("n7ajzlek rendez-vous ghodwa 10", false, "FALLBACK");
+    ok("gf: all-phantom reply still falls back", g2 === "FALLBACK", JSON.stringify(g2));
+    const g3 = bot.guardAiOutput("El 3onwen: Sousse. tnjem tji ghodwa?", false, "FALLBACK");
+    ok("gf: invented slot sentence stripped, address kept",
+      g3 === "El 3onwen: Sousse.", JSON.stringify(g3));
+    const g4 = bot.guardAiOutput("Nchalllah labes", false, "fallback");
+    ok("gf: typo guard still applies after strip", g4 === "Nchallah labes", JSON.stringify(g4));
+
+    // faqKind now catches "tsakrou" (close) — the exact live question.
+    ok("gf: faqKind('wa9tech tsakrou') is hours",
+      bot.faqKind("sou2l wa9tech tsakrou la3chia?") === "hours");
+    // ...so the deterministic path answers it with the real hours, no AI needed.
+    const h1 = await bot.processPatientText("21600000gf1", "wa9tech tsakrou la3chia?", "1364750653386950", "21652150093");
+    has("gf: 'wa9tech tsakrou' gets the real hours", h1, "17:30");
+    ok("gf: 'wa9tech tsakrou' never hits the dumb fallback",
+      !/chnowa t7eb bedhabt/.test(h1), h1.slice(0, 60));
+  }
+
   // PILOT — per-number config (2026-09-29, mechanism test): a dentist number
   // carries its own booking hours (Mon-Fri 8-16, Sat 8-13, Sun closed), its
   // own greeting (incl. Arabic-script), and a handoff rule for the other
