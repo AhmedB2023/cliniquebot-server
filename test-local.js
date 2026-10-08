@@ -13,13 +13,13 @@ const path = require("path");
 function makeStubDb() {
   const messages = [];
   const bookings = [];
+  const suggestions = [];
   const proposals = new Map();
   const patients = new Map();
   const vendorLeads = new Map();
   const signups = [];
   const clinicConfigs = new Map();
   const scriptPrefs = new Map();
-  const suggestions = [];
   let seq = 1;
   return {
     initDb: async () => true,
@@ -472,6 +472,20 @@ async function run() {
     ok("flow9c: auto not before", bot.autoRapportDue("21:39", "21:40", "", "2026-10-08") === false);
     ok("flow9c: auto not 40m late", bot.autoRapportDue("22:20", "21:40", "", "2026-10-08") === false);
     ok("flow9c: auto not twice", bot.autoRapportDue("21:40", "21:40", "2026-10-08", "2026-10-08") === false);
+    // Web feedback form -> suggestions inbox (2026-10-08)
+    const ff = bot.formatFeedback("Dr X", "Cabinet Test", "probleme", "el bot ma jewbnich");
+    ok("flow9c: feedback format", ff === "[mouchkla] Dr X (Cabinet Test): el bot ma jewbnich", ff);
+    const ff2 = bot.formatFeedback("", "", "suggestion", "zidou rappel");
+    ok("flow9c: feedback format empty", ff2 === "[i9tira7] ?: zidou rappel", ff2);
+    const sub = await bot.submitFeedback({ name: "Dr X", clinic: "Cab", kind: "probleme", message: "test msg" });
+    ok("flow9c: feedback submit ok", sub.ok === true && sub.id > 0);
+    const all = await stubDb.getSuggestions();
+    ok("flow9c: feedback in inbox", all.some((s) => s.from_phone === "web" && s.text.includes("test msg")));
+    await stubDb.deleteSuggestion(sub.id); // cleanup: don't pollute other tests
+    const subBad = await bot.submitFeedback({ name: "Dr X", kind: "probleme", message: "   " });
+    ok("flow9c: feedback empty rejected", subBad.ok === false);
+    const subBad2 = await bot.submitFeedback({ name: "Dr X", kind: "nope", message: "x" });
+    ok("flow9c: feedback bad kind rejected", subBad2.ok === false);
   }
 
   // Flow 9b — secretary deletes a conversation by message
