@@ -561,6 +561,21 @@ async function run() {
     ok("flow9d: admin list global", adminList.includes("PatientB"), "admin sees all");
   }
 
+  // Flow 9e — supervisor question is never a suggestion (live bug 2026-10-08:
+  // "chnowa ta3mel tawa?" got "modification en cours")
+  {
+    const clinicA = { id: "CLINIC_A", name: "Clinique A" };
+    const q = await bot.processSecretaryText("chnowa ta3mel tawa?", clinicA, "21611111111");
+    has("flow9e: status question answered", q, "rendez-vous en cours");
+    ok("flow9e: status not saved as suggestion", (await stubDb.getSuggestions()).length === 0, "no suggestion");
+    const q2 = await bot.processSecretaryText("wa9tech el rapport?", clinicA, "21611111111");
+    has("flow9e: other question not a suggestion", q2, "Ma najjamch");
+    // a real suggestion (statement, not a question) still works
+    const s = await bot.processSecretaryText("badel el message mta3 el confirmation", clinicA, "21611111111");
+    has("flow9e: statement still a suggestion", s, "modification en cours");
+    ok("flow9e: statement saved", (await stubDb.getSuggestions()).length === 1, "saved");
+  }
+
   // Flow 10 — past slot is refused clearly
   {
     const p = "21600000010";
