@@ -2082,6 +2082,85 @@ async function run() {
     const w9q = await vix("vixQ1", "hmm ???");
     has("S21: qualify unclear -> qualify Q", w9q, "3andek 3iyada?");
 
+    // "nafs enoumrou" counts as same number -> advances to ask_time.
+    await stubDb.saveVendorLead("vixP1", "vixa_ask_phone",
+      JSON.stringify({ lang: "latin", name: "Ahmed", clinic: "Test" }));
+    const w8a = await vix("vixP1", "nafs enoumrou");
+    const w8as = await stubDb.getVendorLead("vixP1");
+    ok("S21: 'nafs enoumrou' -> ask_time", w8as && w8as.stage === "vixa_ask_time", w8as && w8as.stage);
+
+    // "ma7ajtich b appel" -> graceful close, lead cleared, no sales ping.
+    await stubDb.saveVendorLead("vixT1", "vixa_ask_time",
+      JSON.stringify({ lang: "latin", name: "Ahmed", clinic: "Test", finalPhone: "21600000000" }));
+    const w8b = await vix("vixT1", "ma7ajtich b appel");
+    has("S21: call refusal -> graceful close", w8b, "blech appel");
+    const w8bs = await stubDb.getVendorLead("vixT1");
+    ok("S21: call refusal clears lead", !w8bs || !w8bs.stage, w8bs && w8bs.stage);
+
+    // Gibberish time -> nudge (pending Q), not a blind confirmation.
+    await stubDb.saveVendorLead("vixT2", "vixa_ask_time",
+      JSON.stringify({ lang: "latin", name: "Ahmed", clinic: "Test", finalPhone: "21600000000" }));
+    const w8c = await vix("vixT2", "bla bla");
+    has("S21: gibberish time -> re-ask", w8c, "10 d9aye9");
+    const w8cs = await stubDb.getVendorLead("vixT2");
+    ok("S21: gibberish time keeps stage", w8cs && w8cs.stage === "vixa_ask_time", w8cs && w8cs.stage);
+
+    // Real time still confirms.
+    const w8d = await vix("vixT2", "ghodwa 10");
+    has("S21: real time confirms", w8d, "Bech nettaslou");
+
+    // Arabizi digit-letters ("3aslema") are NOT times -> nudge, not confirm.
+    await stubDb.saveVendorLead("vixT3", "vixa_ask_time",
+      JSON.stringify({ lang: "latin", name: "Ahmed", clinic: "Test", finalPhone: "21600000000" }));
+    const w8e = await vix("vixT3", "3aslema");
+    has("S21: '3aslema' not a time", w8e, "10 d9aye9");
+
+    // "ma3andich clinique" is a denial, not a clinic name -> not-owner redirect.
+    await stubDb.saveVendorLead("vixC1", "vixa_ask_clinic",
+      JSON.stringify({ lang: "latin", name: "Ahmed" }));
+    const w8f = await vix("vixC1", "ma3andich clinique");
+    has("S21: denies clinic -> not-owner", w8f, "propriétaires");
+    const w8fs = await stubDb.getVendorLead("vixC1");
+    ok("S21: denies clinic clears lead", !w8fs || !w8fs.stage, w8fs && w8fs.stage);
+
+    // A real clinic name still advances.
+    await stubDb.saveVendorLead("vixC2", "vixa_ask_clinic",
+      JSON.stringify({ lang: "latin", name: "Ahmed" }));
+    const w8g = await vix("vixC2", "Clinique El Amen");
+    const w8gs = await stubDb.getVendorLead("vixC2");
+    ok("S21: real clinic name advances", w8gs && w8gs.stage === "vixa_ask_phone", w8gs && w8gs.stage);
+
+    // General dismissal at ANY stage -> cancel, never taken as an answer.
+    await stubDb.saveVendorLead("vixD1", "vixa_ask_clinic",
+      JSON.stringify({ lang: "latin", name: "Ahmed" }));
+    const w8h = await vix("vixD1", "manheb chay tawa");
+    has("S21: 'manheb chay' -> cancel", w8h, "l4it el demande");
+    const w8hs = await stubDb.getVendorLead("vixD1");
+    ok("S21: dismissal clears lead", !w8hs || !w8hs.stage, w8hs && w8hs.stage);
+
+    await stubDb.saveVendorLead("vixD2", "vixa_ask_name", JSON.stringify({ lang: "latin" }));
+    const w8i = await vix("vixD2", "sayeb 3laya");
+    has("S21: 'sayeb 3laya' -> cancel", w8i, "l4it el demande");
+
+    // "juste nes2el" is a sentence, never a name (ask_name) or clinic (ask_clinic).
+    await stubDb.saveVendorLead("vixE1", "vixa_ask_name", JSON.stringify({ lang: "latin" }));
+    const w8j = await vix("vixE1", "juste nes2el");
+    has("S21: 'juste nes2el' not a person name", w8j, "Chnowa esmek?");
+    const w8js = await stubDb.getVendorLead("vixE1");
+    ok("S21: sentence keeps name stage", w8js && w8js.stage === "vixa_ask_name", w8js && w8js.stage);
+
+    await stubDb.saveVendorLead("vixE2", "vixa_ask_clinic",
+      JSON.stringify({ lang: "latin", name: "Ahmed" }));
+    const w8k = await vix("vixE2", "juste nes2el");
+    has("S21: 'juste nes2el' not a clinic", w8k, "esm el 3iyada");
+    const w8ks = await stubDb.getVendorLead("vixE2");
+    ok("S21: sentence keeps clinic stage", w8ks && w8ks.stage === "vixa_ask_clinic", w8ks && w8ks.stage);
+
+    await stubDb.saveVendorLead("vixE3", "vixa_ask_clinic",
+      JSON.stringify({ lang: "latin", name: "Ahmed" }));
+    const w8l = await vix("vixE3", "nheb na3ref akther");
+    has("S21: 'nheb na3ref' not a clinic", w8l, "esm el 3iyada");
+
     // "Cabinet Dr Ines" must appear in ZERO vixa replies.
     ok("S21: Ines never appears", vixReplies.every((r) => !/ines/i.test(r || "")),
       vixReplies.find((r) => /ines/i.test(r || "")));
