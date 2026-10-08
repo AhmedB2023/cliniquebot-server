@@ -367,6 +367,10 @@ async function run() {
   {
     const list = await bot.processSecretaryText("list");
     has("flow9: list shows pending", list, "Pending");
+    // list shows patient_name when phone is empty (agenda-photo bookings, 2026-10-08)
+    const namedId = await stubDb.saveBooking("", "slot-named", null, "SamerTest", "C1");
+    const list2 = await bot.processSecretaryText("list");
+    has("flow9: list shows patient name", list2, "SamerTest");
     const pend = await stubDb.getPendingBookings();
     ok("flow9: pending exist", pend.length > 0, `n=${pend.length}`);
     const rej = await bot.processSecretaryText(`le ${pend[0].id}`);
