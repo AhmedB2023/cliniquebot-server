@@ -1904,7 +1904,7 @@ async function handleSalonQualifyTurn(phone, text, ar, clinic, lead) {
 // Short intro (no question) — shared by qualify "who" and mid-lead-flow info interrupts.
 const VIXA_INTRO_AR = "أنا مساعد VIXA 🏥 — مساعد واتساب للعيادات: يجاوب على المرضى، يحجزلهم، ويفكرهم بالمواعيد.";
 const VIXA_INTRO_LATIN = "Ena Assistant VIXA 🏥 — assistant WhatsApp lel les cliniques: yjewb 3la les patients, ye7jzelhom, w yfakarhom bel rendez-vous.";
-const VIXA_INTRO_FR = "Je suis Assistant VIXA — un assistant WhatsApp pour les cliniques en Tunisie.";
+const VIXA_INTRO_FR = "Je suis Assistant VIXA 🏥 — un assistant WhatsApp pour les cliniques : il répond aux patients, prend les rendez-vous et envoie les rappels.";
 
 // The commercial offer: BLECH. No price, no subscription, no per-patient fee
 // — Ahmed's rule 2026-10-06 (free until 3-5 doctors subscribe; #6+ pays, TBD).
