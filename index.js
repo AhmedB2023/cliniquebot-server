@@ -968,6 +968,7 @@ function parsePatientName(text) {
   if (!t || t.length < 2) return null;
   if (/\d/.test(t)) return null;      // "b9adech", "10", phone numbers... not a name
   if (/[?؟!]/.test(t)) return null;    // questions aren't names
+  if (vixaLooksLikeSentence(t)) return null; // "juste nes2el" isn't a name
   if (NON_NAME.test(t)) return null;
   t = t.replace(/[^A-Za-z\u0600-\u06FF\s'\-]/g, "").replace(/\s+/g, " ").trim();
   if (t.length < 2 || NON_NAME.test(t)) return null;
@@ -2023,6 +2024,30 @@ function vixaLeadPendingQ(stage, lang, ar, phone) {
 // the deterministic layer keeps ALL decisions (stages, prices, medical red
 // line); the AI only phrases the nudge — acknowledge briefly in the user's
 // language, then ask pendingQ. No per-message regex needed anymore.
+// "I don't need a call" (embedded refusal, any stage) -> graceful close.
+// Deterministic decision: never notify sales about someone who refused.
+function vixaRefusesCall(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  const neg = /(ma7ajtich|ma 7ajtich|manich|ma nich|man7ebch|ma n7ebch|mouch lezem|mech lezem|pas besoin|ne veux pas|veux pas|don't want|no need|ma nest7a9ch)/;
+  const callw = /(appel|call|tklm|tekalm|tassel|titsel|t3aytel|y3aytel|yotlob|totlob)/;
+  return neg.test(t) && callw.test(t);
+}
+
+// A name/clinic answer is a noun phrase. Verb phrases, hedges and questions
+// ("juste nes2el", "nheb na3ref akther", "chnowa el prix?") are never names —
+// accepting them as names is what makes the bot "not understand Derja".
+function vixaLooksLikeSentence(text) {
+  const t = " " + (text || "").toLowerCase().replace(/[.,!؟?]/g, "") + " ";
+  if (/\b(juste|nes2el|nes2l|nse2el|na3ref|naaref|nheb|n7eb|nlawej|nefhem|3andi sou2el|andi sou2el)\b/.test(t)) return true;
+  return /\b(chnowa|chniya|chneya|kifech|9adech|b9adech|win|wa9tech|3lech|chkoun|chkounek|quel|quelle|comment|pourquoi|combien)\b/.test(t);
+}
+
+// "ma3andich clinique" is a denial, never a clinic name.
+function vixaDeniesClinic(text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  return /(ma ?3andich|ma ?andich|i don'?t have( a clinic)?|no clinic|pas de clinique|n'?ai pas de clinique)/.test(t);
+}
+
 async function vixaAiNudge(phone, text, pendingQ, ar, clinic) {
   if (!AI_API_KEY) return say(phone, pendingQ, clinic); // tests / no key: old behavior
   const replyLang = ar ? "ar"
@@ -2041,6 +2066,13 @@ async function vixaAiNudge(phone, text, pendingQ, ar, clinic) {
   return say(phone, (r && String(r).trim()) || pendingQ, clinic);
 }
 
+// General dismissal ("manheb chay tawa", "sayeb 3laya", "ma7ajtich", ...):
+// at ANY stage this is a refusal, never an answer (name/clinic/phone/time).
+function vixaDismissal(text) {
+  const t = " " + (text || "").toLowerCase().replace(/[.,!؟?]/g, "") + " ";
+  return /(\bmanheb\b|\bma nheb\b|\bman7ebch\b|\bma7ajtich\b|\bma nest7a9ch\b|\bsayeb\b|\bmouch lezem\b|\bmech lezem\b|\bmouch wa9tou\b|\bma yse3ednich\b|\bje ne veux pas\b|\bnon merci\b|\bno thanks\b|\bnot interested\b)/.test(t);
+}
+
 async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   // Cancel mid-flow: drop the lead state.
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
@@ -2052,6 +2084,20 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   const d = vixaLeadData(lead);
   const stage = lead.stage;
   const lang = d.lang || (ar ? "ar" : "latin");
+  // "ma7ajtich b appel" (call-specific) first -> nicer message.
+  if (vixaRefusesCall(text)) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, lang === "fr" ? "D'accord, pas d'appel. 👍 Si vous changez d'avis, écrivez « je veux un assistant »."
+      : lang === "ar" ? "داكور، بلا مكالمة. 👍 كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      : "D'accord, blech appel. 👍 Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
+  }
+  // General dismissal ("manheb chay tawa", "sayeb 3laya") at any stage -> cancel.
+  if (vixaDismissal(text)) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, ar
+      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
+  }
   // Info question mid-flow: answer it, then return to the pending question
   // (stage unchanged). Medical mid-flow: redirect, never answer.
   const fkInfo = vixaFaqKind(text);
@@ -2077,8 +2123,13 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   }
 
   if (stage === "vixa_ask_clinic") {
+    // "ma3andich clinique" -> not an owner after all: same redirect as "le".
+    if (vixaDeniesClinic(text)) {
+      await db.clearVendorLead(phone).catch(() => {});
+      return say(phone, lang === "fr" ? VIXA_NOTOWNER_FR : lang === "ar" ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic);
+    }
     const cn2 = (text || "").trim().slice(0, 80);
-    if (!cn2 || cn2.length < 2 || /[?؟]/.test(cn2))
+    if (!cn2 || cn2.length < 2 || /[?؟]/.test(cn2) || vixaLooksLikeSentence(text))
       return vixaAiNudge(phone, text, vixaLeadPendingQ(stage, lang, ar, phone), ar, clinic);
     await db.saveVendorLead(phone, "vixa_ask_phone", JSON.stringify({ ...d, clinic: cn2, lang }));
     return say(phone, vixaLeadPendingQ("vixa_ask_phone", lang, ar, phone), clinic);
@@ -2087,7 +2138,10 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   if (stage === "vixa_ask_phone") {
     const t = (text || "").trim().toLowerCase();
     let finalPhone = phone;
-    if (!/^(nafsou|nafs|nafsu|ey|ok|na3m|oui|pareil|نفسو|اي|أي)\s*[.,!؟]*$/.test(t)) {
+    // "nafsou", "nafs enoumrou", "nafs el numero", "le même" ... -> same number.
+    const sameNumber = /\bnafs/.test(t) || /\bm[eê]me\b/.test(t)
+      || /^(ey|ok|na3m|oui|pareil|نفسو|اي|أي)\s*[.,!؟]*$/.test(t);
+    if (!sameNumber) {
       const digits = (text || "").replace(/\D/g, "");
       if (digits.length < 8) return vixaAiNudge(phone, text,
         "El numero hetha ma ybench s7i7 — 3awed ekteb (8 ar9am lel a9al) walla ekteb «nafsou».", ar, clinic);
@@ -2098,6 +2152,14 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   }
 
   if (stage === "vixa_ask_time") {
+    // The answer must look like a time; gibberish ("xyz") or anything else
+    // goes through the AI nudge instead of being confirmed blindly.
+    // NOTE: bare [0-9] is too loose in Arabizi ("3aslema", "ma3neha" carry
+    // digit-letters) — only count standalone time-like numbers.
+    const tl = (text || "").toLowerCase();
+    const hasTimeNum = /(^|[^\w\d])\d{1,2}\s*([h:]|$|[^\w])/.test(tl);
+    const timeish = hasTimeNum || /ghodwa|demain|lyoum|aujourd|today|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|sebt|sebte|7ad|tnen|tlet|tlath|arb3a|5mis|jem3a|sbe7|sbeh|3chiya|achiya|lil|matin|soir|morning|evening|weekend|d9i9a|minute|wa9tech|kif ma|comme|quand/.test(tl);
+    if (!timeish) return vixaAiNudge(phone, text, vixaLeadPendingQ("vixa_ask_time", lang, ar, phone), ar, clinic);
     const when = (text || "").trim().slice(0, 80) || "—";
     const name = d.name || "—", cn3 = d.clinic || "—", finalPhone = d.finalPhone || phone;
     await db.saveSignup(capName(name), finalPhone, cn3, "", "clinic");
