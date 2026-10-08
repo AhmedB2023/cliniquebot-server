@@ -50,7 +50,7 @@ function makeStubDb() {
       bookings.find((b) => b.phone === phone && b.slot_at === slot_at && b.status === "pending") || null,
     getBooking: async (id) => bookings.find((b) => b.id === id) || null,
     getLatestBooking: async (phone) => { const l = bookings.filter((b) => b.phone === phone); return l[l.length - 1] || null; },
-    getPendingBookings: async () => bookings.filter((b) => b.status === "pending"),
+    getPendingBookings: async (numberId) => bookings.filter((b) => b.status === "pending" && (!numberId || b.number_id === numberId)),
     setBookingStatus: async (id, status) => { const b = bookings.find((b) => b.id === id); if (b) b.status = status; },
     updateBookingSlot: async (id, slot, slot_at) => { const b = bookings.find((b) => b.id === id); if (b) { b.slot = slot; b.slot_at = slot_at; } },
     saveProposal: async (phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) => {
