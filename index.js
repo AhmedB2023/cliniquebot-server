@@ -966,11 +966,14 @@ function parsePatientName(text) {
     .replace(/^(اسمي|أنا|انا)\s+/, "")
     .trim();
   if (!t || t.length < 2) return null;
-  if (/\d/.test(t)) return null;      // "b9adech", "10", phone numbers... not a name
+  // Pure numbers ("10", phone numbers) aren't names — but Arabizi names carry
+  // digit-letters ("Fola7i", "Naje7"), so only reject when there are no letters.
+  if (!/[A-Za-z\u0600-\u06FF]/.test(t)) return null;
+  if (/\b(b?9adech|ch7al|combien|kadech)\b/i.test(t)) return null; // quantity words aren't names
   if (/[?؟!]/.test(t)) return null;    // questions aren't names
   if (vixaLooksLikeSentence(t)) return null; // "juste nes2el" isn't a name
   if (NON_NAME.test(t)) return null;
-  t = t.replace(/[^A-Za-z\u0600-\u06FF\s'\-]/g, "").replace(/\s+/g, " ").trim();
+  t = t.replace(/[^A-Za-z0-9\u0600-\u06FF\s'\-]/g, "").replace(/\s+/g, " ").trim();
   if (t.length < 2 || NON_NAME.test(t)) return null;
   return t;
 }
@@ -1375,6 +1378,12 @@ async function handleBookingTurn(phone, text, history, clinic) {
     return say(phone, ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.", clinic);
   }
   if (r.needs === "time") {
+    // Explicit invalid time ("ghodwa 25", "10:99"): flag it, never clarify around it.
+    if (r.badHour) {
+      return say(phone, ar2
+        ? `"${r.badHour}" موش وقت صحيح — عاود اكتب الوقت (مثال: 10:30).`
+        : `"${r.badHour}" mech wa9t s7i7 — 3awed ekteb el wa9t (mthel: 10:30).`, clinic);
+    }
     // F10b) closed day (Sunday): redirect to the next open day — never ask a
     // time for a day the clinic is closed.
     if (r.dow !== null && !bh[r.dow]) {
@@ -2039,6 +2048,7 @@ function vixaRefusesCall(text) {
 function vixaLooksLikeSentence(text) {
   const t = " " + (text || "").toLowerCase().replace(/[.,!؟?]/g, "") + " ";
   if (/\b(juste|nes2el|nes2l|nse2el|na3ref|naaref|nheb|n7eb|nlawej|nefhem|3andi sou2el|andi sou2el)\b/.test(t)) return true;
+  if (/\b(je suis|j'ai|je veux|je cherche|je voudrais|c'est|il y a)\b/.test(t)) return true;
   return /\b(chnowa|chniya|chneya|kifech|9adech|b9adech|win|wa9tech|3lech|chkoun|chkounek|quel|quelle|comment|pourquoi|combien)\b/.test(t);
 }
 
@@ -2158,8 +2168,10 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
     // digit-letters) — only count standalone time-like numbers.
     const tl = (text || "").toLowerCase();
     const hasTimeNum = /(^|[^\w\d])\d{1,2}\s*([h:]|$|[^\w])/.test(tl);
+    const hm = tl.match(/(^|[^\w\d])(\d{1,2})\s*([h:]|$|[^\w])/);
+    const badVixaHour = hm && parseInt(hm[2], 10) > 23; // "ghodwa 25" is never a time
     const timeish = hasTimeNum || /ghodwa|demain|lyoum|aujourd|today|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|sebt|sebte|7ad|tnen|tlet|tlath|arb3a|5mis|jem3a|sbe7|sbeh|3chiya|achiya|lil|matin|soir|morning|evening|weekend|d9i9a|minute|wa9tech|kif ma|comme|quand/.test(tl);
-    if (!timeish) return vixaAiNudge(phone, text, vixaLeadPendingQ("vixa_ask_time", lang, ar, phone), ar, clinic);
+    if (badVixaHour || !timeish) return vixaAiNudge(phone, text, vixaLeadPendingQ("vixa_ask_time", lang, ar, phone), ar, clinic);
     const when = (text || "").trim().slice(0, 80) || "—";
     const name = d.name || "—", cn3 = d.clinic || "—", finalPhone = d.finalPhone || phone;
     await db.saveSignup(capName(name), finalPhone, cn3, "", "clinic");
@@ -2310,8 +2322,12 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // stages ("salon_*", "vixa_*") live in the same table and must never enter
   // the dentist pitch.
   const vlead = await db.getVendorLead(phone).catch(() => null);
-  const salonLeadActive = !!(vlead && vlead.stage && vlead.stage.indexOf("salon_") === 0);
-  if (vertical === "dentist" && !salonLeadActive && (looksLikeVendorTrigger(text) || vlead)) {
+  const vstage = (vlead && vlead.stage) || "";
+  // Vendor stages belong to their vertical: vixa_* only on vixa numbers,
+  // salon_* only on salon numbers. A foreign lead must never hijack the
+  // dentist flow (true number isolation).
+  const foreignLead = vstage.indexOf("vixa_") === 0 || vstage.indexOf("salon_") === 0;
+  if (vertical === "dentist" && !foreignLead && (looksLikeVendorTrigger(text) || vlead)) {
     const v = await handleVendorTurn(phone, text, looksLikeVendorTrigger(text) ? null : vlead, clinic);
     if (v.handled) return v.reply;
   }
@@ -2324,6 +2340,17 @@ async function processPatientText(phone, text, numberId, displayNumber) {
     const v = await handleVixaTurn(phone, text, clinic);
     if (v.handled) return v.reply;
     const useAr = await scriptAr(phone, text);
+    // Bare yes/no with no lead (e.g. "ey" answering the medical redirect's
+    // invitation): treat as the doctor answering, not as "I don't understand".
+    const yn0 = vixaYesNo(text);
+    if (yn0 === "yes") {
+      const fr0 = looksLikeFrenchAuto(text);
+      await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang: fr0 ? "fr" : useAr ? "ar" : "latin" })).catch(() => {});
+      return (await say(phone, fr0 ? vixaOwnerPitchFr() : vixaOwnerPitch(useAr), clinic)).reply;
+    }
+    if (yn0 === "no") {
+      return (await say(phone, useAr ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic)).reply;
+    }
     await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: useAr ? "ar" : "latin" })).catch(() => {});
     const r = await say(phone, useAr
       ? "ما فهمتكش 🙂 انتي طبيب ولا عندك عيادة؟ (أي / لا)"
