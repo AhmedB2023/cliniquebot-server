@@ -385,9 +385,18 @@ async function getLatestBooking(phone) {
   return r.rows[0] || null;
 }
 
-async function getPendingBookings() {
+async function getPendingBookings(numberId) {
   const p = getPool();
   if (!p) return [];
+  // Per-clinic isolation (2026-10-08): a supervisor only sees her own bot
+  // number's bookings. No numberId = Ahmed's admin pages -> global on purpose.
+  if (numberId) {
+    const r = await p.query(
+      "SELECT * FROM bookings WHERE status='pending' AND number_id=$1 ORDER BY created_at DESC",
+      [numberId]
+    );
+    return r.rows;
+  }
   const r = await p.query(
     "SELECT * FROM bookings WHERE status='pending' ORDER BY created_at DESC"
   );
