@@ -446,6 +446,22 @@ async function run() {
       has("flow9c: agenda le discards", rLe, "ma sajelt chay");
       ok("flow9c: agenda le clears", !bot._pendingAgenda.has("21699999999"));
     }
+    // Forgiving secretary commands: no space, comma lists (2026-10-08)
+    {
+      const id1 = await stubDb.saveBooking("21611111111", "slot-a");
+      const id2 = await stubDb.saveBooking("21622222222", "slot-b");
+      const id3 = await stubDb.saveBooking("21633333333", "slot-c");
+      const rNoSpace = await bot.processSecretaryText(`le${id1}`, { id: "C1", name: "Cab" }, "21699999999");
+      has("flow9c: le without space", rNoSpace, "Tl4a");
+      ok("flow9c: le without space status", (await stubDb.getBooking(id1)).status === "cancelled");
+      const rList = await bot.processSecretaryText(`le ${id2},${id3}`, { id: "C1", name: "Cab" }, "21699999999");
+      ok("flow9c: le comma list both", (await stubDb.getBooking(id2)).status === "cancelled" &&
+        (await stubDb.getBooking(id3)).status === "cancelled");
+      const id4 = await stubDb.saveBooking("21644444444", "slot-d");
+      const rOk = await bot.processSecretaryText(`ok${id4}`, { id: "C1", name: "Cab" }, "21699999999");
+      has("flow9c: ok without space", rOk, "T2akked");
+      ok("flow9c: ok without space status", (await stubDb.getBooking(id4)).status === "confirmed");
+    }
   }
 
   // Flow 9b — secretary deletes a conversation by message
