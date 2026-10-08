@@ -1481,6 +1481,61 @@ async function run() {
       bot.guardAiOutput("Nchalllah labes", false, "fallback") === "Nchallah labes");
   }
 
+  // QQ — THE GENERAL RULE (2026-10-07, seen live on 52): a question is NEVER
+  // booking info. "win mawjouda el3iyeda?" asked mid-proposal was merged into
+  // the slot and the bot re-sent the proposal without answering. Now: any
+  // question during a pending proposal is answered, the proposal stays alive.
+  // One rule for every phrasing — no more per-message whack-a-mole.
+  {
+    // unit: question detection
+    ok("qq: 'win mawjouda el3iyeda?' is a question", bot.looksLikeQuestion("win mawjouda el3iyeda?"));
+    ok("qq: '9adech el consultation' is a question", bot.looksLikeQuestion("9adech el consultation"));
+    ok("qq: 'comment ça va' is a question", bot.looksLikeQuestion("comment ça va?"));
+    ok("qq: 'شكون انت؟' is a question", bot.looksLikeQuestion("شكون انت؟"));
+    ok("qq: 'sbe7' is not a question", !bot.looksLikeQuestion("sbe7"));
+    ok("qq: '10' is not a question", !bot.looksLikeQuestion("10"));
+    ok("qq: 'ey' is not a question", !bot.looksLikeQuestion("ey"));
+    ok("qq: 'le' is not a question", !bot.looksLikeQuestion("le"));
+    ok("qq: 'ghodwa 10' is not a question", !bot.looksLikeQuestion("ghodwa 10"));
+    ok("qq: 'jem3a 10 mta3 sbe7' is not a question", !bot.looksLikeQuestion("jem3a 10 mta3 sbe7"));
+
+    // integration: the exact live scenario — proposal pending, patient asks
+    // where the clinic is. The bot must ANSWER (address), not re-send the
+    // proposal. Uses the 52/Mahjoub number so the real address is expected.
+    const q = "21600000qq1";
+    const q1 = await bot.processPatientText(q, "ghodwa 10 mta3 sbe7", "1364750653386950", "21652150093");
+    has("qq: proposal created", q1, "T7eb n7ajzlek?");
+    const q2 = await bot.processPatientText(q, "win mawjouda el3iyeda?", "1364750653386950", "21652150093");
+    has("qq: question mid-proposal gets the address", q2, "Ghannouchi");
+    ok("qq: question mid-proposal is not the bare re-send",
+      !/^D'accord — .*T7eb n7ajzlek\? Ekteb "ey"\.$/.test(q2.trim()), q2.slice(0, 70));
+    const propQ = await stubDb.getProposal(q);
+    ok("qq: proposal still alive after the question", propQ && !!propQ.slot_text, JSON.stringify(propQ && propQ.slot_text));
+    // ...and the booking thread continues: "ey" still books.
+    const q3 = await bot.processPatientText(q, "ey", "1364750653386950", "21652150093");
+    ok("qq: 'ey' after the question still advances the booking",
+      /esm|nom|chkon/i.test(q3) || /t2akked|n2akkedlek/i.test(q3), q3.slice(0, 80));
+
+    // unknown (non-FAQ) question mid-proposal: answered by the AI path, the
+    // proposal survives, never merged into the slot.
+    const qB = "21600000qq2";
+    await bot.processPatientText(qB, "ghodwa 10 mta3 sbe7", "1364750653386950", "21652150093");
+    const qB2 = await bot.processPatientText(qB, "3andkom parking?", "1364750653386950", "21652150093");
+    ok("qq: unknown question mid-proposal is not the bare re-send",
+      !/^D'accord — .*T7eb n7ajzlek\? Ekteb "ey"\.$/.test(qB2.trim()), qB2.slice(0, 70));
+    const propQB = await stubDb.getProposal(qB);
+    ok("qq: proposal alive after unknown question", propQB && !!propQB.slot_text);
+    ok("qq: unknown question not glued into the slot",
+      !/parking/i.test(propQB.slot_text || ""), propQB.slot_text);
+
+    // guards: acceptance / refusal / slot info still bypass the Q rule.
+    const qC = "21600000qq3";
+    await bot.processPatientText(qC, "ghodwa 10 mta3 sbe7", "1364750653386950", "21652150093");
+    const qC2 = await bot.processPatientText(qC, "sbe7", "1364750653386950", "21652150093");
+    ok("qq: 'sbe7' follow-up still merges (not treated as question)",
+      /T7eb n7ajzlek\?/.test(qC2), qC2.slice(0, 60));
+  }
+
   // PILOT — per-number config (2026-09-29, mechanism test): a dentist number
   // carries its own booking hours (Mon-Fri 8-16, Sat 8-13, Sun closed), its
   // own greeting (incl. Arabic-script), and a handoff rule for the other
