@@ -180,7 +180,9 @@ function buildRapportPdf({ clinicName, dateLabel, bookings }) {
           ? new Intl.DateTimeFormat("fr-FR", { timeZone: "Africa/Tunis", hour: "2-digit", minute: "2-digit" }).format(new Date(b.slot_at))
           : (b.slot || "");
         const who = b.patient_name || b.phone || "";
-        doc.text(`  ${when} — ${who} (${b.status || ""})`);
+        // Display status in French for the PDF (2026-10-08): pending -> en cours.
+        const stFr = { pending: "en cours", confirmed: "confirmé", cancelled: "annulé" }[b.status] || b.status || "";
+        doc.text(`  ${when} — ${who} (${stFr})`);
       }
     }
     doc.moveDown();
