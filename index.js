@@ -2730,10 +2730,21 @@ async function processSecretaryText(text, clinic, from) {
     }
     // Anything else: keep the pending batch, fall through to normal commands.
   }
-  let m = t.match(/^(ok|okay|na3m|ey)\s+(\d+)$/i);
-  if (m) return settleBooking(parseInt(m[2], 10), true, clinic);
-  m = t.match(/^(le|la|non|faskh|cancel)\s+(\d+)$/i);
-  if (m) return settleBooking(parseInt(m[2], 10), false, clinic);
+  // Forgiving command parsing (2026-10-08): "ok14", "le 14,13,12", "ok 5 6" all work.
+  let m = t.match(/^(ok|okay|na3m|ey)\s*(\d[\d\s,]*)$/i);
+  if (m) {
+    const ids = m[2].match(/\d+/g).map(Number);
+    const outs = [];
+    for (const id of ids) outs.push(await settleBooking(id, true, clinic));
+    return outs.join("\n");
+  }
+  m = t.match(/^(le|la|non|faskh|cancel)\s*(\d[\d\s,]*)$/i);
+  if (m) {
+    const ids = m[2].match(/\d+/g).map(Number);
+    const outs = [];
+    for (const id of ids) outs.push(await settleBooking(id, false, clinic));
+    return outs.join("\n");
+  }
   if (/^(list|liste|pending|chouf)/i.test(t)) {
     const pending = await db.getPendingBookings();
     if (!pending.length) return "Ma fama 7atta rendez-vous pending. 👍";
