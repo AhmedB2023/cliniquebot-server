@@ -2064,6 +2064,24 @@ async function run() {
     const i1s = await stubDb.getVendorLead("vixI1");
     ok("S21: vixa stage unchanged", i1s && i1s.stage === "vixa_ask_name", i1s && i1s.stage);
 
+    // Off-script mid-flow ("chnowa a7welek enti") -> AI nudge; without an AI
+    // key it falls back to the pending question, stage unchanged.
+    await stubDb.saveVendorLead("vixN1", "vixa_ask_name", JSON.stringify({ lang: "latin" }));
+    const w9a = await vix("vixN1", "chnowa a7welek enti");
+    has("S21: off-script -> pending Q (no AI key)", w9a, "Chnowa esmek?");
+    const w9as = await stubDb.getVendorLead("vixN1");
+    ok("S21: off-script stage unchanged", w9as && w9as.stage === "vixa_ask_name", w9as && w9as.stage);
+
+    // Real names still parse (no false nudge).
+    const w9b = await vix("vixN1", "Mohamed Ben Salah");
+    const w9bs = await stubDb.getVendorLead("vixN1");
+    ok("S21: name still advances", w9bs && w9bs.stage === "vixa_ask_clinic", w9bs && w9bs.stage);
+
+    // Qualify unclear -> nudge falls back to the qualify question.
+    await stubDb.saveVendorLead("vixQ1", "vixa_qualify", JSON.stringify({ lang: "latin" }));
+    const w9q = await vix("vixQ1", "hmm ???");
+    has("S21: qualify unclear -> qualify Q", w9q, "3andek 3iyada?");
+
     // "Cabinet Dr Ines" must appear in ZERO vixa replies.
     ok("S21: Ines never appears", vixReplies.every((r) => !/ines/i.test(r || "")),
       vixReplies.find((r) => /ines/i.test(r || "")));
