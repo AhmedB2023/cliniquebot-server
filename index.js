@@ -512,6 +512,24 @@ SEED_CLINICS["1364750653386950"] = SEED_MAHJOUB;
 // resolves even when only the display number is known.
 const SEED_DENTIST_BY_NUMBER = { "52150093": SEED_MAHJOUB };
 
+// ---------- Dr Marwen Jrad (Djerba) — 2nd pilot, 2026-10-09 ----------
+// +216 94 032 352, phone_number_id 1445223932002571, dentist.
+const SEED_JRAD = {
+  vertical: "dentist",
+  clinic_name: "Cabinet Dr Marwen Jrad",
+  address: "Av. Habib Bourguiba, Houmt Souk, 4180 Djerba",
+  greeting:
+    "Ahla w sahla! 👋 Ena l'assistant mta3 Cabinet Dr Marwen Jrad 🦷 — kifech najmou n3awnouk?",
+  greeting_ar:
+    "أهلا وسهلا! 👋 أنا مساعد عيادة الدكتور مروان جراد 🦷 — كيفاش نجمو نعاونوك؟",
+  hours: "Thenin lel 5mis: 09:00 - 16:00, Jom3a w Sebt: 09:00 - 14:00, Ahad: msakker",
+  booking_hours: "1:9-16;2:9-16;3:9-16;4:9-16;5:9-14;6:9-14",
+  secretary_number: "28192232",
+  other_doctor: "",
+};
+SEED_CLINICS["1445223932002571"] = SEED_JRAD;
+SEED_DENTIST_BY_NUMBER["94032352"] = SEED_JRAD;
+
 // Parse "1:8-16;2:8-16;6:8-13" into {1:[8,16],2:[8,16],6:[8,13]}.
 // Returns null on empty/invalid input (caller falls back to CLINIC_HOURS).
 function parseBookingHours(str) {
@@ -3768,7 +3786,7 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   parseSalonService, SALON_DEMO_PRICES, SALON_OFFER_LATIN, SALON_OFFER_AR,
   salonYesNo, salonOwnerPitch, salonOwnerPitchFr, handleSalonQualifyTurn,
   // VIXA sales vertical (exported for the regression test)
-  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID, SEED_MAHJOUB, SEED_CLINICS,
+  VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID, SEED_MAHJOUB, SEED_JRAD, SEED_CLINICS,
   vixaFaqKind, vixaFaqAnswer, vixaLeadTrigger, vixaFrenchFallback,
   vixaYesNo, vixaOwnerPitch, vixaOwnerPitchFr, handleVixaQualifyTurn,
   VIXA_OFFER_LATIN, VIXA_OFFER_AR, VIXA_INTRO_LATIN, VIXA_INTRO_AR };
