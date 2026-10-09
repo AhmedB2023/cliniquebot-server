@@ -27,6 +27,9 @@ const AI_API_KEY = process.env.AI_API_KEY || "";
 const AI_BASE_URL = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const SECRETARY_NUMBER = (process.env.SECRETARY_NUMBER || "").replace(/\D/g, "");
+// 2026-10-09: Global admin (Ahmed) — can send supervisor commands to ANY clinic
+// without removing the clinic's own supervisor.
+const ADMIN_NUMBER = (process.env.ADMIN_NUMBER || "17174204057").replace(/\D/g, "");
 const SALES_NOTIFY_NUMBER = (process.env.SALES_NOTIFY_NUMBER || "").replace(/\D/g, "");
 // Per-number clinic identity (single-number fallback when no per-number config exists).
 const CLINIC_NAME = process.env.CLINIC_NAME || "";
@@ -3137,8 +3140,12 @@ app.post("/webhook", async (req, res) => {
 
       // 2a) Secretary command (from her recognized number for this clinic)
       // samePhone: "+1717..." matches "717..." — country-code agnostic (2026-10-08).
-      if (clinic.secretary && samePhone(from, clinic.secretary)) {
-        console.log(`[secretary] ${from}: ${text}`);
+      // 2026-10-09: the global admin (Ahmed) can also send supervisor commands
+      // to any clinic — the clinic's own supervisor is NOT removed.
+      const isSecretary = clinic.secretary && samePhone(from, clinic.secretary);
+      const isAdmin = ADMIN_NUMBER && samePhone(from, ADMIN_NUMBER);
+      if (isSecretary || isAdmin) {
+        console.log(`[secretary] ${from}: ${text}${isAdmin && !isSecretary ? " (admin)" : ""}`);
         await db.saveMessage(from, "user", text, clinic && clinic.id);
         const reply = await processSecretaryText(text, clinic, from);
         lastWebhook = { at: new Date().toISOString(), from, text, reply };
@@ -3938,6 +3945,8 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   _pendingQuestion: pendingQuestion, _pendingDoctorAnswer: pendingDoctorAnswer,
   // viewer PIN 2026-10-09 (exported for the regression test)
   pinCookieValue, pinCookieOk, viewerPinOk, parseCookies,
+  // global admin 2026-10-09 (exported for the regression test)
+  ADMIN_NUMBER,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
