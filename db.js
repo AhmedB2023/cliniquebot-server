@@ -129,6 +129,19 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_suggestions_number ON suggestions(number_id, id);
+    -- Scheduled doctor messages (2026-10-09): "wasel <numero> <HH:MM> <message>"
+    -- Time is Tunisia time; send_at stored as UTC. Checker sends via message_docteur.
+    CREATE TABLE IF NOT EXISTS scheduled_messages (
+      id SERIAL PRIMARY KEY,
+      number_id TEXT NOT NULL,           -- bot number (phone_number_id) sending
+      patient_phone TEXT NOT NULL,
+      message TEXT NOT NULL,
+      send_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', -- pending | sent | failed
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      sent_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_sched_msg_due ON scheduled_messages(status, send_at);
   `);
   console.log("[db] Postgres ready — memory ON");
   return true;
@@ -312,6 +325,63 @@ async function saveSuggestion(numberId, fromPhone, text) {
   } catch (e) {
     console.error("[db:ERROR] saveSuggestion:", e.message);
     return null;
+  }
+}
+
+// Scheduled doctor messages (2026-10-09).
+async function saveScheduledMessage(numberId, patientPhone, message, sendAt) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const r = await p.query(
+      "INSERT INTO scheduled_messages(number_id, patient_phone, message, send_at) VALUES($1,$2,$3,$4) RETURNING id",
+      [numberId || null, String(patientPhone || ""), String(message || "").slice(0, 500), sendAt]
+    );
+    return r.rows[0].id;
+  } catch (e) {
+    console.error("[db:ERROR] saveScheduledMessage:", e.message);
+    return null;
+  }
+}
+
+async function getDueScheduledMessages() {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = await p.query(
+      "SELECT * FROM scheduled_messages WHERE status='pending' AND send_at <= NOW() ORDER BY send_at ASC LIMIT 20"
+    );
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] getDueScheduledMessages:", e.message);
+    return [];
+  }
+}
+
+async function markScheduledMessage(id, status) {
+  const p = getPool();
+  if (!p) return;
+  try {
+    await p.query(
+      "UPDATE scheduled_messages SET status=$2, sent_at=NOW() WHERE id=$1",
+      [id, status]
+    );
+  } catch (e) {
+    console.error("[db:ERROR] markScheduledMessage:", e.message);
+  }
+}
+
+async function listPendingScheduledMessages(numberId = null) {
+  const p = getPool();
+  if (!p) return [];
+  try {
+    const r = numberId
+      ? await p.query("SELECT * FROM scheduled_messages WHERE status='pending' AND number_id=$1 ORDER BY send_at ASC", [numberId])
+      : await p.query("SELECT * FROM scheduled_messages WHERE status='pending' ORDER BY send_at ASC");
+    return r.rows;
+  } catch (e) {
+    console.error("[db:ERROR] listPendingScheduledMessages:", e.message);
+    return [];
   }
 }
 
@@ -610,5 +680,9 @@ module.exports = {
   saveSuggestion,
   getSuggestions,
   deleteSuggestion,
+  saveScheduledMessage,
+  getDueScheduledMessages,
+  markScheduledMessage,
+  listPendingScheduledMessages,
   hasDb: () => !!DATABASE_URL,
 };
