@@ -3753,9 +3753,35 @@ setInterval(async () => {
 }, 30000);
 console.log(`[auto-rapport] armed: ${AUTO_RAPPORT_TIME} Tunis -> ${AUTO_RAPPORT_NUMBERS.join(",") || "(none)"}`);
 
+// 2026-10-09: persist seed clinic configs to DB on boot (insert-only).
+// Seeds make the bot work; DB rows make /api/clinics list them with viewer URLs.
+// Insert-only: never overwrites a partner-edited (or cleared) DB row.
+async function syncSeedClinics() {
+  for (const [numberId, seed] of Object.entries(SEED_CLINICS)) {
+    try {
+      const existing = await db.getClinicConfig(numberId).catch(() => null);
+      if (existing) continue;
+      await db.saveClinicConfig(numberId, {
+        clinic_name: seed.clinic_name || "",
+        address: seed.address || "",
+        greeting: seed.greeting || "",
+        hours: seed.hours || "",
+        secretary_number: String(seed.secretary_number || "").replace(/\D/g, "").slice(0, 20),
+        booking_hours: seed.booking_hours || "",
+        greeting_ar: seed.greeting_ar || "",
+        other_doctor: seed.other_doctor || "",
+        vertical: seed.vertical || "",
+      });
+      console.log(`[seed-sync] saved ${numberId} (${seed.clinic_name || "?"}) to DB`);
+    } catch (e) { console.error("[seed-sync:ERROR]", numberId, e.message); }
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
-  db.initDb(); // create tables if needed (memory + bookings)
+  // Seed sync runs after tables exist (insert-only, never overwrites edits).
+  Promise.resolve(db.initDb()).then(() => syncSeedClinics())
+    .catch((e) => console.error("[seed-sync:FATAL]", e.message));
   console.log(`AI: ${AI_API_KEY ? AI_MODEL + " via " + AI_BASE_URL : "FALLBACK mode (no AI_API_KEY)"}`);
   console.log(`WhatsApp: ${WHATSAPP_TOKEN && PHONE_NUMBER_ID ? "configured" : "NOT configured (set WHATSAPP_TOKEN + PHONE_NUMBER_ID)"}`);
   console.log(`Secretary: ${SECRETARY_NUMBER ? SECRETARY_NUMBER + " recognized" : "NOT set (set SECRETARY_NUMBER)"}`);
