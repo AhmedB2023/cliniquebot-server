@@ -2521,6 +2521,11 @@ async function run() {
       .filter((x) => String(x.url).includes("/messages"))
       .map((x) => { try { return JSON.parse(x.opts.body); } catch { return null; } })
       .filter((b) => b && b.template && b.template.name === name);
+    // 2026-10-09: regular text messages (not templates) for doctor notifications.
+    const textBodies = () => fetchCalls
+      .filter((x) => String(x.url).includes("/messages"))
+      .map((x) => { try { return JSON.parse(x.opts.body); } catch { return null; } })
+      .filter((b) => b && b.type === "text" && b.text);
     const bodyParams = (b) => {
       const c = b.template.components.find((x) => x.type === "body");
       return c ? c.parameters : [];
@@ -2562,21 +2567,17 @@ async function run() {
     ok("S23: date_time param", bp3.some((x) => x.type === "date_time" && x.parameter_name === "date"), JSON.stringify(bp3));
     ok("S23: media uploaded first", fetchCalls.some((x) => String(x.url).includes("/media")));
 
-    // 4. New booking -> notif_booking template to the supervisor (no free text)
+    // 4. New booking -> REGULAR message to the supervisor (2026-10-09: Meta
+    // rejects B2B notification templates; regular message works when 24h open).
     clearFetch();
     const bk = "21677777777";
     await mahTx(bk, "ghodwa 10 mta3 sbe7");
     await stubDb.savePatientName(bk, "Test Templati");
     const rbook = await mahTx(bk, "ey");
     has("S23: booking confirmed", rbook, "n2akkedlek");
-    const t4 = templateBodies("notif_booking");
-    ok("S23: booking sends notif_booking", t4.length === 1, `n=${t4.length}`);
-    ok("S23: notif_booking to supervisor", t4[0].to === SUP, t4[0].to);
-    const bp4 = bodyParams(t4[0]);
-    ok("S23: notif_booking has ok_id/le_id",
-      bp4.some((x) => x.parameter_name === "ok_id") && bp4.some((x) => x.parameter_name === "le_id"),
-      JSON.stringify(bp4));
-    ok("S23: notif_booking has slot", bp4.some((x) => x.parameter_name === "slot" && /10:00/.test(x.text)), JSON.stringify(bp4));
+    const t4 = textBodies().filter((b) => b.to === SUP && /Rendez-vous jdid/.test(b.text.body));
+    ok("S23: booking sends regular notif", t4.length === 1, `n=${t4.length}`);
+    ok("S23: notif has ok/le ids", /ok \d+/.test(t4[0].text.body) && /le \d+/.test(t4[0].text.body), t4[0].text.body.slice(0, 80));
 
     // 5. ey/le flow: offer armed -> "ey" -> notif_question to supervisor
     clearFetch();
@@ -2587,11 +2588,11 @@ async function run() {
     ok("S23: question offer armed", bot._pendingQuestion.has(qp));
     const rq = await mahTx(qp, "ey");
     has("S23: ey confirms escalation", rq, "s2elt el tbib");
-    const t5 = templateBodies("notif_question");
+    // 2026-10-09: notif_question as REGULAR message (Meta rejects B2B templates).
+    const t5 = textBodies().filter((b) => b.to === SUP && /Sou2el jdid/.test(b.text.body));
     ok("S23: notif_question sent", t5.length === 1, `n=${t5.length}`);
-    const bp5 = bodyParams(t5[0]);
     ok("S23: notif_question carries question",
-      bp5.some((x) => x.parameter_name === "question" && /consultation/.test(x.text)), JSON.stringify(bp5));
+      /consultation/.test(t5[0].text.body), t5[0].text.body.slice(0, 80));
     ok("S23: doctor answer armed", bot._pendingDoctorAnswer.has(MAH_ID));
 
     // 6. Supervisor free text while answer pending -> forwarded to patient
@@ -2626,17 +2627,16 @@ async function run() {
     const bp8 = bodyParams(t8[0]);
     ok("S23: message_docteur carries text", bp8[1] && /ghodwa/.test(bp8[1].text), JSON.stringify(bp8));
 
-    // 9. rapport command -> template with PDF (not a free document message)
+    // 9. rapport command -> REGULAR document (2026-10-09: Meta rejects B2B templates;
+    // the supervisor just messaged, so the 24h window is open).
     clearFetch();
     const rr = await secTx(SUP, "rapport");
     has("S23: rapport confirms", rr, "rapport");
-    const t9 = templateBodies("rapport");
-    ok("S23: rapport via template", t9.length === 1, `n=${t9.length}`);
     const freeDoc = fetchCalls.filter((x) => {
       try { const b = JSON.parse(x.opts.body); return String(x.url).includes("/messages") && b.type === "document"; }
       catch { return false; }
     });
-    ok("S23: no free document message", freeDoc.length === 0, `n=${freeDoc.length}`);
+    ok("S23: rapport via regular document", freeDoc.length === 1, `n=${freeDoc.length}`);
   }
 
   // ---- S24 — Dr Marwen Jrad (Djerba) 2nd pilot config (2026-10-09) ----
