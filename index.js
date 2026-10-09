@@ -3178,9 +3178,10 @@ app.post("/webhook", async (req, res) => {
       await sendWhatsApp(from, reply, numberId);
     }
 
-    // 3) Status updates -> just log
+    // 3) Status updates -> log with error details (2026-10-09: to debug "failed" deliveries)
     for (const st of value.statuses || []) {
-      console.log(`[status] ${st.id}: ${st.status}`);
+      const errStr = st.errors ? ` errors=${JSON.stringify(st.errors)}` : "";
+      console.log(`[status] ${st.id}: ${st.status}${errStr}`);
     }
   } catch (e) {
     console.error("[webhook:ERROR]", e.message);
