@@ -104,6 +104,8 @@ async function initDb() {
     -- Salon vertical (2026-10-01): per-number vertical — 'dentist' (default) or
     -- 'salon'. '' = unset (old rows), falls back to number seeds, then dentist.
     ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS vertical TEXT NOT NULL DEFAULT '';
+    -- Viewer PIN (2026-10-09): private PIN per clinic for the dentist viewer page.
+    ALTER TABLE clinic_configs ADD COLUMN IF NOT EXISTS viewer_pin TEXT NOT NULL DEFAULT '';
     -- Salon leads (2026-10-01): kind tags the signup source — 'clinic' (default,
     -- old rows) or 'salon' (salon demo bot lead capture).
     ALTER TABLE signups ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'clinic';
@@ -229,7 +231,7 @@ async function getClinicConfig(numberId) {
   if (!p) return null;
   try {
     const r = await p.query(
-      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical FROM clinic_configs WHERE phone_number_id=$1",
+      "SELECT phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical, viewer_pin FROM clinic_configs WHERE phone_number_id=$1",
       [numberId]
     );
     return r.rows[0] || null;
@@ -244,11 +246,12 @@ async function saveClinicConfig(numberId, cfg) {
   if (!p) return;
   try {
     await p.query(
-      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical, updated_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+      `INSERT INTO clinic_configs(phone_number_id, clinic_name, address, greeting, hours, secretary_number, booking_hours, greeting_ar, other_doctor, vertical, viewer_pin, updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
        ON CONFLICT (phone_number_id) DO UPDATE
-       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, booking_hours=$7, greeting_ar=$8, other_doctor=$9, vertical=$10, updated_at=NOW()`,
-      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || "", cfg.booking_hours || "", cfg.greeting_ar || "", cfg.other_doctor || "", cfg.vertical || ""]
+       SET clinic_name=$2, address=$3, greeting=$4, hours=$5, secretary_number=$6, booking_hours=$7, greeting_ar=$8, other_doctor=$9, vertical=$10,
+           viewer_pin=CASE WHEN $11='' THEN clinic_configs.viewer_pin WHEN $11='CLEAR' THEN '' ELSE $11 END, updated_at=NOW()`,
+      [numberId, cfg.clinic_name || "", cfg.address || "", cfg.greeting || "", cfg.hours || "", cfg.secretary_number || "", cfg.booking_hours || "", cfg.greeting_ar || "", cfg.other_doctor || "", cfg.vertical || "", cfg.viewer_pin || ""]
     );
   } catch (e) {
     console.error("[db:ERROR] clinicConfig:", e.message);
