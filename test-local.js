@@ -2624,6 +2624,26 @@ async function run() {
     ok("S23: no free document message", freeDoc.length === 0, `n=${freeDoc.length}`);
   }
 
+  // ---- S24 — Dr Marwen Jrad (Djerba) 2nd pilot config (2026-10-09) ----
+  {
+    const c1 = await bot.getClinic("1445223932002571", undefined);
+    ok("S24: Jrad vertical is dentist", c1.vertical === "dentist", c1.vertical);
+    ok("S24: Jrad name", /Marwen Jrad/.test(c1.name), c1.name);
+    ok("S24: Jrad supervisor", c1.secretary === "28192232", c1.secretary);
+    ok("S24: Jrad address Djerba", /Djerba/.test(c1.address), c1.address);
+    ok("S24: Jrad bookingHours Mon 9-16",
+      c1.bookingHours && c1.bookingHours[1] && c1.bookingHours[1][0] === 9 && c1.bookingHours[1][1] === 16,
+      JSON.stringify(c1.bookingHours));
+    ok("S24: Jrad bookingHours Sat 9-14",
+      c1.bookingHours && c1.bookingHours[6] && c1.bookingHours[6][1] === 14,
+      JSON.stringify(c1.bookingHours && c1.bookingHours[6]));
+    ok("S24: Jrad Sunday closed", !c1.bookingHours || !c1.bookingHours[0], JSON.stringify(c1.bookingHours && c1.bookingHours[0]));
+    const c2 = await bot.getClinic(undefined, "21694032352");
+    ok("S24: Jrad resolves by display number", /Marwen Jrad/.test(c2.name), c2.name);
+    const g = await bot.processPatientText("21600009941", "slm", "1445223932002571", "21694032352");
+    has("S24: Jrad greeting names clinic", g, "Marwen Jrad");
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
