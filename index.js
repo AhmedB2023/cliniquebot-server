@@ -277,7 +277,7 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
   let tName = templateName;
   if (nid === JRAD_ID) {
     // notif_booking was rejected; recreated as notif_booking2.
-    if (tName === "notif_booking") tName = "notif_booking3";
+    if (tName === "notif_booking") tName = "notif_booking7";
     if (bodyParams && !Array.isArray(bodyParams)) {
       params = Object.values(bodyParams);
       // date_time params don't work positional; send as text.
