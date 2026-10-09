@@ -2704,6 +2704,16 @@ async function run() {
     ok("S26: pin cleared in db", saved2 && saved2.viewer_pin === "", JSON.stringify(saved2 && saved2.viewer_pin));
   }
 
+  // ---- S27 — Global admin (2026-10-09): Ahmed can send supervisor commands
+  // to any clinic without removing the clinic's own supervisor ----
+  {
+    ok("S27: ADMIN_NUMBER set", bot.ADMIN_NUMBER === "17174204057", bot.ADMIN_NUMBER);
+    // samePhone matches with/without country code.
+    ok("S27: admin matches +17174204057", bot.samePhone("+17174204057", bot.ADMIN_NUMBER) === true);
+    ok("S27: admin matches 17174204057", bot.samePhone("17174204057", bot.ADMIN_NUMBER) === true);
+    ok("S27: non-admin does not match", bot.samePhone("21698800749", bot.ADMIN_NUMBER) === false);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
