@@ -17,7 +17,8 @@
 const express = require("express");
 const crypto = require("crypto");
 const app = express();
-app.use(express.json());
+// Capture the raw body: Meta's webhook signature is an HMAC of the raw bytes.
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "clinic-bot-verify-123";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
@@ -2818,6 +2819,22 @@ async function settleBooking(id, approve, clinic) {
     : `Tl4a rendez-vous #${id} (${b.slot}) w tbe3ath lel patient. ❌`;
 }
 
+// Webhook signature verification (2026-10-08): Meta signs every webhook POST
+// with X-Hub-Signature-256 = HMAC-SHA256 of the raw body, keyed by the App
+// Secret (META_APP_SECRET env). No secret configured -> skip (local tests,
+// and production until Ahmed adds the secret — zero friction rollout).
+// Wrong signature -> the POST is not from Meta -> reject.
+function verifyWebhookSignature(req) {
+  const secret = process.env.META_APP_SECRET;
+  if (!secret) return true;
+  const sig = req.get("x-hub-signature-256") || "";
+  if (!sig.startsWith("sha256=")) return false;
+  const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+  const expected = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // ---------- Webhook verification (Meta calls this once at setup) ----------
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -2833,6 +2850,10 @@ app.get("/webhook", (req, res) => {
 
 // ---------- Webhook receiver ----------
 app.post("/webhook", async (req, res) => {
+  if (!verifyWebhookSignature(req)) {
+    console.log("[webhook] rejected: bad signature (not from Meta)");
+    return res.sendStatus(403);
+  }
   res.sendStatus(200); // ack fast, process async
   try {
     const entry = req.body.entry?.[0];
@@ -3551,6 +3572,7 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
   stripCorrectionPrefix, hasTimeSignal, stripTimeTokens, stripDateTokens, hoursCheck, CLINIC_HOURS,
+  verifyWebhookSignature, // webhook signature check (2026-10-08)
   // batch fix 2026-09-25 (exported for the regression test)
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, fixKnownTypos, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
