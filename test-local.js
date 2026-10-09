@@ -576,6 +576,25 @@ async function run() {
     ok("flow9e: statement saved", (await stubDb.getSuggestions()).length === 1, "saved");
   }
 
+  // Flow 9f — webhook signature verification (2026-10-08): only Meta can POST
+  {
+    const crypto = require("crypto");
+    const fakeReq = (sig, raw) => ({ get: (h) => (h === "x-hub-signature-256" ? sig : undefined), rawBody: raw, body: {} });
+    const raw = Buffer.from('{"test":1}');
+    // no secret configured -> allow (local tests, rollout without friction)
+    delete process.env.META_APP_SECRET;
+    ok("flow9f: no secret allows", bot.verifyWebhookSignature(fakeReq("bogus", raw)) === true, "open");
+    // with secret: correct signature passes
+    process.env.META_APP_SECRET = "test-secret-123";
+    const good = "sha256=" + crypto.createHmac("sha256", "test-secret-123").update(raw).digest("hex");
+    ok("flow9f: good signature passes", bot.verifyWebhookSignature(fakeReq(good, raw)) === true, "pass");
+    ok("flow9f: bad signature rejected", bot.verifyWebhookSignature(fakeReq("sha256=deadbeef", raw)) === false, "reject");
+    ok("flow9f: missing signature rejected", bot.verifyWebhookSignature(fakeReq("", raw)) === false, "reject");
+    ok("flow9f: wrong-secret signature rejected",
+      bot.verifyWebhookSignature(fakeReq("sha256=" + crypto.createHmac("sha256", "other-secret").update(raw).digest("hex"), raw)) === false, "reject");
+    delete process.env.META_APP_SECRET;
+  }
+
   // Flow 10 — past slot is refused clearly
   {
     const p = "21600000010";
