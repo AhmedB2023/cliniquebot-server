@@ -656,6 +656,8 @@ async function getClinic(numberId, displayNumber) {
     hours: pick("hours", CLINIC_HOURS_TXT_ENV),
     bookingHours: parseBookingHours(pick("booking_hours", "")) || null,
     otherDoctor: pick("other_doctor", ""),
+    // Viewer PIN (2026-10-09): DB-only, never in seeds. Empty = no PIN required.
+    viewer_pin: (cfg && cfg.viewer_pin) || "",
     // Secretary: an empty DB value falls back to the seed (a missing supervisor
     // is never intentional — without it no supervisor command can ever run).
     // 2026-10-08: 53/VIXA seed carries Ahmed's number so "rapport" works there.
@@ -2939,9 +2941,45 @@ async function processSecretaryText(text, clinic, from) {
       ? `Tbe3ath el rapport mta3 el youm (${bookings.length} rendez-vous) ka PDF. ✅`
       : `El rapport tgenera ka PDF (${bookings.length} rendez-vous) ama ma tbe3athch — thabbet el configuration. ⚠️`;
   }
-  // 2026-10-09: "wasel <phone> <message>" — the doctor sends a one-time message
-  // to a patient via the message_docteur template (bypasses the 24h window).
-  // The bot relays the doctor's exact words; it never invents medical content.
+  // 2026-10-09: "pin 1234" — ADMIN RESET of the viewer PIN (e.g. the doctor
+  // forgot his). Normally the doctor sets his own PIN on first visit to the
+  // viewer link; Ahmed never needs to know it. "pin clear" removes it.
+  m = t.match(/^(pin|code)\s+(\d{4,12})$/i);
+  if (m) {
+    const cfg = await db.getClinicConfig(clinic.id).catch(() => null) || {};
+    await db.saveClinicConfig(clinic.id, {
+      clinic_name: cfg.clinic_name || clinic.name || "",
+      address: cfg.address || clinic.address || "",
+      greeting: cfg.greeting || "",
+      hours: cfg.hours || "",
+      secretary_number: cfg.secretary_number || clinic.secretary || "",
+      booking_hours: cfg.booking_hours || "",
+      greeting_ar: cfg.greeting_ar || "",
+      other_doctor: cfg.other_doctor || "",
+      vertical: cfg.vertical || clinic.vertical || "",
+      viewer_pin: m[2],
+    }).catch(() => {});
+    console.log(`[pin] admin reset for ${clinic.id}`);
+    return `El PIN treset: ${m[2]} 🔒\nA3tih lel tbib.`;
+  }
+  m = t.match(/^(pin|code)\s+(clear|fass5|0)$/i);
+  if (m) {
+    const cfg = await db.getClinicConfig(clinic.id).catch(() => null) || {};
+    await db.saveClinicConfig(clinic.id, {
+      clinic_name: cfg.clinic_name || clinic.name || "",
+      address: cfg.address || clinic.address || "",
+      greeting: cfg.greeting || "",
+      hours: cfg.hours || "",
+      secretary_number: cfg.secretary_number || clinic.secretary || "",
+      booking_hours: cfg.booking_hours || "",
+      greeting_ar: cfg.greeting_ar || "",
+      other_doctor: cfg.other_doctor || "",
+      vertical: cfg.vertical || clinic.vertical || "",
+      viewer_pin: "CLEAR",
+    }).catch(() => {});
+    console.log(`[pin] cleared for ${clinic.id}`);
+    return "El PIN tfass5et — el viewer ma3adch yotlob PIN. 🔓";
+  }
   m = t.match(/^(wasel|b3ath|ib3ath)\s+(\+?\d[\d\s]{7,})\s+([\s\S]+)$/i);
   if (m) {
     const patientPhone = m[2].replace(/\D/g, "");
@@ -3340,6 +3378,63 @@ function viewerUrl(req, numberId) {
   return req.protocol + "://" + req.get("host") + "/v/" + encodeURIComponent(numberId) + "/" + viewerToken(numberId);
 }
 
+// ---------- Viewer PIN (2026-10-09) ----------
+// The doctor gets a private PIN (set by Ahmed via /api/clinics). The viewer
+// page asks for it before showing conversations — so the doctor feels the
+// link is truly his, even though Ahmed also holds the URL.
+function parseCookies(req) {
+  const out = {};
+  const h = req.headers && req.headers.cookie;
+  if (!h) return out;
+  for (const part of String(h).split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function pinCookieName(numberId) { return "vpin_" + String(numberId).replace(/\D/g, ""); }
+function pinCookieValue(numberId) {
+  return crypto.createHmac("sha256", VERIFY_TOKEN).update("pin-ok:" + String(numberId)).digest("hex").slice(0, 32);
+}
+function pinCookieOk(numberId, val) {
+  const a = String(val || ""), b = pinCookieValue(numberId);
+  if (a.length !== b.length || !a) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+// Returns the clinic's PIN requirement: "" = no PIN, otherwise the PIN.
+// Checks the signed cookie — true means the viewer may proceed.
+function viewerPinOk(req, numberId, clinic) {
+  const pin = clinic && clinic.viewer_pin;
+  if (!pin) return true;
+  return pinCookieOk(numberId, parseCookies(req)[pinCookieName(numberId)]);
+}
+function pinPage(numberId, token, clinicName, mode, badPin) {
+  // mode: "create" (first visit — the doctor sets his own PIN) or "enter".
+  const create = mode === "create";
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PIN — ${escHtml(clinicName)}</title>
+<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:60px auto;padding:0 20px;text-align:center}
+input{font-size:24px;padding:10px;width:140px;text-align:center;letter-spacing:8px;margin:8px 0}
+button{font-size:18px;padding:10px 28px;background:#25d366;color:#fff;border:0;border-radius:8px;margin-top:8px}
+.err{color:#c00;margin-top:12px}.hint{color:#666;font-size:14px}</style></head><body>
+<h2>🔒 ${escHtml(clinicName)}</h2>
+${create
+  ? `<p>Choisissez votre <b>code PIN personnel</b> (4 chiffres minimum).<br><span class="hint">Vous seul le connaîtrez.</span></p>
+<form method="POST" action="/v/${encodeURIComponent(numberId)}/${encodeURIComponent(token)}/pin">
+<input name="new_pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off" autofocus placeholder="PIN">
+<br><input name="new_pin2" type="password" inputmode="numeric" maxlength="12" autocomplete="off" placeholder="Confirmer">
+<br><button type="submit">Créer mon PIN</button>
+</form>`
+  : `<p>Entrez votre code PIN pour voir les conversations.</p>
+<form method="POST" action="/v/${encodeURIComponent(numberId)}/${encodeURIComponent(token)}/pin">
+<input name="pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off" autofocus>
+<br><button type="submit">Ouvrir</button>
+</form>`}
+${badPin ? '<p class="err">PIN incorrect — réessayez.</p>' : ""}
+</body></html>`;
+}
+
 // Server-side HTML escaping (the other esc() helpers live inside page
 // template strings as client-side JS — not visible here).
 function escHtml(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
@@ -3403,12 +3498,56 @@ app.get("/v/:numberId/:token", async (req, res) => {
   const { numberId, token } = req.params;
   if (!viewerTokenOk(numberId, token)) return res.status(403).send("<h1>🔒 Lien invalide</h1>");
   const clinic = await getClinic(numberId).catch(() => null);
-  res.send(viewerPage(numberId, token, (clinic && clinic.name) || "Clinique"));
+  const cname = (clinic && clinic.name) || "Clinique";
+  // No PIN yet: the doctor creates his own on first visit (Ahmed never knows it).
+  if (!clinic || !clinic.viewer_pin) return res.send(pinPage(numberId, token, cname, "create", false));
+  if (!viewerPinOk(req, numberId, clinic)) return res.send(pinPage(numberId, token, cname, "enter", false));
+  res.send(viewerPage(numberId, token, cname));
+});
+
+// PIN submission: create (first visit) or enter. Correct -> signed cookie (30d).
+app.post("/v/:numberId/:token/pin", express.urlencoded({ extended: false }), async (req, res) => {
+  const { numberId, token } = req.params;
+  if (!viewerTokenOk(numberId, token)) return res.status(403).send("<h1>🔒 Lien invalide</h1>");
+  const clinic = await getClinic(numberId).catch(() => null);
+  const cname = (clinic && clinic.name) || "Clinique";
+  const pin = clinic && clinic.viewer_pin;
+  const body = req.body || {};
+  const grant = () => {
+    // Session cookie only: the PIN is asked every time the browser is reopened.
+    res.cookie(pinCookieName(numberId), pinCookieValue(numberId),
+      { httpOnly: true, sameSite: "lax" });
+    return res.redirect("/v/" + encodeURIComponent(numberId) + "/" + encodeURIComponent(token));
+  };
+  if (!pin) {
+    // First visit: the doctor sets his own PIN (4-12 digits, confirmed twice).
+    const p1 = String(body.new_pin || "").replace(/\D/g, "").slice(0, 12);
+    const p2 = String(body.new_pin2 || "").replace(/\D/g, "").slice(0, 12);
+    if (p1.length >= 4 && p1 === p2) {
+      const cfg = await db.getClinicConfig(numberId).catch(() => null) || {};
+      await db.saveClinicConfig(numberId, {
+        clinic_name: cfg.clinic_name || (clinic && clinic.name) || "",
+        address: cfg.address || (clinic && clinic.address) || "",
+        greeting: cfg.greeting || "", hours: cfg.hours || "",
+        secretary_number: cfg.secretary_number || (clinic && clinic.secretary) || "",
+        booking_hours: cfg.booking_hours || "", greeting_ar: cfg.greeting_ar || "",
+        other_doctor: cfg.other_doctor || "", vertical: cfg.vertical || (clinic && clinic.vertical) || "",
+        viewer_pin: p1,
+      }).catch(() => {});
+      console.log(`[pin] doctor set own PIN for ${numberId}`);
+      return grant();
+    }
+    return res.send(pinPage(numberId, token, cname, "create", true));
+  }
+  if (String(body.pin || "").trim() === String(pin)) return grant();
+  res.send(pinPage(numberId, token, cname, "enter", true));
 });
 
 app.get("/api/view/:numberId/:token/conversations", async (req, res) => {
   const { numberId, token } = req.params;
   if (!viewerTokenOk(numberId, token)) return res.status(403).json({ error: "lien ghalet" });
+  const clinic = await getClinic(numberId).catch(() => null);
+  if (!viewerPinOk(req, numberId, clinic)) return res.status(403).json({ error: "PIN lezem" });
   const conversations = await db.getConversations(numberId).catch(() => []);
   res.json({ conversations });
 });
@@ -3416,6 +3555,8 @@ app.get("/api/view/:numberId/:token/conversations", async (req, res) => {
 app.get("/api/view/:numberId/:token/conversations/:phone", async (req, res) => {
   const { numberId, token } = req.params;
   if (!viewerTokenOk(numberId, token)) return res.status(403).json({ error: "lien ghalet" });
+  const clinic = await getClinic(numberId).catch(() => null);
+  if (!viewerPinOk(req, numberId, clinic)) return res.status(403).json({ error: "PIN lezem" });
   const phone = (req.params.phone || "").replace(/\D/g, "");
   if (!phone) return res.status(400).json({ error: "bad phone" });
   const messages = await db.getFullHistory(phone, numberId).catch(() => []);
@@ -3551,6 +3692,9 @@ app.post("/api/clinics", async (req, res) => {
     greeting_ar: String(b.greeting_ar || "").slice(0, 500),
     other_doctor: String(b.other_doctor || "").slice(0, 100),
     vertical,
+    // 2026-10-09: viewer PIN — set once, kept on later updates unless replaced.
+    // Empty string = don't touch the existing PIN; "CLEAR" removes it.
+    viewer_pin: String(b.viewer_pin || "").replace(/\D/g, "").slice(0, 12) === "CLEAR" ? "CLEAR" : String(b.viewer_pin || "").replace(/\D/g, "").slice(0, 12),
   });
   res.json({ ok: true });
 });
@@ -3792,6 +3936,8 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   // templates 2026-10-09 (exported for the regression test)
   sendTemplate, supervisorNumber, rememberQuestionOffer,
   _pendingQuestion: pendingQuestion, _pendingDoctorAnswer: pendingDoctorAnswer,
+  // viewer PIN 2026-10-09 (exported for the regression test)
+  pinCookieValue, pinCookieOk, viewerPinOk, parseCookies,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
