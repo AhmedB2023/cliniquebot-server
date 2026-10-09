@@ -89,7 +89,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "d'accord, merhba bik! n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - 3andek el conversation el 9dima (history) — 9bal ma tjewb chouf chnowa t9al 9balek. MAMNOU3 t3awed nafs el sou2el 7arfiyan: ken s2elt el patient 3la 7aja w ma jewbch 3liha b wdhuh, ma t3awedch nafs el sou2el — fassrou b tari9a o5ra w a3tih mthel wadh7 (kima "jem3a 10 mta3 sbe7").
-- Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch, 9oul "n2akkedlek m3a el 3iyada".
+- Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch el jewb, 9oul 7arfiyan: "Ma 3andich el ma3louma hethi. T7eb nes2el el tbib w narja3lek? Ekteb ey." (MAMNOU3 tekteb "n2akkedlek m3a el 3iyada" wa7dou — dima a3redh el sou2el 3al tbib b "ey".)
 - EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), 9oul 7arfiyan: "3aslema! Ena l'assistant mta3 {CLINIC_NAME} — Kifech najmou n3awnouk?" (badel {CLINIC_NAME} b esm el 3iyada eli 3tithoulek mel fou9). Ken el patient kteb bel 3arabiya: "عسلامة! أنا مساعد {CLINIC_NAME} — كيفاش نجمو نعاونوك؟". MAMNOU3: ma tzidch "kif int"/"kifek"/"labes"/"chnowa 7alek" — ma tes2elch 3la 7al el patient, od5el direct fel moudhou3. MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
@@ -122,7 +122,7 @@ async function sendWhatsApp(to, text, numberId) {
   const nid = numberId || DEFAULT_NUMBER_ID;
   if (!WHATSAPP_TOKEN || !nid) {
     console.log(`[send:SKIP] no token/phone_number_id. Would send to ${to}: ${text}`);
-    return;
+    return false;
   }
   try {
     const url = `https://graph.facebook.com/v21.0/${nid}/messages`;
@@ -140,10 +140,12 @@ async function sendWhatsApp(to, text, numberId) {
       }),
     });
     const data = await res.json();
-    if (!res.ok) console.error("[send:ERROR]", JSON.stringify(data));
-    else console.log(`[send:OK] to ${to}: ${text.slice(0, 60)}...`);
+    if (!res.ok) { console.error("[send:ERROR]", JSON.stringify(data)); return false; }
+    console.log(`[send:OK] to ${to}: ${text.slice(0, 60)}...`);
+    return true;
   } catch (e) {
     console.error("[send:ERROR]", e.message);
+    return false;
   }
 }
 
@@ -230,6 +232,85 @@ async function sendWhatsAppDocument(to, pdfBuffer, filename, caption, numberId) 
   }
 }
 
+// ---------- Template messages (2026-10-09) ----------
+// Templates bypass the 24h customer-service window: they always deliver,
+// even when the recipient hasn't messaged the bot recently. Used for
+// supervisor notifications (notif_booking, notif_question, rapport) and
+// doctor->patient messages (message_docteur).
+// bodyParams: {param_name: value} for named params, or [v1, v2...] positional.
+// opts.headerDocument: {buffer, filename} -> uploaded, sent as document header.
+// opts.dateParams: [names...] -> those named params sent as date_time type.
+// opts.language: template language code (default "fr").
+async function uploadMedia(buffer, filename, numberId) {
+  const nid = numberId || DEFAULT_NUMBER_ID;
+  if (!WHATSAPP_TOKEN || !nid) return null;
+  try {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("file", new Blob([buffer], { type: "application/pdf" }), filename || "file.pdf");
+    const up = await fetch(`https://graph.facebook.com/v21.0/${nid}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: form,
+    });
+    const data = await up.json();
+    if (!up.ok || !data.id) { console.error("[uploadMedia:ERROR]", JSON.stringify(data)); return null; }
+    return data.id;
+  } catch (e) { console.error("[uploadMedia:ERROR]", e.message); return null; }
+}
+
+async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
+  const nid = numberId || DEFAULT_NUMBER_ID;
+  if (!WHATSAPP_TOKEN || !nid) {
+    console.log(`[template:SKIP] no token/phone_number_id. Would send ${templateName} to ${to}`);
+    return false;
+  }
+  try {
+    const components = [];
+    if (opts && opts.headerDocument) {
+      const mediaId = await uploadMedia(opts.headerDocument.buffer, opts.headerDocument.filename, nid);
+      if (!mediaId) return false;
+      components.push({
+        type: "header",
+        parameters: [{ type: "document", document: { id: mediaId, filename: opts.headerDocument.filename || "rapport.pdf" } }],
+      });
+    }
+    const dateParams = new Set((opts && opts.dateParams) || []);
+    const bodyParameters = [];
+    if (Array.isArray(bodyParams)) {
+      for (const v of bodyParams) bodyParameters.push({ type: "text", text: String(v) });
+    } else {
+      for (const [k, v] of Object.entries(bodyParams || {})) {
+        if (dateParams.has(k)) bodyParameters.push({ type: "date_time", parameter_name: k, date_time: { fallback_value: String(v) } });
+        else bodyParameters.push({ type: "text", parameter_name: k, text: String(v) });
+      }
+    }
+    if (bodyParameters.length) components.push({ type: "body", parameters: bodyParameters });
+    const res = await fetch(`https://graph.facebook.com/v21.0/${nid}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: { name: templateName, language: { code: (opts && opts.language) || "fr" }, components },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { console.error("[template:ERROR]", templateName, JSON.stringify(data)); return false; }
+    console.log(`[template:OK] ${templateName} to ${to}`);
+    return true;
+  } catch (e) {
+    console.error("[template:ERROR]", templateName, e.message);
+    return false;
+  }
+}
+
+// Supervisor number for THIS clinic (per-number config), falling back to global.
+function supervisorNumber(clinic) {
+  return (clinic && clinic.secretary) || SECRETARY_NUMBER || null;
+}
+
 // Normalize a phone for comparison: strip the country code so "+1 717..." and
 // "717..." (or "+216 98..." and "98...") always match. General rule, not per-number.
 function normPhoneForCompare(s) {
@@ -248,6 +329,15 @@ function samePhone(a, b) {
 // lists what it found, and saves on "ey". One photo a day, no typing.
 // Shared code: works on every line, each with its own supervisor.
 const pendingAgenda = new Map(); // supervisorPhone -> [{name, date, time, unsure}]
+
+// ---------- Hard-question escalation (2026-10-09) ----------
+// The bot offers "T7eb nes2el el tbib? Ekteb ey." -> patient "ey" forwards the
+// question to the supervisor via the notif_question template (bypasses 24h).
+// The supervisor's next free-text reply becomes the doctor's answer to the patient.
+const pendingQuestion = new Map(); // patientPhone -> {question, clinicId, ts}
+const pendingDoctorAnswer = new Map(); // clinicId -> {patientPhone, question, ts}
+const QUESTION_TTL_MS = 30 * 60 * 1000; // patient offer expires after 30 min
+const ANSWER_TTL_MS = 2 * 3600 * 1000; // doctor answer window: 2h
 
 async function downloadWhatsAppMedia(mediaId) {
   if (!WHATSAPP_TOKEN || !mediaId) return null;
@@ -1013,7 +1103,7 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 - ACCUEIL : si le patient vous salue (bonjour/salut...), dites exactement : "Bonjour ! Je suis l'assistant de {CLINIC_NAME} — comment puis-je vous aider ?" (remplacez {CLINIC_NAME} par le nom de la clinique). INTERDIT de demander "comment allez-vous" — allez droit au but.
 - Vous aidez pour : prise de rendez-vous, horaires, adresse, prix.
 - INTERDIT : médicaments, symptômes, diagnostic, conseil médical. Pour une question médicale, dites : "Pour les questions médicales, seul le docteur peut répondre — voulez-vous prendre rendez-vous ?"
-- N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites "Je vérifie avec la clinique et je reviens vers vous."
+- N'inventez jamais d'informations (heure, adresse, prix) : si vous ne savez pas, dites exactement : "Je ne sais pas. Voulez-vous que je demande au docteur ? Écrivez oui." (INTERDIT de dire "je vérifie" seul — proposez toujours de demander au docteur avec "oui".)
 - Ne confirmez jamais un rendez-vous définitivement seul : si le patient accepte un créneau, dites "D'accord, je vous confirme et je reviens vers vous" — la confirmation finale vient de la secrétaire.
 - Ne vous excusez jamais de parler français : le patient vous a écrit en français. Répondez directement et utilement.`;
 
@@ -1306,10 +1396,20 @@ async function finishBooking(phone, p, name, clinic) {
     reply = ar
       ? `${hi} نأكدلك رونديفو (${p.display}) ونرجعلك.`
       : `${hi} n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
-    await notifySecretary(
-      `⏳ Rendez-vous jdid mel bot:\nEsm: ${shownName || "(ma 3tach esmou)"}\nMel: ${phone}\nWa9t: ${p.display}\nBech tvalidih, ekteb: ok ${id}\nBech tl4ih, ekteb: le ${id}`,
-      clinic
-    );
+    // 2026-10-09: booking notification via template (bypasses the 24h window —
+    // always delivers, even if the supervisor hasn't messaged recently).
+    {
+      const sup = supervisorNumber(clinic);
+      if (sup) {
+        await sendTemplate(sup, "notif_booking", {
+          patient_name: shownName || phone,
+          patient_phone: phone,
+          slot: p.display,
+          ok_id: String(id),
+          le_id: String(id),
+        }, {}, clinic && clinic.id).catch(() => {});
+      }
+    }
   }
   // F4) two appointments: the first is booked — prompt for the second one.
   const extra = multiBooking.get(phone) || 0;
@@ -2593,11 +2693,51 @@ function looksLikePureGreeting(text) {
 // displayNumber: the bot number's display_phone_number from the webhook
 // metadata (optional) — used to resolve the salon vertical without a
 // phone_number_id.
+// 2026-10-09: after an AI reply, detect the "ask the doctor?" offer so the
+// patient's next "ey" can be routed to the supervisor via notif_question.
+function rememberQuestionOffer(phone, reply, question, clinic) {
+  if (!reply || !question) return;
+  if (/nes2el el tbib/i.test(reply) || /je demande au docteur/i.test(reply)) {
+    pendingQuestion.set(phone, { question: String(question).slice(0, 500), clinicId: clinic && clinic.id, ts: Date.now() });
+    console.log(`[question] offer armed for ${phone}`);
+  }
+}
+
 async function processPatientText(phone, text, numberId, displayNumber) {
   const clinic = await getClinic(numberId, displayNumber);
   const vertical = (clinic && clinic.vertical) || "dentist";
   const history = await db.getHistory(phone); // last 15 messages
   await db.saveMessage(phone, "user", text, clinic && clinic.id);
+
+  // 2026-10-09: pending hard-question escalation. The bot offered
+  // "T7eb nes2el el tbib? Ekteb ey." — "ey" forwards via notif_question.
+  if (vertical === "dentist" && pendingQuestion.has(phone)) {
+    const pq = pendingQuestion.get(phone);
+    pendingQuestion.delete(phone); // one shot: any reply consumes the offer
+    const t = (text || "").trim();
+    if (Date.now() - pq.ts <= QUESTION_TTL_MS) {
+      const ar = await scriptAr(phone, text);
+      if (/^(ey|oui|na3m|yes|aye)$/i.test(t)) {
+        const sup = supervisorNumber(clinic);
+        const nm = await db.getPatientName(phone).catch(() => null);
+        if (sup) {
+          await sendTemplate(sup, "notif_question", {
+            patient_name: nm || phone,
+            question: String(pq.question || "").slice(0, 500),
+          }, {}, clinic && clinic.id).catch(() => {});
+          pendingDoctorAnswer.set(clinic.id, { patientPhone: phone, question: pq.question, ts: Date.now() });
+          console.log(`[question] forwarded to supervisor for ${phone}`);
+        }
+        return (await say(phone, ar
+          ? "تمام، سألت الطبيب — نرجعلك بالجواب."
+          : "D'accord, s2elt el tbib — narja3lek bel jewb.", clinic)).reply;
+      }
+      if (/^(le|la|non|no)$/i.test(t)) {
+        return (await say(phone, ar ? "Ok، ما مشكلة." : "Ok, ma mochkla.", clinic)).reply;
+      }
+    }
+    // Expired or anything else: fall through to normal handling (offer consumed).
+  }
 
   // Explicit script request ("aktebli bel 3arbi" / "aktebli b 7rouf"):
   // remembered per patient, honored from this message on.
@@ -2684,6 +2824,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours)
       : frenchFallback(text, clinic.name); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply, clinic && clinic.id);
+    rememberQuestionOffer(phone, freply, text, clinic);
     return freply;
   }
 
@@ -2704,6 +2845,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   const useAr = await scriptAr(phone, text);
   const reply = await aiReply(text, history, pname, clinic.name, useAr, "", null, clinic.address, clinic.hours);
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
+  rememberQuestionOffer(phone, reply, text, clinic);
   return reply;
 }
 
@@ -2769,11 +2911,29 @@ async function processSecretaryText(text, clinic, from) {
       bookings,
     }).catch(() => null);
     if (!pdf) return "Ma najjamtch ngeneri el PDF. ❌";
-    const sent = await sendWhatsAppDocument(from, pdf, `rapport-${day}.pdf`, `Rapport du ${day}`, clinic && clinic.id);
+    // 2026-10-09: rapport via template (document header) — bypasses the 24h window.
+    const sent = await sendTemplate(from, "rapport",
+      { date: day, count: String(bookings.length) },
+      { dateParams: ["date"], headerDocument: { buffer: pdf, filename: `rapport-${day}.pdf` } },
+      clinic && clinic.id).catch(() => false);
     console.log(`[rapport] ${bookings.length} bookings -> ${from} (sent=${sent})`);
     return sent
       ? `Tbe3ath el rapport mta3 el youm (${bookings.length} rendez-vous) ka PDF. ✅`
       : `El rapport tgenera ka PDF (${bookings.length} rendez-vous) ama ma tbe3athch — thabbet el configuration. ⚠️`;
+  }
+  // 2026-10-09: "wasel <phone> <message>" — the doctor sends a one-time message
+  // to a patient via the message_docteur template (bypasses the 24h window).
+  // The bot relays the doctor's exact words; it never invents medical content.
+  m = t.match(/^(wasel|b3ath|ib3ath)\s+(\+?\d[\d\s]{7,})\s+([\s\S]+)$/i);
+  if (m) {
+    const patientPhone = m[2].replace(/\D/g, "");
+    const msgText = m[3].trim().slice(0, 500);
+    if (!patientPhone || !msgText) return "El format: wasel <numero> <el message>.";
+    const nm = await db.getPatientName(patientPhone).catch(() => null);
+    const sent = await sendTemplate(patientPhone, "message_docteur",
+      [nm || "cher patient", msgText], {}, clinic && clinic.id).catch(() => false);
+    console.log(`[wasel] doctor -> ${patientPhone} (sent=${sent})`);
+    return sent ? "Woslet lel patient. ✅" : "Ma tbe3athch — thabbet el configuration. ⚠️";
   }
   // GENERAL RULE (2026-10-08, live bug): a question is never a suggestion.
   // The supervisor asking "chnowa ta3mel tawa?" got "modification en cours" —
@@ -2787,6 +2947,19 @@ async function processSecretaryText(text, clinic, from) {
       return `El tawa: ${pending.length} rendez-vous en cours, ${todays.length} lyoum (${day}).`;
     }
     return "Ma najjamch njeweb 3la el sou2el hetha. El commandes: ok <numero>, le <numero>, list, rapport.";
+  }
+  // 2026-10-09: pending doctor answer. The supervisor's free-text reply is the
+  // doctor's answer to the patient's escalated question — forward it, don't
+  // file it as a suggestion. Expires after 2h.
+  if (clinic && clinic.id && pendingDoctorAnswer.has(clinic.id)) {
+    const pa = pendingDoctorAnswer.get(clinic.id);
+    pendingDoctorAnswer.delete(clinic.id); // one shot
+    if (Date.now() - pa.ts <= ANSWER_TTL_MS) {
+      const sent = await sendWhatsApp(pa.patientPhone, t, clinic.id).catch(() => false);
+      console.log(`[answer] doctor -> patient ${pa.patientPhone} (sent=${sent})`);
+      return sent ? "Woslet lel patient. ✅" : "Ma tbe3athch lel patient — thabbet el configuration. ⚠️";
+    }
+    // Expired: fall through to normal handling.
   }
   // Anything else from the supervisor = a suggestion ("badel hedhi / a3mel hedhi").
   // Saved for Ahmed's /suggestions page; the bot only acknowledges.
@@ -3541,7 +3714,11 @@ async function sendAutoRapports() {
       const bookings = await db.getBookingsForDay(clinic.id, day).catch(() => []);
       const pdf = await buildRapportPdf({ clinicName: clinic.name || "Clinique", dateLabel: day, bookings }).catch(() => null);
       if (!pdf) { console.log(`[auto-rapport] skip ${numberId}: pdf failed`); continue; }
-      const ok = await sendWhatsAppDocument(clinic.secretary, pdf, `rapport-${day}.pdf`, `🤖 Rapport automatique du ${day}`, numberId);
+      // 2026-10-09: template with document header — always delivers (no 24h limit).
+      const ok = await sendTemplate(clinic.secretary, "rapport",
+        { date: day, count: String(bookings.length) },
+        { dateParams: ["date"], headerDocument: { buffer: pdf, filename: `rapport-${day}.pdf` } },
+        numberId).catch(() => false);
       console.log(`[auto-rapport] ${numberId} -> ${clinic.secretary}: ${ok ? "sent" : "FAILED"}`);
     } catch (e) { console.error(`[auto-rapport:ERROR] ${numberId}`, e.message); }
   }
@@ -3568,6 +3745,9 @@ app.listen(PORT, () => {
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
 module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, formatFeedback, submitFeedback, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+  // templates 2026-10-09 (exported for the regression test)
+  sendTemplate, supervisorNumber, rememberQuestionOffer,
+  _pendingQuestion: pendingQuestion, _pendingDoctorAnswer: pendingDoctorAnswer,
   // batch fix 2026-09-24 detectors (exported for the regression test)
   looksLikeEmergency, looksLikeFrustration, looksLikeCancellation, faqKind, looksLikeQuestion, looksLikeWalkin,
   looksLikeTwoAppointments, looksLikeReschedule, looksLikeThirdPartyQuery, looksLikeBookingIntent,
