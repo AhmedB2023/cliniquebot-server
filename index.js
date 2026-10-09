@@ -268,22 +268,33 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
     console.log(`[template:SKIP] no token/phone_number_id. Would send ${templateName} to ${to}`);
     return false;
   }
+  // 2026-10-09: Jrad's WABA templates use NUMBERED params ({{1}}, {{2}}) because
+  // Meta's UI rejects named params. Convert named -> positional for his number.
+  // Other WABAs (with API-created named-param templates) are untouched.
+  const JRAD_ID = "1445223932002571";
+  let params = bodyParams;
+  let o = opts || {};
+  if (nid === JRAD_ID && bodyParams && !Array.isArray(bodyParams)) {
+    params = Object.values(bodyParams);
+    // date_time params don't work positional; send as text.
+    o = { ...o, dateParams: [] };
+  }
   try {
     const components = [];
-    if (opts && opts.headerDocument) {
-      const mediaId = await uploadMedia(opts.headerDocument.buffer, opts.headerDocument.filename, nid);
+    if (o && o.headerDocument) {
+      const mediaId = await uploadMedia(o.headerDocument.buffer, o.headerDocument.filename, nid);
       if (!mediaId) return false;
       components.push({
         type: "header",
-        parameters: [{ type: "document", document: { id: mediaId, filename: opts.headerDocument.filename || "rapport.pdf" } }],
+        parameters: [{ type: "document", document: { id: mediaId, filename: o.headerDocument.filename || "rapport.pdf" } }],
       });
     }
-    const dateParams = new Set((opts && opts.dateParams) || []);
+    const dateParams = new Set((o && o.dateParams) || []);
     const bodyParameters = [];
-    if (Array.isArray(bodyParams)) {
-      for (const v of bodyParams) bodyParameters.push({ type: "text", text: String(v) });
+    if (Array.isArray(params)) {
+      for (const v of params) bodyParameters.push({ type: "text", text: String(v) });
     } else {
-      for (const [k, v] of Object.entries(bodyParams || {})) {
+      for (const [k, v] of Object.entries(params || {})) {
         if (dateParams.has(k)) bodyParameters.push({ type: "date_time", parameter_name: k, date_time: { fallback_value: String(v) } });
         else bodyParameters.push({ type: "text", parameter_name: k, text: String(v) });
       }
@@ -296,7 +307,7 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
         messaging_product: "whatsapp",
         to,
         type: "template",
-        template: { name: templateName, language: { code: (opts && opts.language) || "fr" }, components },
+        template: { name: templateName, language: { code: (o && o.language) || "fr" }, components },
       }),
     });
     const data = await res.json();
