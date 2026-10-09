@@ -117,7 +117,13 @@ function makeStubDb() {
       return 0;
     },
     getClinicConfig: async (numberId) => clinicConfigs.get(numberId) || null,
-    saveClinicConfig: async (numberId, cfg) => { clinicConfigs.set(numberId, { phone_number_id: numberId, ...cfg }); },
+    // Mirrors db.js: viewer_pin is sticky ("" keeps), "CLEAR" removes; other
+    // fields merge (UPSERT updates only supplied columns in practice).
+    saveClinicConfig: async (numberId, cfg) => {
+      const prev = clinicConfigs.get(numberId) || {};
+      const pin = cfg.viewer_pin === "" ? (prev.viewer_pin || "") : cfg.viewer_pin === "CLEAR" ? "" : (cfg.viewer_pin !== undefined ? cfg.viewer_pin : (prev.viewer_pin || ""));
+      clinicConfigs.set(numberId, { ...prev, phone_number_id: numberId, ...cfg, viewer_pin: pin });
+    },
     listClinicConfigs: async () => [...clinicConfigs.values()],
     getScriptPref: async (phone) => scriptPrefs.get(phone) || null,
     saveScriptPref: async (phone, script) => { scriptPrefs.set(phone, script); },
@@ -1871,14 +1877,23 @@ async function run() {
     const rThBad = await fetch(`${base}/api/view/${PILOT}/0/conversations/21600000901`);
     ok("vw: thread 403 with bad token", rThBad.status === 403, `status=${rThBad.status}`);
 
-    // HTML page
+    // HTML page — no PIN set yet -> PIN creation form (the doctor sets his own).
     const rPage = await fetch(`${base}/v/${PILOT}/${tokP}`);
     ok("vw: viewer page 200", rPage.status === 200, `status=${rPage.status}`);
     const pageTxt = await rPage.text();
-    ok("vw: page shows clinic name", pageTxt.includes("Cabinet Viewer Test"), pageTxt.slice(0, 120));
-    ok("vw: page is read-only (no delete)", !/fassa5|delete/i.test(pageTxt));
+    ok("vw: no PIN -> creation form", pageTxt.includes("Créer mon PIN"), pageTxt.slice(0, 200));
+    ok("vw: page shows clinic name", pageTxt.includes("Cabinet Viewer Test"), pageTxt.slice(0, 200));
+    // Set a PIN, then the viewer page (with its script) requires the PIN cookie.
+    await stubDb.saveClinicConfig(PILOT, { viewer_pin: "4242" });
+    const rPagePin = await fetch(`${base}/v/${PILOT}/${tokP}`);
+    ok("vw: PIN set, no cookie -> PIN form", (await rPagePin.text()).includes("Entrez votre code PIN"));
+    const rPageOpen = await fetch(`${base}/v/${PILOT}/${tokP}`,
+      { headers: { cookie: `vpin_${PILOT}=${bot.pinCookieValue(PILOT)}` } });
+    const pageTxt2 = await rPageOpen.text();
+    ok("vw: PIN cookie -> viewer page", pageTxt2.includes("Cabinet Viewer Test"), pageTxt2.slice(0, 200));
+    ok("vw: page is read-only (no delete)", !/fassa5|delete/i.test(pageTxt2));
     // the page's inline script must be syntactically valid — a broken script = blank page
-    const scriptM = pageTxt.match(/<script>([\s\S]*)<\/script>/);
+    const scriptM = pageTxt2.match(/<script>([\s\S]*)<\/script>/);
     let scriptOk = false, scriptErr = "no <script> block";
     try { if (scriptM) { new Function(scriptM[1]); scriptOk = true; scriptErr = ""; } }
     catch (e) { scriptErr = e.message; }
@@ -2642,6 +2657,51 @@ async function run() {
     ok("S24: Jrad resolves by display number", /Marwen Jrad/.test(c2.name), c2.name);
     const g = await bot.processPatientText("21600009941", "slm", "1445223932002571", "21694032352");
     has("S24: Jrad greeting names clinic", g, "Marwen Jrad");
+  }
+
+  // ---- S25 — Viewer PIN (2026-10-09): the doctor's private code ----
+  {
+    const NID = "1445223932002571"; // Jrad
+    // No PIN set -> viewer open (cookie irrelevant).
+    ok("S25: no PIN -> open", bot.viewerPinOk({ headers: {} }, NID, { viewer_pin: "" }) === true);
+    ok("S25: no clinic -> open", bot.viewerPinOk({ headers: {} }, NID, null) === true);
+    // PIN set, no cookie -> blocked.
+    const clinic = { viewer_pin: "1234" };
+    ok("S25: PIN set, no cookie -> blocked", bot.viewerPinOk({ headers: {} }, NID, clinic) === false);
+    // PIN set, wrong cookie -> blocked.
+    ok("S25: wrong cookie -> blocked",
+      bot.viewerPinOk({ headers: { cookie: "vpin_1445223932002571=wrong" } }, NID, clinic) === false);
+    // PIN set, correct signed cookie -> open.
+    const good = bot.pinCookieValue(NID);
+    ok("S25: signed cookie -> open",
+      bot.viewerPinOk({ headers: { cookie: `vpin_1445223932002571=${good}` } }, NID, clinic) === true);
+    // Cookie can't be forged without the server secret.
+    ok("S25: forged cookie -> blocked",
+      bot.pinCookieOk(NID, "00000000000000000000000000000000") === false);
+    // Cookie parsing handles multiple cookies.
+    const parsed = bot.parseCookies({ headers: { cookie: "a=1; vpin_1445223932002571=" + good + "; b=2" } });
+    ok("S25: cookie parsing", parsed["vpin_1445223932002571"] === good && parsed.a === "1", JSON.stringify(parsed));
+  }
+
+  // ---- S26 — "pin" supervisor command (2026-10-09) ----
+  {
+    const MAH_ID = "1364750653386950";
+    const SUP = "98800749";
+    const secTx = async (ph, txt) => bot.processSecretaryText(txt, await bot.getClinic(MAH_ID, undefined), ph);
+    // Set a PIN.
+    const r1 = await secTx(SUP, "pin 5678");
+    has("S26: pin set confirms", r1, "5678");
+    const saved = await stubDb.getClinicConfig(MAH_ID);
+    ok("S26: pin saved to db", saved && saved.viewer_pin === "5678", JSON.stringify(saved && saved.viewer_pin));
+    // The viewer now requires the PIN.
+    const c1 = await bot.getClinic(MAH_ID, undefined);
+    ok("S26: clinic carries pin", c1.viewer_pin === "5678", c1.viewer_pin);
+    ok("S26: viewer blocked without cookie", bot.viewerPinOk({ headers: {} }, MAH_ID, c1) === false);
+    // Clear the PIN.
+    const r2 = await secTx(SUP, "pin clear");
+    has("S26: pin clear confirms", r2, "tfass5et");
+    const saved2 = await stubDb.getClinicConfig(MAH_ID);
+    ok("S26: pin cleared in db", saved2 && saved2.viewer_pin === "", JSON.stringify(saved2 && saved2.viewer_pin));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
