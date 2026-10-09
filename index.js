@@ -2995,11 +2995,25 @@ async function processSecretaryText(text, clinic, from) {
     console.log(`[pin] cleared for ${clinic.id}`);
     return "El PIN tfass5et — el viewer ma3adch yotlob PIN. 🔓";
   }
-  m = t.match(/^(wasel|b3ath|ib3ath)\s+(\+?\d[\d\s]{7,})\s+([\s\S]+)$/i);
+  // 2026-10-09: wasel supports scheduling: "wasel <numero> <HH:MM> <message>"
+  // Time is Tunisia time. Without HH:MM, sends immediately (existing behavior).
+  m = t.match(/^(wasel|b3ath|ib3ath)\s+(\+?\d[\d\s]{7,}?)\s+(?:(\d{1,2}):(\d{2})\s+)?([\s\S]+)$/i);
   if (m) {
     const patientPhone = m[2].replace(/\D/g, "");
-    const msgText = m[3].trim().slice(0, 500);
-    if (!patientPhone || !msgText) return "El format: wasel <numero> <el message>.";
+    const schedHH = m[3] ? parseInt(m[3], 10) : null;
+    const schedMM = m[4] ? parseInt(m[4], 10) : null;
+    const msgText = m[5].trim().slice(0, 500);
+    if (!patientPhone || !msgText) return "El format: wasel <numero> <el message>. Walla: wasel <numero> <HH:MM> <el message> (b wa9t tounes).";
+    // Scheduled?
+    if (schedHH !== null && schedMM >= 0 && schedMM < 60 && schedHH >= 0 && schedHH < 24) {
+      const sendAt = tunisTimeToUTC(schedHH, schedMM);
+      if (!sendAt) return "El wa9t ghalet. Mithal: wasel 216XXXXXXXX 19:00 el message.";
+      const sid = await db.saveScheduledMessage(clinic && clinic.id, patientPhone, msgText, sendAt).catch(() => null);
+      if (!sid) return "Ma t7afdhach — thabbet el configuration. ⚠️";
+      const tunisLabel = `${String(schedHH).padStart(2, "0")}:${String(schedMM).padStart(2, "0")}`;
+      console.log(`[wasel:scheduled] #${sid} -> ${patientPhone} at ${tunisLabel} Tunis`);
+      return `Tebrmej lel ${tunisLabel} (wa9t tounes). ✅`;
+    }
     const nm = await db.getPatientName(patientPhone).catch(() => null);
     const sent = await sendTemplate(patientPhone, "message_docteur",
       [nm || "cher patient", msgText], {}, clinic && clinic.id).catch(() => false);
@@ -3887,6 +3901,35 @@ function tunisHHMM(d = new Date()) {
   return new Intl.DateTimeFormat("fr-FR", { timeZone: "Africa/Tunis", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
 }
 
+// 2026-10-09: "wasel <numero> <HH:MM> <message>" — HH:MM is Tunisia time.
+// Returns a Date (UTC) for the next occurrence of HH:MM Tunis. Tunisia is UTC+1 year-round.
+function tunisTimeToUTC(hh, mm) {
+  try {
+    const tunisDate = todayInTunis(); // "YYYY-MM-DD" in Tunis
+    const d = new Date(`${tunisDate}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00+01:00`);
+    if (isNaN(d.getTime())) return null;
+    if (d <= new Date()) d.setDate(d.getDate() + 1); // already passed today -> tomorrow
+    return d;
+  } catch { return null; }
+}
+
+// 2026-10-09: sends due scheduled wasel messages via message_docteur template.
+async function sendDueScheduledMessages() {
+  const due = await db.getDueScheduledMessages().catch(() => []);
+  for (const s of due) {
+    try {
+      const nm = await db.getPatientName(s.patient_phone).catch(() => null);
+      const sent = await sendTemplate(s.patient_phone, "message_docteur",
+        [nm || "cher patient", s.message], {}, s.number_id).catch(() => false);
+      await db.markScheduledMessage(s.id, sent ? "sent" : "failed").catch(() => {});
+      console.log(`[wasel:scheduled] #${s.id} -> ${s.patient_phone} (sent=${sent})`);
+    } catch (e) {
+      console.error(`[wasel:scheduled:ERROR] #${s.id}`, e.message);
+      await db.markScheduledMessage(s.id, "failed").catch(() => {});
+    }
+  }
+}
+
 async function sendAutoRapports() {
   const day = todayInTunis();
   for (const numberId of AUTO_RAPPORT_NUMBERS) {
@@ -3913,6 +3956,8 @@ setInterval(async () => {
       console.log(`[auto-rapport] firing (target ${AUTO_RAPPORT_TIME} Tunis)`);
       await sendAutoRapports();
     }
+    // 2026-10-09: fire due scheduled wasel messages.
+    await sendDueScheduledMessages();
   } catch (e) { console.error("[auto-rapport:TICK_ERROR]", e.message); }
 }, 30000);
 console.log(`[auto-rapport] armed: ${AUTO_RAPPORT_TIME} Tunis -> ${AUTO_RAPPORT_NUMBERS.join(",") || "(none)"}`);
