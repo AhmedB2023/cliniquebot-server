@@ -1440,13 +1440,11 @@ async function finishBooking(phone, p, name, clinic) {
     {
       const sup = supervisorNumber(clinic);
       if (sup) {
-        await sendTemplate(sup, "notif_booking", {
-          patient_name: shownName || phone,
-          patient_phone: phone,
-          slot: p.display,
-          ok_id: String(id),
-          le_id: String(id),
-        }, {}, clinic && clinic.id).catch(() => {});
+        // 2026-10-09: Send as REGULAR message (not template) — Meta rejects
+        // B2B notification templates. Works when the 24h window is open
+        // (the doctor uses the bot daily). The booking is saved regardless.
+        const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
+        await sendWhatsApp(sup, notifMsg, clinic && clinic.id).catch(() => {});
       }
     }
   }
@@ -2760,10 +2758,9 @@ async function processPatientText(phone, text, numberId, displayNumber) {
         const sup = supervisorNumber(clinic);
         const nm = await db.getPatientName(phone).catch(() => null);
         if (sup) {
-          await sendTemplate(sup, "notif_question", {
-            patient_name: nm || phone,
-            question: String(pq.question || "").slice(0, 500),
-          }, {}, clinic && clinic.id).catch(() => {});
+          // 2026-10-09: Regular message (not template) — Meta rejects B2B templates.
+          const qMsg = `❓ Sou2el jdid mel patient ${nm || phone}: ${String(pq.question || "").slice(0, 500)} bark. El patient yestanna el jewb mte3ek.`;
+          await sendWhatsApp(sup, qMsg, clinic && clinic.id).catch(() => {});
           pendingDoctorAnswer.set(clinic.id, { patientPhone: phone, question: pq.question, ts: Date.now() });
           console.log(`[question] forwarded to supervisor for ${phone}`);
         }
@@ -2950,11 +2947,10 @@ async function processSecretaryText(text, clinic, from) {
       bookings,
     }).catch(() => null);
     if (!pdf) return "Ma najjamtch ngeneri el PDF. ❌";
-    // 2026-10-09: rapport via template (document header) — bypasses the 24h window.
-    const sent = await sendTemplate(from, "rapport",
-      { date: day, count: String(bookings.length) },
-      { dateParams: ["date"], headerDocument: { buffer: pdf, filename: `rapport-${day}.pdf` } },
-      clinic && clinic.id).catch(() => false);
+    // 2026-10-09: rapport as REGULAR document (not template) — the supervisor
+    // just messaged, so the 24h window is open. Meta rejects B2B templates.
+    const sent = await sendWhatsAppDocument(from, pdf, `rapport-${day}.pdf`,
+      `Rapport du ${day} — ${bookings.length} rendez-vous.`, clinic && clinic.id).catch(() => false);
     console.log(`[rapport] ${bookings.length} bookings -> ${from} (sent=${sent})`);
     return sent
       ? `Tbe3ath el rapport mta3 el youm (${bookings.length} rendez-vous) ka PDF. ✅`
