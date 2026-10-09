@@ -3,6 +3,22 @@
 // plus a wide matrix of Derja date/time expressions through the REAL dates.js.
 // Usage: node test-local.js   (exit 0 = all green)
 process.env.PORT = "43117";
+// Template tests (S23, 2026-10-09): sendTemplate needs a token; fetch is mocked
+// globally so no real network happens. Existing tests assert on reply text,
+// not on send outcomes, so the mock is transparent to them.
+process.env.WHATSAPP_TOKEN = "test-token-templates";
+const fetchCalls = [];
+const realFetch = global.fetch;
+global.fetch = async (url, opts) => {
+  // Only Meta Graph calls are mocked; the local HTTP server tests use real fetch.
+  if (!String(url).includes("graph.facebook.com")) return realFetch(url, opts);
+  fetchCalls.push({ url: String(url), opts: opts || {} });
+  const isMedia = String(url).includes("/media");
+  return {
+    ok: true,
+    json: async () => (isMedia ? { id: "test-media-id" } : { messages: [{ id: "wamid.test" }] }),
+  };
+};
 // VIXA sales test number (fake): the real 52150093 moved to the Dr Mahjoub
 // dentist pilot on 2026-10-07, so S21 drives the vixa vertical via env var.
 process.env.VIXA_NUMBERS = "52999999";
@@ -2477,6 +2493,135 @@ async function run() {
     const g = await mah("mahG1", "slm");
     has("S22: greeting names Mahjoub", g, "Mahjoub");
     ok("S22: greeting has no sales qualify", typeof g === "string" && !/3andek 3iyada/.test(g), JSON.stringify(g));
+  }
+
+  // ---- S23 — Template messages (2026-10-09): 24h-window bypass ----
+  {
+    const MAH_ID = "1364750653386950"; // 52 / Mahjoub pilot
+    const SUP = "98800749"; // Mahjoub supervisor
+    const mahTx = async (ph, txt) => bot.processPatientText(ph, txt, MAH_ID, "21652150093");
+    const secTx = async (ph, txt) => bot.processSecretaryText(txt, await bot.getClinic(MAH_ID, undefined), ph);
+    const clearFetch = () => { fetchCalls.length = 0; };
+    const templateBodies = (name) => fetchCalls
+      .filter((x) => String(x.url).includes("/messages"))
+      .map((x) => { try { return JSON.parse(x.opts.body); } catch { return null; } })
+      .filter((b) => b && b.template && b.template.name === name);
+    const bodyParams = (b) => {
+      const c = b.template.components.find((x) => x.type === "body");
+      return c ? c.parameters : [];
+    };
+
+    // 1. sendTemplate: named params -> correct payload
+    clearFetch();
+    const ok1 = await bot.sendTemplate("21698800749", "notif_booking", {
+      patient_name: "Ahmed", patient_phone: "21612345678", slot: "12-10-2026, 10:00",
+      ok_id: "5", le_id: "5",
+    }, {}, MAH_ID);
+    ok("S23: sendTemplate returns true", ok1 === true);
+    const t1 = templateBodies("notif_booking");
+    ok("S23: one template call", t1.length === 1, `n=${t1.length}`);
+    ok("S23: template lang fr", t1[0].template.language.code === "fr", t1[0].template.language.code);
+    ok("S23: to field", t1[0].to === "21698800749", t1[0].to);
+    const bp1 = bodyParams(t1[0]);
+    ok("S23: named patient_name", bp1.some((x) => x.parameter_name === "patient_name" && x.text === "Ahmed"), JSON.stringify(bp1));
+    ok("S23: named ok_id", bp1.some((x) => x.parameter_name === "ok_id" && x.text === "5"), JSON.stringify(bp1));
+
+    // 2. sendTemplate: positional params (message_docteur)
+    clearFetch();
+    await bot.sendTemplate("21612345678", "message_docteur", ["Ahmed", "hello"], {}, MAH_ID);
+    const t2 = templateBodies("message_docteur");
+    const bp2 = bodyParams(t2[0]);
+    ok("S23: positional params", bp2.length === 2 && bp2[0].text === "Ahmed" && !bp2[0].parameter_name, JSON.stringify(bp2));
+
+    // 3. sendTemplate: document header (rapport) + date_time param
+    clearFetch();
+    await bot.sendTemplate(SUP, "rapport", { date: "2026-10-09", count: "3" },
+      { dateParams: ["date"], headerDocument: { buffer: Buffer.from("%PDF-1.4 fake"), filename: "rapport-2026-10-09.pdf" } }, MAH_ID);
+    const t3 = templateBodies("rapport");
+    ok("S23: rapport template call", t3.length === 1, `n=${t3.length}`);
+    const hdr3 = t3[0].template.components.find((x) => x.type === "header");
+    ok("S23: document header with media id",
+      hdr3 && hdr3.parameters[0].type === "document" && hdr3.parameters[0].document.id === "test-media-id",
+      JSON.stringify(hdr3));
+    const bp3 = bodyParams(t3[0]);
+    ok("S23: date_time param", bp3.some((x) => x.type === "date_time" && x.parameter_name === "date"), JSON.stringify(bp3));
+    ok("S23: media uploaded first", fetchCalls.some((x) => String(x.url).includes("/media")));
+
+    // 4. New booking -> notif_booking template to the supervisor (no free text)
+    clearFetch();
+    const bk = "21677777777";
+    await mahTx(bk, "ghodwa 10 mta3 sbe7");
+    await stubDb.savePatientName(bk, "Test Templati");
+    const rbook = await mahTx(bk, "ey");
+    has("S23: booking confirmed", rbook, "n2akkedlek");
+    const t4 = templateBodies("notif_booking");
+    ok("S23: booking sends notif_booking", t4.length === 1, `n=${t4.length}`);
+    ok("S23: notif_booking to supervisor", t4[0].to === SUP, t4[0].to);
+    const bp4 = bodyParams(t4[0]);
+    ok("S23: notif_booking has ok_id/le_id",
+      bp4.some((x) => x.parameter_name === "ok_id") && bp4.some((x) => x.parameter_name === "le_id"),
+      JSON.stringify(bp4));
+    ok("S23: notif_booking has slot", bp4.some((x) => x.parameter_name === "slot" && /10:00/.test(x.text)), JSON.stringify(bp4));
+
+    // 5. ey/le flow: offer armed -> "ey" -> notif_question to supervisor
+    clearFetch();
+    const qp = "21688888888";
+    bot.rememberQuestionOffer(qp,
+      "Ma 3andich el ma3louma hethi. T7eb nes2el el tbib w narja3lek? Ekteb ey.",
+      "9adech el consultation?", { id: MAH_ID });
+    ok("S23: question offer armed", bot._pendingQuestion.has(qp));
+    const rq = await mahTx(qp, "ey");
+    has("S23: ey confirms escalation", rq, "s2elt el tbib");
+    const t5 = templateBodies("notif_question");
+    ok("S23: notif_question sent", t5.length === 1, `n=${t5.length}`);
+    const bp5 = bodyParams(t5[0]);
+    ok("S23: notif_question carries question",
+      bp5.some((x) => x.parameter_name === "question" && /consultation/.test(x.text)), JSON.stringify(bp5));
+    ok("S23: doctor answer armed", bot._pendingDoctorAnswer.has(MAH_ID));
+
+    // 6. Supervisor free text while answer pending -> forwarded to patient
+    clearFetch();
+    const ra = await secTx(SUP, "El consultation b 80dt.");
+    has("S23: answer confirmed to supervisor", ra, "Woslet lel patient");
+    const textSends = fetchCalls.filter((x) => {
+      try { const b = JSON.parse(x.opts.body); return String(x.url).includes("/messages") && b.type === "text"; }
+      catch { return false; }
+    });
+    ok("S23: answer forwarded as text", textSends.length === 1, `n=${textSends.length}`);
+    const ab = JSON.parse(textSends[0].opts.body);
+    ok("S23: answer to the right patient", ab.to === qp, ab.to);
+    ok("S23: answer text relayed verbatim", ab.text && ab.text.body === "El consultation b 80dt.", JSON.stringify(ab.text));
+
+    // 7. "le" declines the offer -> no template, no pending answer
+    clearFetch();
+    const qp2 = "21699998888";
+    bot.rememberQuestionOffer(qp2, "T7eb nes2el el tbib? Ekteb ey.", "sou2el?", { id: MAH_ID });
+    const rl = await mahTx(qp2, "le");
+    has("S23: le declines politely", rl, "ma mochkla");
+    ok("S23: no template on decline", templateBodies("notif_question").length === 0);
+    ok("S23: no answer armed on decline", !bot._pendingDoctorAnswer.has(MAH_ID));
+
+    // 8. wasel command -> message_docteur template to the patient
+    clearFetch();
+    const rw = await secTx(SUP, "wasel 21612345678 El rendez-vous mte3ek ghodwa 10:00.");
+    has("S23: wasel confirms", rw, "Woslet lel patient");
+    const t8 = templateBodies("message_docteur");
+    ok("S23: message_docteur sent", t8.length === 1, `n=${t8.length}`);
+    ok("S23: message_docteur to patient", t8[0].to === "21612345678", t8[0].to);
+    const bp8 = bodyParams(t8[0]);
+    ok("S23: message_docteur carries text", bp8[1] && /ghodwa/.test(bp8[1].text), JSON.stringify(bp8));
+
+    // 9. rapport command -> template with PDF (not a free document message)
+    clearFetch();
+    const rr = await secTx(SUP, "rapport");
+    has("S23: rapport confirms", rr, "rapport");
+    const t9 = templateBodies("rapport");
+    ok("S23: rapport via template", t9.length === 1, `n=${t9.length}`);
+    const freeDoc = fetchCalls.filter((x) => {
+      try { const b = JSON.parse(x.opts.body); return String(x.url).includes("/messages") && b.type === "document"; }
+      catch { return false; }
+    });
+    ok("S23: no free document message", freeDoc.length === 0, `n=${freeDoc.length}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
