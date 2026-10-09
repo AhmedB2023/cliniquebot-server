@@ -274,10 +274,15 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
   const JRAD_ID = "1445223932002571";
   let params = bodyParams;
   let o = opts || {};
-  if (nid === JRAD_ID && bodyParams && !Array.isArray(bodyParams)) {
-    params = Object.values(bodyParams);
-    // date_time params don't work positional; send as text.
-    o = { ...o, dateParams: [] };
+  let tName = templateName;
+  if (nid === JRAD_ID) {
+    // notif_booking was rejected; recreated as notif_booking2.
+    if (tName === "notif_booking") tName = "notif_booking2";
+    if (bodyParams && !Array.isArray(bodyParams)) {
+      params = Object.values(bodyParams);
+      // date_time params don't work positional; send as text.
+      o = { ...o, dateParams: [] };
+    }
   }
   try {
     const components = [];
@@ -307,15 +312,15 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
         messaging_product: "whatsapp",
         to,
         type: "template",
-        template: { name: templateName, language: { code: (o && o.language) || "fr" }, components },
+        template: { name: tName, language: { code: (o && o.language) || "fr" }, components },
       }),
     });
     const data = await res.json();
-    if (!res.ok) { console.error("[template:ERROR]", templateName, JSON.stringify(data)); return false; }
-    console.log(`[template:OK] ${templateName} to ${to}`);
+    if (!res.ok) { console.error("[template:ERROR]", tName, JSON.stringify(data)); return false; }
+    console.log(`[template:OK] ${tName} to ${to}`);
     return true;
   } catch (e) {
-    console.error("[template:ERROR]", templateName, e.message);
+    console.error("[template:ERROR]", tName, e.message);
     return false;
   }
 }
