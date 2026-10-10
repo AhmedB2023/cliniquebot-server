@@ -1440,11 +1440,20 @@ async function finishBooking(phone, p, name, clinic) {
     {
       const sup = supervisorNumber(clinic);
       if (sup) {
-        // 2026-10-09: Send as REGULAR message (not template) — Meta rejects
-        // B2B notification templates. Works when the 24h window is open
-        // (the doctor uses the bot daily). The booking is saved regardless.
+        // 2026-10-09: HYBRID — try regular message first (free, works in 24h
+        // window). If it fails (24h closed), fall back to notif_booking
+        // template (works anytime). Fully automatic, no manual step.
         const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
-        await sendWhatsApp(sup, notifMsg, clinic && clinic.id).catch(() => {});
+        const sent = await sendWhatsApp(sup, notifMsg, clinic && clinic.id);
+        if (!sent) {
+          await sendTemplate(sup, "notif_booking", {
+            patient_name: shownName || phone,
+            patient_phone: phone,
+            slot: p.display,
+            ok_id: id,
+            le_id: id,
+          }, {}, clinic && clinic.id).catch(() => {});
+        }
       }
     }
   }
