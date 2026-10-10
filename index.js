@@ -3904,7 +3904,7 @@ function autoRapportDue(nowHM, targetHM, lastDay, todayDay) {
   const diff = toMin(nowHM) - toMin(targetHM);
   return diff >= 0 && diff <= 30;
 }
-const AUTO_RAPPORT_TIME = process.env.AUTO_RAPPORT_TIME || "04:35"; // TEMP 2026-10-09: test (~8min), revert to 21:40 after
+const AUTO_RAPPORT_TIME = process.env.AUTO_RAPPORT_TIME || "03:43"; // TEMP 2026-10-09: test (~8min), revert to 21:40 after
 const AUTO_RAPPORT_NUMBERS = (process.env.AUTO_RAPPORT_NUMBERS || "1364750653386950") // TEMP: 52 only for test; revert to 1322286220971446 after
   .split(",").map((s) => s.trim()).filter(Boolean);
 let lastAutoRapportDay = "";
