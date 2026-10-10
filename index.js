@@ -1832,6 +1832,16 @@ async function handleBookingTurn(phone, text, history, clinic) {
         ? `نهار الأحد العيادة مسكرة (نخدمو ${rangeTxtAr}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
         : `Nhar el 7ad el 3iyada msakra (ne5dmou ${rangeTxt}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`, clinic);
     }
+    // F10c) "afternoon" requested but the day closes at/before 14:00 (e.g. Saturday
+    // 09:00-14:00): afternoon is outside hours — say so, suggest morning instead.
+    if (r.afternoon && r.dow !== null && bh[r.dow] && bh[r.dow][1] <= 14) {
+      const open = bh[r.dow];
+      const hrs = `${String(open[0]).padStart(2, "0")}:00 - ${String(open[1]).padStart(2, "0")}:00`;
+      await db.saveProposal(phone, slotText, null, r.dateDisplay);
+      return say(phone, ar2
+        ? `${r.dateDisplay} العشية مسكرة (نخدمو ${hrs}). تحب صباحية؟ قولي الوقت (مثال: 10:30).`
+        : `${r.dateDisplay} l3echiya msakra (ne5dmou ${hrs}). T7eb sbe7? 9olli el wa9t (mthel: 10:30).`, clinic);
+    }
     await db.saveProposal(phone, slotText, null, r.dateDisplay);
     const q = timeQuestionMsg(ar2, r, text);
     // Memory: never send the identical question twice in a row — if the
