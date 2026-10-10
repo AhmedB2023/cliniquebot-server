@@ -1440,12 +1440,15 @@ async function finishBooking(phone, p, name, clinic) {
     {
       const sup = supervisorNumber(clinic);
       if (sup) {
-        // 2026-10-09: HYBRID — try regular message first (free, works in 24h
-        // window). If it fails (24h closed), fall back to notif_booking
-        // template (works anytime). Fully automatic, no manual step.
-        const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
-        const sent = await sendWhatsApp(sup, notifMsg, clinic && clinic.id);
-        if (!sent) {
+        // 2026-10-09: SMART HYBRID — check 24h window BEFORE sending.
+        // <24h since supervisor's last message → regular message (free).
+        // >24h or unknown → template directly (works anytime, no wasted attempt).
+        const lastSupMsg = await db.getLastSupervisorMessageTime(sup, clinic && clinic.id).catch(() => null);
+        const windowOpen = lastSupMsg && (Date.now() - lastSupMsg.getTime()) < 24 * 60 * 60 * 1000;
+        if (windowOpen) {
+          const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
+          await sendWhatsApp(sup, notifMsg, clinic && clinic.id).catch(() => {});
+        } else {
           await sendTemplate(sup, "notif_booking", {
             patient_name: shownName || phone,
             patient_phone: phone,
