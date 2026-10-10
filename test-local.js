@@ -104,6 +104,8 @@ function makeStubDb() {
       return 0;
     },
     hasDb: () => true,
+    // Stub: return null (unknown) → production code falls back to template.
+    getLastSupervisorMessageTime: async () => new Date(Date.now() - 60 * 60 * 1000),
     saveSuggestion: async (numberId, fromPhone, text) => {
       const s = { id: seq++, number_id: numberId || null, from_phone: fromPhone || null, text, status: "new", created_at: "test" };
       suggestions.push(s);
@@ -2712,6 +2714,33 @@ async function run() {
     ok("S27: admin matches +17174204057", bot.samePhone("+17174204057", bot.ADMIN_NUMBER) === true);
     ok("S27: admin matches 17174204057", bot.samePhone("17174204057", bot.ADMIN_NUMBER) === true);
     ok("S27: non-admin does not match", bot.samePhone("21698800749", bot.ADMIN_NUMBER) === false);
+  }
+
+  // ---- S28 — Bug 3+4 (2026-10-10): French slot "lundi 10" must go to the
+  // booking flow, NOT the French AI. The slot check before French routing
+  // ensures parseable dates reach handleBookingTurn.
+  {
+    const p = "21600000090";
+    const r1 = await bot.processPatientText(p, "lundi 10");
+    // Should propose a slot (booking flow), not French AI chatter.
+    has("S28: lundi 10 proposes slot", r1, "T7eb n7ajzlek");
+    has("S28: lundi 10 asks ey", r1, "ey");
+    // Must NOT be the French AI fallback ("je vous confirme").
+    ok("S28: lundi 10 not French AI", !r1.includes("je vous confirme"), r1.substring(0, 60));
+  }
+
+  // ---- S29 — Bug 5+6 (2026-10-10): time-only "10:00" after day "ghodwa" in
+  // history merges into Wednesday 10:00 (no proposal saved, AI handled the day).
+  {
+    const p = "21600000091";
+    // Simulate: patient said "ghodwa", AI asked for time, patient says "10:00".
+    await stubDb.saveMessage(p, "user", "ghodwa", null);
+    await stubDb.saveMessage(p, "assistant", "A quelle heure?", null);
+    const r1 = await bot.processPatientText(p, "10:00");
+    // Should resolve to a concrete date (Wednesday), not ask for day again.
+    has("S29: 10:00 merges with ghodwa", r1, "T7eb n7ajzlek");
+    has("S29: 10:00 has Wednesday date", r1, "23-09-2026");
+    ok("S29: 10:00 not asking for day", !r1.includes("Anhou nhar"), r1.substring(0, 60));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
