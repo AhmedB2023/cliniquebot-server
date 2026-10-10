@@ -646,6 +646,28 @@ async function clearVendorLead(phone) {
   }
 }
 
+// Last message time for a supervisor phone (for 24h window check).
+// Matches by last 8 digits to handle +216/216/local formats. Returns Date or null.
+async function getLastSupervisorMessageTime(supervisorPhone, numberId = null) {
+  const p = getPool();
+  if (!p) return null;
+  try {
+    const digits = String(supervisorPhone || "").replace(/\D/g, "").slice(-8);
+    if (!digits) return null;
+    const r = await p.query(
+      `SELECT created_at FROM messages
+       WHERE RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 8) = $1
+       AND ($2::text IS NULL OR number_id = $2)
+       ORDER BY id DESC LIMIT 1`,
+      [digits, numberId || null]
+    );
+    return r.rows[0] ? new Date(r.rows[0].created_at) : null;
+  } catch (e) {
+    console.error("[db:ERROR] getLastSupervisorMessageTime:", e.message);
+    return null;
+  }
+}
+
 module.exports = {
   initDb,
   saveMessage,
@@ -684,5 +706,6 @@ module.exports = {
   getDueScheduledMessages,
   markScheduledMessage,
   listPendingScheduledMessages,
+  getLastSupervisorMessageTime,
   hasDb: () => !!DATABASE_URL,
 };
