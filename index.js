@@ -1729,6 +1729,26 @@ async function handleBookingTurn(phone, text, history, clinic) {
     }
   }
 
+  // 2026-10-10 Bug 5+6: time-only follow-up with NO proposal (the AI answered
+  // the day message, so nothing was saved). Look back at recent user messages
+  // for a day, merge it with the time. Only when the current text looks like
+  // a time (digits or time words) — never for questions or other content.
+  const _looksLikeTime = /(\d\s*[:h]\s*\d|\b\d{1,2}\b.*(sbe7|sbeh|3chiya|mta3|صباح|مساء)|^(9:30|10|11|12|13|14|15|16|17)$)/i.test(text);
+  if (_looksLikeTime && (!r.found || !r.date) && !looksLikeAcceptance(text) && !looksLikeRefusal(text) && !looksLikeQuestion(text)) {
+    const recentUser = [...history].reverse()
+      .filter(m => m.role === "user")
+      .slice(0, 3)
+      .map(m => m.text || "");
+    for (const um of recentUser) {
+      if (!um || um === text) continue;
+      const dr = dates.resolveSlot(um, ar);
+      if (dr.found && dr.date) {
+        const merged = dates.resolveSlot(text + " " + um, ar);
+        if (merged.found && merged.date) { r = merged; slotText = text + " " + um; break; }
+      }
+    }
+  }
+
   // A) Pure acceptance ("ey") -> resolve WHICH slot, then the name gate.
   // A slot inside the acceptance text itself ("ey, jem3a 10") falls through to B.
   // Never invents a slot: bare "ey" on an incomplete proposal repeats the
@@ -2880,7 +2900,13 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // The lenient detector keeps real Derja out: any Derja marker (n7eb,
   // chnowa, 9adech...) vetoes French. When the word-list is unsure,
   // aiLangIsFrench asks the AI itself — meaning, not keywords.
-  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text)) {
+  // 2026-10-10 Bug 3+4: a message with a parseable date/slot ("lundi 10") is
+  // booking info — never route it to the French AI. handleBookingTurn mirrors
+  // the language itself and owns the whole booking flow.
+  const _sp1 = dates.resolveSlot(text, false);
+  const _sp2 = _sp1.found && _sp1.date ? _sp1 : dates.resolveSlot(text, true);
+  const _hasSlot = _sp2.found && !!_sp2.date;
+  if (!_hasSlot && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text))) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours)
       : frenchFallback(text, clinic.name); // deterministic French without AI key (local tests)
