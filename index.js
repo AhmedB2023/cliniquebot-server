@@ -276,9 +276,12 @@ async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
   let o = opts || {};
   let tName = templateName;
   if (nid === JRAD_ID) {
-    // notif_booking was rejected; recreated as notif_booking2.
+    // notif_booking was rejected; recreated as notif_booking7.
     if (tName === "notif_booking") tName = "notif_booking7";
-    if (bodyParams && !Array.isArray(bodyParams)) {
+    // notif_booking7 uses NAMED params ({{patient_name}} etc. — "Type of variable: Name"
+    // in Meta UI). Keep them named; Meta rejects positional for this template.
+    // Other Jrad templates use numbered params → convert those to positional.
+    if (tName !== "notif_booking7" && bodyParams && !Array.isArray(bodyParams)) {
       params = Object.values(bodyParams);
       // date_time params don't work positional; send as text.
       o = { ...o, dateParams: [] };
