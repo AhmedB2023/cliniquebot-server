@@ -543,7 +543,7 @@ const SEED_JRAD = {
     "أهلا وسهلا! 👋 أنا مساعد عيادة الدكتور مروان جراد 🦷 — كيفاش نجمو نعاونوك؟",
   hours: "Thenin lel 5mis: 09:00 - 16:00, Jom3a w Sebt: 09:00 - 14:00, Ahad: msakker",
   booking_hours: "1:9-16;2:9-16;3:9-16;4:9-16;5:9-14;6:9-14",
-  secretary_number: "17174204057", // TEMP 2026-10-09: testing, revert to 28192232 after
+  secretary_number: "28192232",
   other_doctor: "",
 };
 SEED_CLINICS["1445223932002571"] = SEED_JRAD;
