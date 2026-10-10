@@ -523,7 +523,7 @@ const SEED_MAHJOUB = {
     "تحب تحجز موعد؟ قولي نهار ووقت، وأنا نشوفلك المواعيد المتاحة.",
   hours: "Thenin lel Jom3a: 08:30 - 17:30, Sebt: 08:30 - 13:00, Ahad: msakker",
   booking_hours: "1:8-17;2:8-17;3:8-17;4:8-17;5:8-17;6:8-13",
-  secretary_number: "98800749",
+  secretary_number: "17174204057", // TEMP 2026-10-09: rapport test, revert to 98800749 after
   other_doctor: "",
 };
 SEED_CLINICS["1364750653386950"] = SEED_MAHJOUB;
@@ -3904,8 +3904,8 @@ function autoRapportDue(nowHM, targetHM, lastDay, todayDay) {
   const diff = toMin(nowHM) - toMin(targetHM);
   return diff >= 0 && diff <= 30;
 }
-const AUTO_RAPPORT_TIME = process.env.AUTO_RAPPORT_TIME || "21:40"; // TEST -> "08:00" after test
-const AUTO_RAPPORT_NUMBERS = (process.env.AUTO_RAPPORT_NUMBERS || "1322286220971446") // 53 only; 52 excluded
+const AUTO_RAPPORT_TIME = process.env.AUTO_RAPPORT_TIME || "04:35"; // TEMP 2026-10-09: test (~8min), revert to 21:40 after
+const AUTO_RAPPORT_NUMBERS = (process.env.AUTO_RAPPORT_NUMBERS || "1364750653386950") // TEMP: 52 only for test; revert to 1322286220971446 after
   .split(",").map((s) => s.trim()).filter(Boolean);
 let lastAutoRapportDay = "";
 
