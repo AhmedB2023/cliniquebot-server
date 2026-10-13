@@ -205,8 +205,9 @@ function resolveSlot(rawText, preferAr) {
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
-    } else if (t.includes(" apres demain ")) {
-      // French "après demain" (norm() already folded è -> e) = day after tomorrow.
+    } else if (t.includes(" apres demain ") || t.includes(" apres-demain ")) {
+      // French "après-demain" (norm() already folded è -> e; the hyphenated
+      // spelling is the correct French one) = day after tomorrow.
       dateUTC = todayStart + 2 * 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
@@ -245,14 +246,37 @@ function resolveSlot(rawText, preferAr) {
   if (/\bnos\s+(el\s+)?nhar\b/.test(t) || t.includes(" نص النهار ")) { hour = 12; minute = 0; }
   else if (/\bnos\s+(el\s+)?lil\b/.test(t) || t.includes(" نص الليل ")) { hour = 0; minute = 0; }
   else {
-    const tm = restTime.match(/(\d{1,2})\s*[:h]\s*(\d{2})/) || restTime.match(/\b(\d{1,2})\b/);
-    if (tm) {
-      hour = parseInt(tm[1], 10);
-      minute = tm[2] ? parseInt(tm[2], 10) : 0;
-      if (minute > 59) { badHour = tm[1] + ":" + tm[2]; hour = null; minute = 0; }
-      // ">23" can only be an hour when a date is already fixed ("ghodwa 25");
-      // a bare number with no date ("25") keeps the old not-found behavior.
-      else if (hour > 23 && dateUTC !== null) { badHour = String(tm[1]); hour = null; }
+    // French spelled-out hours ("dix heures", "quinze heures trente",
+    // "dix heures et demie", "trois heures moins le quart") — anchored on
+    // the word "heure(s)", which never appears in Derja/Arabic, so this can
+    // never steal a Derja time. French "midi" = 12:00 (but NOT inside
+    // "après-midi") and "minuit" = 0:00.
+    const FR_HOUR_WORDS = { une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, "dix sept": 17, "dix huit": 18, "dix neuf": 19, vingt: 20, "vingt et une": 21, "vingt deux": 22, "vingt trois": 23 };
+    const frm = restTime.match(/\b(dix[- ]sept|dix[- ]huit|dix[- ]neuf|vingt et une|vingt[- ]deux|vingt[- ]trois|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt)\s+heures?\b\s*(et\s+demie|et\s+quart|moins\s+le\s+quart|trente|quinze|\d{1,2})?/);
+    if (frm) {
+      hour = FR_HOUR_WORDS[frm[1].replace(/-/g, " ")];
+      const mins = (frm[2] || "").replace(/\s+/g, " ").trim();
+      if (mins === "et demie" || mins === "trente") minute = 30;
+      else if (mins === "et quart" || mins === "quinze") minute = 15;
+      else if (mins === "moins le quart") { hour -= 1; minute = 45; }
+      else if (/^\d{1,2}$/.test(mins)) minute = parseInt(mins, 10);
+      if (minute > 59) { badHour = frm[0]; hour = null; minute = 0; }
+    } else if (/\bmidi\b/.test(restTime.replace(/apres[-\s]midi/g, " "))) { hour = 12; minute = 0; }
+    else if (/\bminuit\b/.test(restTime)) { hour = 0; minute = 0; }
+    else {
+      // "10h30" / "10:30" first, then the bare French "10h" — the hour glued
+      // to its "h" has no word boundary after the digit, so the bare-number
+      // fallback can't see it ("9h" looped the time question forever) — then
+      // the old bare-number fallback.
+      const tm = restTime.match(/(\d{1,2})\s*[:h]\s*(\d{2})/) || restTime.match(/\b(\d{1,2})\s*h(?![0-9])/) || restTime.match(/\b(\d{1,2})\b/);
+      if (tm) {
+        hour = parseInt(tm[1], 10);
+        minute = tm[2] ? parseInt(tm[2], 10) : 0;
+        if (minute > 59) { badHour = tm[1] + ":" + tm[2]; hour = null; minute = 0; }
+        // ">23" can only be an hour when a date is already fixed ("ghodwa 25");
+        // a bare number with no date ("25") keeps the old not-found behavior.
+        else if (hour > 23 && dateUTC !== null) { badHour = String(tm[1]); hour = null; }
+      }
     }
   }
 
