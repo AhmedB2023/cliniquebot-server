@@ -1787,6 +1787,90 @@ async function runFixAB() {
   });
 }
 
+// ================= Family 15: Fix AC — glued weekday forms =================
+// Live defect (Ahmed, production, Jrad line 2026-10-13): the patient
+// wrote with heavy typos: "sbeh el 5ir, n7b randez vous nhar la5mis".
+// The deterministic weekday matcher is token-based (" " + name + " ")
+// and had NO glued article forms, so "la5mis" (le + 5mis) resolved
+// nothing; the booking-intent detector also missed vowel-less "n7b"
+// and the "randez" misspelling. The whole turn fell to the AI
+// fallthrough, which invented the nonexistent word "5lass" in a fake
+// daypart list. Fix AC: glued (l|la|le|el)+weekday forms in dates.js
+// DAYS (+ the index.js mirrors WD_DAYS / stripDateTokens / DOW_WORDS),
+// and "n7b|nhb" + "randez" in looksLikeBookingIntent. Frozen clock:
+// Wed 2026-10-14 09:00 Tunis -> Thu = 15-10, Fri = 16-10, Sat = 17-10,
+// Sun = 18-10 (CLOSED at both clinics), Mon = 19-10.
+async function runFixAC() {
+  const TQ = (d) => `${d} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`;
+
+  await scenario("AC1", "fixac", "Fix AC: the EXACT live message 'sbeh el 5ir, n7b randez vous nhar la5mis' -> catalog time question for Thu 15-10, no invented '5lass' (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("sbeh el 5ir, n7b randez vous nhar la5mis");
+    const rr = String(r1 || "");
+    ctx.chk.hard(rr === TQ("15-10-2026"),
+      `the reply must be EXACTLY the catalog tq_plain (az) with Thu 15-10-2026; got: ${rr}`, "high");
+    ctx.chk.hard(!/5lass/.test(rr), `the invented word "5lass" must never appear; got: ${rr}`, "high");
+    const prop = ctx.proposal();
+    ctx.chk.hard(!!prop && !prop.slot_at && hasDate(prop.display || "", "15-10-2026"),
+      "a date-only proposal for Thu 15-10-2026 is pending", "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a date-only turn", "high");
+    const r2 = await ctx.say("10:30");
+    ctx.chk.hard(hasDate(String(r2 || ""), "15-10-2026") && String(r2 || "").includes("10:30"),
+      `the hour answer completes the Thu proposal at 10:30; got: ${r2}`, "medium");
+  });
+
+  await scenario("AC2", "fixac", "Fix AC: glued Monday 'latnin' + spaced 'rendez vous' + 'n7b' -> time question for Mon 19-10 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("n7b rendez vous latnin");
+    const rr = String(r1 || "");
+    ctx.chk.hard(rr === TQ("19-10-2026"),
+      `glued 'latnin' must resolve to Mon 19-10-2026 and ask the catalog time question; got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a date-only turn", "medium");
+  });
+
+  await scenario("AC3", "fixac", "Fix AC: glued Sunday 'le7ad' (closed at Jrad) -> closed-day reply, next open day Mon 19-10 proposed (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("nheb rendez-vous le7ad");
+    const rr = String(r1 || "");
+    ctx.chk.hard(/msakra/.test(rr), `Sunday is closed at Jrad — the closed-day reply must fire; got: ${rr}`, "high");
+    ctx.chk.hard(hasDate(rr, "19-10-2026"), `the next open day (Mon 19-10-2026) is proposed instead; got: ${rr}`, "high");
+    ctx.chk.hard(!/18-10-2026,\s*\d{2}:\d{2}/.test(rr), `no concrete slot may be proposed on the closed Sunday; got: ${rr}`, "high");
+    const prop = ctx.proposal();
+    ctx.chk.hard(!!prop && hasDate(prop.display || "", "19-10-2026"),
+      "the pending proposal is the Monday, not the closed Sunday", "medium");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking on a closed day", "high");
+  });
+
+  await scenario("AC4", "fixac", "Fix AC: misspelled 'randez-vous' + glued Saturday 'lasabt' + hour -> concrete proposal Sat 17-10 10:00 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("randez-vous lasabt el 10");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "17-10-2026") && rr.includes("10:00"),
+      `glued 'lasabt' + 'el 10' must propose Sat 17-10-2026 at 10:00; got: ${rr}`, "high");
+    ctx.chk.hard(!/9olli el wa9t/.test(rr), `a concrete slot is proposed, not a time question; got: ${rr}`, "medium");
+    ctx.chk.hard(ctx.bookings().length === 0, "proposal only — no booking before acceptance", "medium");
+  });
+
+  await scenario("AC5", "fixac", "Fix AC: glued Friday 'lajom3a' + 9h -> concrete proposal Fri 16-10 09:00 (Mahjoub)", MAH, async (ctx) => {
+    const r1 = await ctx.say("nheb rdv lajom3a 9h");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "16-10-2026") && rr.includes("09:00"),
+      `glued 'lajom3a' + '9h' must propose Fri 16-10-2026 at 09:00; got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "proposal only — no booking before acceptance", "medium");
+  });
+
+  await scenario("AC6", "fixac", "Fix AC: glued Thursday variant 'l5mis' -> time question for Thu 15-10 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("nheb na7jez l5mis");
+    const rr = String(r1 || "");
+    ctx.chk.hard(rr === TQ("15-10-2026"),
+      `glued 'l5mis' must resolve to Thu 15-10-2026 with the catalog time question; got: ${rr}`, "high");
+  });
+
+  await scenario("AC7", "fixac", "Fix AC: glued Thursday variant 'le5mis' + hour -> concrete proposal Thu 15-10 10:00 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("n7b rdv le5mis el 10");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "15-10-2026") && rr.includes("10:00"),
+      `glued 'le5mis' + 'el 10' must propose Thu 15-10-2026 at 10:00; got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "proposal only — no booking before acceptance", "medium");
+  });
+}
+
 (async () => {
   await runLong();
   await runEdge();
@@ -1802,6 +1886,7 @@ async function runFixAB() {
   await runFixZ();
   await runFixAA();
   await runFixAB();
+  await runFixAC();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
