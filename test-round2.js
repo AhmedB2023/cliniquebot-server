@@ -1172,6 +1172,88 @@ async function runLive() {
   });
 }
 
+// ================= Family 9: localized rendering of clinic info (Fix W) ==
+// Live 2026-10-13 16:47: after Fix V the French hours question WAS answered
+// — with the stored hours string verbatim: "Horaires de travail : Thenin
+// lel Jom3a: 09:00 - 16:00, Sebt: ..., Ahad: msakker." The stored text is
+// authored in Arabizi; a French patient must get the same facts rendered
+// in French, an Arabic patient in Arabic, a Derja patient in Arabizi.
+// These scenarios pin the rendering on every patient-facing hours path.
+async function runRender() {
+  await scenario("W1", "render", "French hours Q, Jrad — fully-French rendered hours, no raw Arabizi config text", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    ctx.chk.hard(isFR(r), `the hours answer must be fully French; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("Lundi") && String(r || "").includes("16:00"), `expected French day names + the real hours; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("Vendredi et samedi") && String(r || "").includes("14:00"), `Fri+Sat must render as a French pair with 14:00; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("Dimanche") && String(r || "").includes("fermé"), `Sunday must render closed in French; got: ${r}`, "high");
+    ctx.chk.hard(!/Thenin|Sebt|msakker|Jom3a/.test(String(r || "")), `no raw stored hours text may leak; got: ${r}`, "high");
+  });
+
+  await scenario("W2", "render", "French hours Q, Mahjoub — rendered French hours with half hours preserved", MAH, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Quels sont vos horaires ?");
+    ctx.chk.hard(isFR(r), `the hours answer must be fully French; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("08:30 - 17:30"), `the DISPLAYED hours (08:30-17:30), not the booking hours, must be rendered; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("Samedi") && String(r || "").includes("13:00"), `Saturday 08:30-13:00 must be rendered; got: ${r}`, "medium");
+    ctx.chk.hard(String(r || "").includes("Dimanche") && String(r || "").includes("fermé"), `Sunday must render closed in French; got: ${r}`, "medium");
+    ctx.chk.hard(!/Thenin|Sebt|msakker|Jom3a/.test(String(r || "")), `no raw stored hours text may leak; got: ${r}`, "high");
+  });
+
+  await scenario("W3", "render", "Derja hours Q, Jrad — Arabizi answer carrying the stored hours text", JRA, async (ctx) => {
+    await ctx.say("slem");
+    const r = await ctx.say("chnowa wa9t el 5edma ?");
+    ctx.chk.hard(String(r || "").includes("Wa9t el 5edma"), `expected the Derja hours answer; got: ${r}`, "medium");
+    ctx.chk.hard(String(r || "").includes(HOURS_JRA), `Derja rendering must carry the stored Arabizi hours text; got: ${r}`, "medium");
+  });
+
+  await scenario("W4", "render", "Arabic hours Q, Jrad — Arabic rendered hours, no Arabizi day names", JRA, async (ctx) => {
+    await ctx.say("سلام");
+    const r = await ctx.say("شنوة وقت الخدمة؟");
+    ctx.chk.hard(isAR(r), `the hours answer must be in Arabic script; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("الخميس") && String(r || "").includes("16:00"), `expected Arabic day names + the real hours; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("الأحد"), `Sunday must be rendered in Arabic; got: ${r}`, "medium");
+    ctx.chk.hard(!/Thenin|Sebt|Jom3a/.test(String(r || "")), `no Arabizi day names may leak into the Arabic answer; got: ${r}`, "high");
+  });
+
+  await scenario("W5", "render", "French hours Q at the Mahjoub name gate — rendered French, name gate survives", MAH, async (ctx) => {
+    await ctx.say("bonjour cv?");
+    await ctx.say("Je veux un rendez-vous vendredi a 10h");
+    await ctx.say("Oui");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    ctx.chk.hard(isFR(r) && String(r || "").includes("17:30"), `expected the rendered French hours (Thu close 17:30); got: ${r}`, "high");
+    ctx.chk.hard(!/Thenin|Sebt|msakker/.test(String(r || "")), `no raw stored hours text may leak; got: ${r}`, "high");
+    const r2 = await ctx.say("Ahmed Ben Salah");
+    ctx.chk.hard(ctx.bookings().length === 1 && hasDate(ctx.bookings()[0].slot, "16-10-2026"),
+      `the pending booking must complete after the FAQ detour; got reply: ${r2}, bookings: ${JSON.stringify(ctx.bookings())}`, "high");
+  });
+
+  await scenario("W6", "render", "Unparseable stored hours — raw text fallback, the patient still gets an answer", JRA, async (ctx) => {
+    await stubDb.saveClinicConfig(JRA, { hours: "Kol youm mel sbe7 lel lil, w el a7ad rou7" });
+    await ctx.say("bonjour");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    await stubDb.clearClinicConfig(JRA);
+    ctx.chk.hard(String(r || "").length > 0 && String(r || "").includes("rou7"),
+      `an unparseable hours text must fall back to the raw stored text, never to silence; got: ${r}`, "high");
+  });
+
+  await scenario("W7", "render", "French out-of-hours rejection, Jrad — rendered French hours inside the rejection", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Je veux un rendez-vous jeudi a 20h");
+    ctx.chk.hard(isFR(r), `the rejection must be in French; got: ${r}`, "medium");
+    ctx.chk.hard(String(r || "").includes("09:00 - 16:00"), `the rejection must carry the rendered French hours; got: ${r}`, "medium");
+    ctx.chk.hard(!/Thenin|Sebt|msakker|Jom3a/.test(String(r || "")), `no raw stored hours text may leak; got: ${r}`, "high");
+  });
+
+  await scenario("W8", "render", "French Sunday request, Jrad — closed-day rejection with rendered French hours", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Je veux un rendez-vous dimanche a 10h");
+    ctx.chk.hard(isFR(r), `the closed-day reply must be in French; got: ${r}`, "medium");
+    ctx.chk.hard(String(r || "").includes("09:00 - 16:00"), `the reply must carry the rendered French hours; got: ${r}`, "medium");
+    ctx.chk.hard(!/Thenin|Sebt|msakker|Jom3a/.test(String(r || "")), `no raw stored hours text may leak; got: ${r}`, "high");
+  });
+}
+
 // ================= Runner =================
 (async () => {
   await runSecretary();
@@ -1182,6 +1264,7 @@ async function runLive() {
   await runQuestions2();
   await runMemory();
   await runLive();
+  await runRender();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
