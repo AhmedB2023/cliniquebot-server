@@ -261,9 +261,68 @@ function resolveSlot(rawText, preferAr) {
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
+    } else if (/\bfin\s+(du|de)\s+mois\b/.test(t)) {
+      // Fix X (DT1): French "fin du mois" = last day of the current month,
+      // the exact analogue of "a5er el chhar" above.
+      dateUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0);
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = fmtNum(dd);
+    } else if (/\bd(é|e)but\s+du\s+mois\s+prochain\b/.test(t)) {
+      // Fix X (DT2): "début du mois prochain" = the 1st of next month.
+      dateUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = fmtNum(dd);
     } else if (t.includes(" lyoum ") || t.includes(" elyoum ") || t.includes(" اليوم ") || t.includes(" today ") || /\baujourd['’]?hui\b/.test(t) || t.includes(" aujourdhui ")) {
       // Fix U (DAT19): French "aujourd'hui" / English "today" = today.
       dateUTC = todayStart;
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = fmtNum(dd);
+    }
+    // Fix X (DT8/DT4): a bare French day-of-month — "le 20", "le 1er" —
+    // is the NEXT occurrence of that day (this month when it is still
+    // ahead, next month otherwise). The lookaheads keep it from ever
+    // stealing a time ("le 10:30", "le 20h" stay times).
+    if (dateUTC === null) {
+      // Not part of a numeric date ("le 31/02" is section 1's impossible
+      // date, not October 31st) and never a time fragment ("le, 11 mta3
+      // sbe7" is an 11:00 correction — norm() ate the comma).
+      const domM = t.match(/\ble\s+(\d{1,2})(er|e|eme)?\b(?!\s*[/.\-]\s*\d)(?!\s*[:h]\d)(?!\s*h)(?!\s*(mta3|mt3|mte3|sbe7|sba7|sabah|matin|nos\b|noss\b))/);
+      if (domM) {
+        const dom = parseInt(domM[1], 10);
+        if (dom >= 1 && dom <= 31) {
+          let y = now.getUTCFullYear(), mo = now.getUTCMonth();
+          let cand = Date.UTC(y, mo, dom);
+          if (cand < todayStart) { mo++; if (mo > 11) { mo = 0; y++; } cand = Date.UTC(y, mo, dom); }
+          const cd = new Date(cand);
+          if (cd.getUTCDate() === dom) { // a real calendar day ("le 31" in a 30-day month is not)
+            dateUTC = cand;
+            const mname = ar ? AR_MONTH[cd.getUTCMonth()] : FR_MONTH[cd.getUTCMonth()];
+            dateDisplay = fmtNum(cd);
+          }
+        }
+      }
+    }
+  }
+
+  // Fix X (DT10/DT3/DT7): relative offsets the base rules missed —
+  // "dans 3 jours" (+3d), "dans 2 semaines" (+14d), "dans une semaine"
+  // (+7d), Derja "ba3d esbou3" (+7d). "ba3d ghodwa" stays with its own
+  // branch above; this block only fires when nothing else set a date.
+  if (dateUTC === null) {
+    const FR_NUM = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7 };
+    let relDays = null;
+    const dansM = t.match(/\bdans\s+(\d{1,2}|une?|deux|trois|quatre|cinq|six|sept)\s+(jours?|semaines?)\b/);
+    if (dansM) {
+      const n = /^\d+$/.test(dansM[1]) ? parseInt(dansM[1], 10) : FR_NUM[dansM[1]];
+      if (n) relDays = dansM[2].startsWith("sem") ? n * 7 : n;
+    } else if (/\bba3d\s+(esbou3|osbou3|esbo3|semana|simana|semmana)\b/.test(t) || t.includes(" بعد أسبوع ") || t.includes(" بعد اسبوع ")) {
+      relDays = 7;
+    }
+    if (relDays !== null) {
+      dateUTC = todayStart + relDays * 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
@@ -275,6 +334,13 @@ function resolveSlot(rawText, preferAr) {
   // The weekday word is blanked first so "ethnin" (Tuesday) isn't read as 2.
   let restTime = rest;
   if (dayWord) restTime = restTime.replace(" " + dayWord + " ", " "); // first occurrence = the day
+  // Fix X (DT15): "wa7da o5ra" (one more / une autre) is a NOUN phrase,
+  // not the 13:00 time word — unprotected, "wa7da" converts to hour 1
+  // (afternoon default: 13) and eats the real time ("...o5ra el 10").
+  // Blank the phrase out of the TIME scan only; the date scan above
+  // already ran and never used it.
+  restTime = restTime.replace(/\b(wa7da|wa7ed)\s+(o5ra|okhra|e5er|a5er)\b/gi, " another ")
+                     .replace(/واحدة\s+أخرى|واحد\s+آخر/g, " autre ");
   for (const [w, d] of NUM_WORDS) {
     restTime = restTime.split(" " + w + " ").join(" " + d + " ");
     restTime = restTime.split(" ال" + w + " ").join(" " + d + " "); // "الخمسة" -> 5
