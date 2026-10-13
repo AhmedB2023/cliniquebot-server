@@ -2779,6 +2779,29 @@ async function run() {
     ok("S31: month 10 is NOT the hour", !r1.includes("el 10 hethi"), r1);
   }
 
+  // ---- S32 — Fix C (2026-10-13): French time forms in the SHARED resolver
+  // + French intent detectors. dates.js is shared with Derja, so the parsing
+  // regressions live here too: bare "Xh" hours, spelled-out hours,
+  // "après-demain" (hyphenated). Full French flows: test-french.js.
+  {
+    const r1 = dates.resolveSlot("je voudrais un rendez-vous demain à 9h");
+    ok("S32: 'demain à 9h' resolves concrete", r1.found && r1.date && !r1.needs, JSON.stringify(r1));
+    has("S32: 9h = 09:00", r1.display || "", "09:00");
+    const r2 = dates.resolveSlot("après-demain à 10h");
+    has("S32: après-demain = +2d (24-09-2026)", r2.dateDisplay || "", "24-09-2026");
+    has("S32: 10h = 10:00", r2.display || "", "10:00");
+    const r3 = dates.resolveSlot("le 5 novembre à dix heures");
+    has("S32: 'dix heures' = 10:00", r3.display || "", "05-11-2026, 10:00");
+    const r4 = dates.resolveSlot("le 5 novembre à quinze heures trente");
+    has("S32: 'quinze heures trente' = 15:30", r4.display || "", "15:30");
+    const r5 = dates.resolveSlot("jeudi à 17h");
+    has("S32: 17h = 17:00", r5.display || "", "17:00");
+    ok("S32: fr reschedule detector", bot.looksLikeReschedule("je veux déplacer mon rendez-vous") === true);
+    ok("S32: fr walkin detector", bot.looksLikeWalkin("je peux venir sans rendez-vous ?") === true);
+    ok("S32: fr cancel detector", bot.looksLikeCancellation("je veux annuler mon rendez-vous") === true);
+    ok("S32: derja reschedule not stolen by fr", bot.looksLikeReschedule("n7eb nbadal el rendez-vous") === true);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
