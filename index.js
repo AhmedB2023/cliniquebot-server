@@ -922,6 +922,18 @@ function looksLikeRefusal(text) {
   return /^\s*(le|la|non|man7ebch|mouch)\s*[.,!]*$/.test(raw.toLowerCase());
 }
 
+// French refusal of a pending proposal ("Non, pas ce jour-là") — a short
+// non/pas opener with NO new slot in it. A digit means the message carries
+// a new date/time ("non, le 6 à 10h") and the correction merge owns it.
+// Only applied when the conversation is already French (fr2) — in Derja a
+// leading "non" is not a standalone refusal form.
+function looksLikeFrenchRefusal(text) {
+  const t = (text || "").trim().toLowerCase();
+  if (!/^(non|pas)\b/.test(t)) return false;
+  if (/\d/.test(t)) return false;
+  return t.length <= 40;
+}
+
 // ---------- Root-based intent matching ----------
 // Tunisian verbs keep their consonant root across spelling variants:
 //   f-s-5 (فسخ): fasa5, fas5, nfasa5, tafsa5li, yefsa5, nefsakh
@@ -961,7 +973,7 @@ const CLINIC_HOURS_TXT = "7:00 - 21:00";
 // Never a booking on this path: direct to urgent care, notify the secretary.
 function looksLikeEmergency(text) {
   const t = " " + (text || "").toLowerCase() + " ";
-  if (/(fi sedri|fi sadri|sedri youja3|sadri youja3|9albi youja3|9albi ydhor|manajmch netnafes|manajmech netnafes|ma najamch netnafes|n5no9|damm barcha|nazif kbir|dokht|ghmert|urgence|emergency|est3jeli)/.test(t)) return true;
+  if (/(fi sedri|fi sadri|sedri youja3|sadri youja3|9albi youja3|9albi ydhor|manajmch netnafes|manajmech netnafes|ma najamch netnafes|n5no9|damm barcha|nazif kbir|dokht|ghmert|urgence|urgent|emergency|est3jeli)/.test(t)) return true;
   return /(في صدري|صدري يوجع|قلبي يوجع|ما نجمش نتنفس|نخنق|دم برشا|دوخت|غمرت|استعجالي|طوارئ)/.test(text || "");
 }
 
@@ -971,6 +983,10 @@ function looksLikeFrustration(text) {
   const t = " " + (text || "").toLowerCase() + " ";
   if (/\b(kalb|7mar|ba9ra|zebel|nik|manyak|t3ebt|faddit)\b/.test(t)) return true;
   if (/(bot|بوت|روبوت).{0,25}(me5demch|ma ye5demch|ghalet|ma yemchich)/.test(t)) return true;
+  // French frustration ("ça fait trois fois que je demande !") — same brief
+  // apology path as Derja; the caller's fr branch answers in French.
+  if (/(ça fait|ca fait)\s+(trois|plusieurs|\d+)\s+fois/.test(t)) return true;
+  if (/(je répète|je repete|vous ne comprenez pas|ça ne marche pas|ca ne marche pas)/.test(t)) return true;
   return /(الكلب|الحمار|البوت ما يخدمش|ما يخدمش البوت)/.test(text || "");
 }
 
@@ -1013,11 +1029,11 @@ function faqKind(text) {
   if (looksLikeStatusQuestion(text)) return null; // "win wsol el 7ajz" stays a status question
   const t = " " + (text || "").toLowerCase() + " ";
   if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
-  if (/(chnowa esm|chneya esm|chno esm|esm el 3iyada|what('| i)s the (clinic|practice)( name)?|اسم العيادة|شنوة اسم)/.test(t)) return "clinic_name";
+  if (/(chnowa esm|chneya esm|chno esm|esm el 3iyada|what('| i)s the (clinic|practice)( name)?|comment s'appelle|nom du cabinet|nom de la clinique|اسم العيادة|شنوة اسم)/.test(t)) return "clinic_name";
   if (/(te5dem m3a chkoun|te5dem m3a|m3a chkoun te5dem|taba3 chkoun|with (whom|who)|مع شكون|تخدم مع)/.test(t)) return "works_with";
-  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|wa9tech tsakrou|tsakrou|tsekrou|sakrou|ysakrou|7atta wa9tech|ma7loul|horaires|وقت الخدمة|وقتاش تحل|وقتاش تسكر)/.test(t)) return "hours";
-  if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
-  if (/(win |win mawjouda|blasa|3onwen|adresse|ou se trouve|c'est o[uù]|elle est o[uù]|feyn|feya |وين|بلاصة|عنوان|فين|وين موجودة)/.test(t)) return "place";
+  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|wa9tech tsakrou|tsakrou|tsekrou|sakrou|ysakrou|7atta wa9tech|ma7loul|horaires|fermez|fermeture|ouvrez|ouverture|وقت الخدمة|وقتاش تحل|وقتاش تسكر)/.test(t)) return "hours";
+  if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|tarif|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
+  if (/(win |win mawjouda|blasa|3onwen|adresse|o[uù] se trouve|se situe|c'est o[uù]|elle est o[uù]|feyn|feya |وين|بلاصة|عنوان|فين|وين موجودة)/.test(t)) return "place";
   return null;
 }
 
@@ -1087,7 +1103,7 @@ function looksLikeFrenchAuto(text) {
   if (/[êëàâçîïôûùœæ]/i.test(raw)) return true; // French diacritics never appear in Arabizi
   const t = " " + raw.toLowerCase() + " ";
   if (hasDerjaMarker(text)) return false;
-  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je|j'ai|aux|est|s'appelle|cabinet|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
   const hits = (t.match(fr) || []).length;
   if (hits >= 2) return true;
   // One unambiguous French opener is enough ("Bonjour" alone = French).
@@ -1173,7 +1189,9 @@ function frenchFallback(text, clinicName = "") {
 // F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
 function looksLikeWalkin(text) {
   const t = " " + (text || "").toLowerCase() + " ";
-  return /\bnji\b/.test(t) && /\btawa\b/.test(t);
+  if (/\bnji\b/.test(t) && /\btawa\b/.test(t)) return true;
+  // French walk-in: "je peux venir sans rendez-vous ?", "venir maintenant".
+  return /(sans rendez-vous|venir maintenant|venir directement|passer directement|passer maintenant)/.test(t);
 }
 
 // F4 — Two appointments ("zouz rendez-vous, wa7ed liya w wa7ed l omi").
@@ -1201,11 +1219,24 @@ function detectExplicitBeneficiaries(text) {
     const canon = nouns[w];
     if (canon && !found.includes(canon)) found.push(canon);
   }
+  // French beneficiaries ("un pour moi et un pour ma fille") — same canon
+  // keys as Derja; the reply layer translates them per language (BEN_FR).
+  const frBen = [
+    [/pour\s+moi\b/, "lik"], [/pour\s+ma\s+fille\b/, "benti"], [/pour\s+mon\s+fils\b/, "weldi"],
+    [/pour\s+ma\s+femme\b/, "marti"], [/pour\s+mon\s+mari\b/, "rajli"],
+    [/pour\s+ma\s+m[èe]re\b/, "ommek"], [/pour\s+mon\s+p[èe]re\b/, "baba"],
+    [/pour\s+ma\s+s(?:œ|oe)ur\b/, "o5tek"], [/pour\s+mon\s+fr[èe]re\b/, "5ouya"],
+  ];
+  for (const [re, key] of frBen) if (re.test(t) && !found.includes(key)) found.push(key);
   return found;
 }
+// French labels for the canon beneficiary keys (reply layer only).
+const BEN_FR = { lik: "pour vous", ommek: "pour votre mère", o5tek: "pour votre sœur", marti: "pour votre femme", rajli: "pour votre mari", weldi: "pour votre fils", benti: "pour votre fille", baba: "pour votre père", "5ouya": "pour votre frère", sa7bi: "pour votre ami", sa7ebti: "pour votre amie" };
 function looksLikeTwoAppointments(text) {
   const t = " " + (text || "").toLowerCase() + " ";
-  return /zouz/.test(t) && /(rendez|rdv|7ajz|hajz)/.test(t);
+  if (/zouz/.test(t) && /(rendez|rdv|7ajz|hajz)/.test(t)) return true;
+  // French: "deux rendez-vous" / "2 rendez-vous".
+  return /(deux|2)\s+rendez/.test(t);
 }
 const multiBooking = new Map(); // phone -> extra appointments still to book after the current one
 
@@ -1216,7 +1247,11 @@ function looksLikeReschedule(text) {
   // person prefix (n/t/y): nbadal, nbadel, badal, ybadel, nghayar…
   if (/(^|\s)(n|t|y)?b[aeiou]*d[aeiou]*l/.test(t)) return true;
   if (/(^|\s)(n|t|y)?gh[aeiou]*y[aeiou]*r/.test(t)) return true;
-  return /(نبدل|نحب نبدل|نغير)/.test(text || "");
+  if (/(نبدل|نحب نبدل|نغير)/.test(text || "")) return true;
+  // French: déplacer / reporter are unambiguous on their own; changer /
+  // modifier need the appointment noun as anchor ("changer mon rendez-vous").
+  if (/d[ée]placer|reporter/.test(t)) return true;
+  return /(changer|modifier)/.test(t) && /(rendez|rdv)/.test(t);
 }
 const rescheduling = new Map(); // phone -> bookingId being rescheduled
 
@@ -1262,7 +1297,7 @@ function stripTimeTokens(s) {
 
 function stripDateTokens(s) {
   let out = " " + (s || "").toLowerCase() + " ";
-  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "la7ad", "l7ad", "lahad", "el 7ad", "dimanche",
+  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "apres-demain", "la7ad", "l7ad", "lahad", "el 7ad", "dimanche",
     "ethnin", "thnin", "tnin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
     "erb3a", "larb3a", "mercredi", "khmis", "5mis", "jeudi", "jem3a", "jom3a", "vendredi",
     "sebt", "sibt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
@@ -1351,11 +1386,12 @@ function stripDateSubstrings(text) {
     .replace(new RegExp(`\\d{1,2}\\s+(${AR_MONTH_RE})`, "g"), " "); // "27 أكتوبر"
 }
 
-// Bare hour in the patient's text ("10", "10:30") — for the time question.
+// Bare hour in the patient's text ("10", "10:30", French "10h" / "10h30")
+// — for the time question. The h-forms are normalized to the colon shape.
 function bareHour(text) {
-  const cands = stripDateSubstrings(text).match(/\b\d{1,2}(?::\d{2})?\b/g) || [];
+  const cands = stripDateSubstrings(text).match(/\b\d{1,2}:\d{2}\b|\b\d{1,2}h\d{2}\b|\b\d{1,2}h\b|\b\d{1,2}\b/g) || [];
   if (!cands.length) return null;
-  const last = cands[cands.length - 1];
+  const last = cands[cands.length - 1].replace(/h(\d{2})$/, ":$1").replace(/h$/, "");
   const h = parseInt(last.split(":")[0], 10);
   return (h >= 1 && h <= 12) ? last : null;
 }
@@ -1695,13 +1731,13 @@ async function handleBookingTurn(phone, text, history, clinic) {
     let msg;
     if (ben.length >= 2) {
       msg = fr
-        ? `D'accord — deux rendez-vous : un ${ben[0]} et un ${ben[1]}. Nous les faisons un par un : le premier, quel jour et quelle heure vous conviennent ?`
+        ? `D'accord — deux rendez-vous : un ${BEN_FR[ben[0]] || ben[0]} et un ${BEN_FR[ben[1]] || ben[1]}. Nous les faisons un par un : le premier, quel jour et quelle heure vous conviennent ?`
         : ar
         ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]} وواحد ${BEN_AR[ben[1]] || ben[1]}. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟`
         : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]} w wa7ed ${ben[1]}. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?`;
     } else if (ben.length === 1) {
       msg = fr
-        ? `D'accord — deux rendez-vous : un ${ben[0]}. Et le deuxième, c'est pour qui ?`
+        ? `D'accord — deux rendez-vous : un ${BEN_FR[ben[0]] || ben[0]}. Et le deuxième, c'est pour qui ?`
         : ar
         ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]}. والثاني لشكون؟`
         : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]}. W el theni lchkoun?`;
@@ -1766,7 +1802,8 @@ async function handleBookingTurn(phone, text, history, clinic) {
 
   // R) pure refusal ("le") -> drop the proposal, don't glue it to the old slot.
   // Before the merge block: a refusal must never be merged into the proposal.
-  if (proposal && proposal.slot_text && looksLikeRefusal(text)) {
+  // French form ("Non, pas ce jour-là") counts too — in a French conversation.
+  if (proposal && proposal.slot_text && (looksLikeRefusal(text) || (fr2 && looksLikeFrenchRefusal(text)))) {
     await db.clearProposal(phone).catch(() => {});
     return say(phone, fr2
       ? "D'accord, j'ai annulé la proposition. Voulez-vous un autre horaire ? Dites-moi un jour et une heure qui vous conviennent."
@@ -3015,8 +3052,11 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   if (clinic.otherDoctor && new RegExp(String(clinic.otherDoctor).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text || "")) {
     await notifySecretary(`👨‍⚕️ Patient ${phone} yes2el 3la Dr ${clinic.otherDoctor}: "${(text || "").slice(0, 120)}"`, clinic).catch(() => {});
     const arx = await scriptAr(phone, text);
+    const frx = !arx && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text));
     const dh = await say(phone, arx
       ? `الدكتور ${clinic.otherDoctor} يخدم في نفس العيادة — باش نوصلو طلبك للسكرتيرة وهي ترجعلك. تحب نحجزلك في ${clinic.name}؟`
+      : frx
+      ? `Le Dr ${clinic.otherDoctor} travaille dans le même cabinet — je transmets votre demande à la secrétaire, qui vous recontactera. Voulez-vous un rendez-vous au ${clinic.name} ?`
       : `Dr ${clinic.otherDoctor} ye5dem fi nafs el 3iyada — bech nwaslou talbek lel secretaire w hiya tarja3lek. T7eb n7ajzlek fi ${clinic.name}?`, clinic);
     return dh.reply;
   }
@@ -3033,7 +3073,20 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   const _sp1 = dates.resolveSlot(text, false);
   const _sp2 = _sp1.found && _sp1.date ? _sp1 : dates.resolveSlot(text, true);
   const _hasSlot = _sp2.found && !!_sp2.date;
-  if (!_hasSlot && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text))) {
+  // Deterministic intents and pending booking flows beat the French chat
+  // path (2026-10-13, Fix C): a French "je veux annuler mon rendez-vous",
+  // "vous fermez à quelle heure ?", "ça fait trois fois que je demande !"
+  // or a bare "10h" answering a pending time question carries no date, so
+  // the slot check above can't protect it — the French fallback used to
+  // swallow it with a generic greeting and the intent was lost. Derja never
+  // had this problem: handleBookingTurn runs BEFORE the AI there. It owns
+  // these intents in French too (same detectors, French replies).
+  const _prop = await db.getProposal(phone).catch(() => null);
+  const _detIntent = looksLikeEmergency(text) || looksLikeFrustration(text) ||
+    looksLikeCancellation(text) || looksLikeReschedule(text) ||
+    looksLikeStatusQuestion(text) || looksLikeWalkin(text) ||
+    looksLikeTwoAppointments(text) || !!faqKind(text);
+  if (!_hasSlot && !_prop && !_detIntent && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text))) {
     const freply = AI_API_KEY
       ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours)
       : frenchFallback(text, clinic.name); // deterministic French without AI key (local tests)
