@@ -1087,6 +1087,91 @@ async function runMemory() {
   });
 }
 
+// ================= Family 8: live incident 2026-10-13 (Fix V) =================
+// A French patient at the Jrad name gate asked "Vous fermez a quelle heure
+// le jeudi" — NO question mark, exactly as WhatsApp delivered it. The F8
+// FAQ gate demanded looksLikeQuestion (only "?" / start-anchored question
+// words), so the known hours fact fell through to the AI fallthrough and
+// came back as an Arabizi non-answer. These scenarios pin the whole class:
+// config-known FAQ questions, punctuation or not, at every booking state,
+// in French / Derja / Arabic — plus the French doctor-practice question
+// taking the escalation offer in French instead of an Arabizi fallback.
+async function runLive() {
+  await scenario("LV1", "live", "INCIDENT: French hours Q (no '?') at the Jrad name gate — config answer in French, name gate survives", JRA, async (ctx) => {
+    await ctx.say("bonjour cv?");
+    await ctx.say("Je veux un rendez-vous vendredi a 10h");
+    await ctx.say("Oui");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    ctx.chk.hard(isFR(r), `the hours answer must be in French; got: ${r}`, "high");
+    ctx.chk.hard(String(r || "").includes("16:00"), `the answer must give the real Thursday closing (16:00); got: ${r}`, "high");
+    ctx.chk.hard(!/n2akkedlek|ma fhemtch|Ma 3andich/i.test(String(r || "")), `no Arabizi fallback may leak; got: ${r}`, "high");
+    // The booking state is untouched: the awaited name still completes it.
+    const r2 = await ctx.say("Ahmed Ben Salah");
+    ctx.chk.hard(ctx.bookings().length === 1 && hasDate(ctx.bookings()[0].slot, "16-10-2026"),
+      `the pending booking must complete after the FAQ detour; got reply: ${r2}, bookings: ${JSON.stringify(ctx.bookings())}`, "high");
+  });
+
+  await scenario("LV2", "live", "French hours Q (no '?'), cold conversation — answered, NOT swallowed into a Thursday slot proposal", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    ctx.chk.hard(isFR(r) && String(r || "").includes("16:00"), `expected the French hours answer with 16:00; got: ${r}`, "high");
+    ctx.chk.hard(!hasDate(r, "15-10-2026"), `the reply must not turn the question into a 15-10-2026 booking; got: ${r}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking may be created");
+  });
+
+  await scenario("LV3", "live", "French hours Q (no '?') while a proposal is pending — FAQ answered, proposal still completable", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    await ctx.say("Je veux un rendez-vous vendredi a 10h");
+    const r = await ctx.say("Vous fermez a quelle heure le jeudi");
+    ctx.chk.hard(isFR(r) && String(r || "").includes("16:00"), `expected the French hours answer; got: ${r}`, "high");
+    await ctx.say("Oui");
+    const r2 = await ctx.say("Ahmed Ben Salah");
+    ctx.chk.hard(ctx.bookings().length === 1 && hasDate(ctx.bookings()[0].slot, "16-10-2026"),
+      `the proposal must survive the FAQ detour and complete; got: ${r2}`, "medium");
+  });
+
+  await scenario("LV4", "live", "Derja hours Q (no '?') at the name gate — Derja config answer, booking completes", JRA, async (ctx) => {
+    await ctx.say("slem");
+    await ctx.say("nheb na7jez el jom3a el 10 mta3 el sbe7");
+    await ctx.say("ey");
+    const r = await ctx.say("wa9tech tsakrou el 5amis");
+    ctx.chk.hard(String(r || "").includes("Wa9t el 5edma") && String(r || "").includes("16:00"), `expected the Derja hours answer with 16:00; got: ${r}`, "medium");
+    await ctx.say("Ahmed Ben Salah");
+    ctx.chk.hard(ctx.bookings().length === 1, `the booking must complete after the FAQ detour; bookings: ${JSON.stringify(ctx.bookings())}`, "medium");
+  });
+
+  await scenario("LV5", "live", "Arabic hours Q (no '؟') at the name gate — Arabic config answer", JRA, async (ctx) => {
+    await ctx.say("سلام");
+    await ctx.say("نحب نحجز الجمعة العاشرة صباحا");
+    await ctx.say("نعم");
+    const r = await ctx.say("وقتاش تسكرو الخميس");
+    ctx.chk.hard(isAR(r) && String(r || "").includes("16:00"), `expected the Arabic hours answer with 16:00; got: ${r}`, "medium");
+  });
+
+  await scenario("LV6", "live", "French doctor-practice Q, cold — French escalation offer, armed, 'oui' forwards to the supervisor", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    const r = await ctx.say("Est-ce que le docteur fait les implants dentaires ?");
+    ctx.chk.hard(isFR(r) && /demande au docteur/i.test(String(r || "")),
+      `expected the French ask-the-doctor offer; got: ${r}`, "high");
+    ctx.chk.hard(ctx.armed(), "the question offer must be armed", "medium");
+    const r2 = await ctx.say("oui");
+    ctx.chk.hard(/demandé au docteur/i.test(String(r2 || "")), `the acceptance ack must be French; got: ${r2}`, "medium");
+    ctx.chk.hard(ctx.forwardsTo(SUP_JRA).length >= 1, "the question must be forwarded to the Jrad supervisor", "medium");
+  });
+
+  await scenario("LV7", "live", "French doctor-practice Q at the name gate — French offer; giving the name still completes the booking", JRA, async (ctx) => {
+    await ctx.say("bonjour");
+    await ctx.say("Je veux un rendez-vous vendredi a 10h");
+    await ctx.say("Oui");
+    const r = await ctx.say("Est-ce que le docteur fait les implants dentaires ?");
+    ctx.chk.hard(isFR(r) && /demande au docteur/i.test(String(r || "")),
+      `expected the French ask-the-doctor offer at the name gate; got: ${r}`, "high");
+    const r2 = await ctx.say("Ahmed Ben Salah");
+    ctx.chk.hard(ctx.bookings().length === 1 && hasDate(ctx.bookings()[0].slot, "16-10-2026"),
+      `the name must still complete the booking after the offer detour; got: ${r2}, bookings: ${JSON.stringify(ctx.bookings())}`, "medium");
+  });
+}
+
 // ================= Runner =================
 (async () => {
   await runSecretary();
@@ -1096,6 +1181,7 @@ async function runMemory() {
   await runBusiness();
   await runQuestions2();
   await runMemory();
+  await runLive();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
