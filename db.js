@@ -501,6 +501,14 @@ async function updateBookingSlot(id, slot, slot_at) {
   await p.query("UPDATE bookings SET slot=$1, slot_at=$2 WHERE id=$3", [slot, slot_at, id]);
 }
 
+// Name correction after booking ("el esm el sa7i7 howa X", Fix T B16):
+// fix the patient name on the EXISTING row — never a duplicate booking.
+async function updateBookingName(id, patient_name) {
+  const p = getPool();
+  if (!p) return;
+  await p.query("UPDATE bookings SET patient_name=$1 WHERE id=$2", [patient_name, id]);
+}
+
 // ---------- Proposals: the concrete slot the bot offered, awaiting "ey" ----------
 async function saveProposal(phone, slot_text, slot_at, display, awaiting_name = false, partial_name = null) {
   const p = getPool();
@@ -683,6 +691,7 @@ module.exports = {
   getBookingsForDay,
   setBookingStatus,
   updateBookingSlot,
+  updateBookingName,
   saveProposal,
   getProposal,
   clearProposal,
