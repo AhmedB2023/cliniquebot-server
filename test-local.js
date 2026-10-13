@@ -2743,6 +2743,42 @@ async function run() {
     ok("S29: 10:00 not asking for day", !r1.includes("Anhou nhar"), r1.substring(0, 60));
   }
 
+  // ---- S30 — French booking flow (2026-10-13, the Prignol incident): a
+  // French patient who gives a date with no time must be asked for the time
+  // IN FRENCH — and the "10" of "27/10/2026" is the MONTH, never the hour.
+  // The whole flow (time -> matin -> heure -> oui -> nom) stays in French.
+  {
+    const p = "33649329426"; // the incident patient's number format (FR)
+    const r1 = await bot.processPatientText(p, "Bonjour, je voudrais un rendez-vous le 27/10/2026 pour ma mère et moi");
+    has("S30: time question in French", r1, "matin ou l'après-midi");
+    has("S30: time question has the date", r1, "27-10-2026");
+    ok("S30: month 10 is NOT the hour", !r1.includes("el 10") && !r1.includes("à 10h"), r1);
+    ok("S30: no Arabizi in the French reply", !r1.includes("mta3"), r1);
+    const r2 = await bot.processPatientText(p, "le matin");
+    has("S30: 'le matin' understood, asks exact hour in French", r2, "à quelle heure exactement");
+    const r3 = await bot.processPatientText(p, "10h30");
+    has("S30: concrete slot proposed in French", r3, "Voulez-vous que je vous le réserve");
+    has("S30: slot display", r3, "27-10-2026, 10:30");
+    const r4 = await bot.processPatientText(p, "oui");
+    has("S30: name asked in French", r4, "Quel est votre nom et votre prénom");
+    const r5 = await bot.processPatientText(p, "gilles prignol");
+    has("S30: confirmation-pending in French", r5, "Je vous confirme le rendez-vous");
+    has("S30: greets by first name", r5, "D'accord Gilles");
+    const b = await stubDb.getLatestBooking(p);
+    ok("S30: booking pending in db", b && b.status === "pending" && b.slot === "27-10-2026, 10:30", JSON.stringify(b));
+    ok("S30: name on booking", b && b.patient_name === "gilles prignol", JSON.stringify(b));
+  }
+
+  // ---- S31 — Fix A in Arabizi (2026-10-13): a numeric date with no time
+  // must ask the GENERIC time question — the month must not become the hour.
+  {
+    const p = "21600000092";
+    const r1 = await bot.processPatientText(p, "n7eb na7jez rendez-vous 27/10/2026");
+    has("S31: generic time question", r1, "9olli el wa9t");
+    has("S31: date kept", r1, "27-10-2026");
+    ok("S31: month 10 is NOT the hour", !r1.includes("el 10 hethi"), r1);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
