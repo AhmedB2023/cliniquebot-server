@@ -70,6 +70,7 @@ function makeStubDb() {
       const l = bookings.filter((b) => b.phone === phone);
       return l[l.length - 1] || null;
     },
+    getBookingsByPhone: async (phone) => bookings.filter((b) => b.phone === phone),
     getPendingBookings: async (numberId) => bookings.filter((b) => b.status === "pending" && (!numberId || b.number_id === numberId)),
     getBookingsForDay: async (numberId, dateStr) =>
       bookings.filter((b) => (!numberId || b.number_id === numberId) &&
