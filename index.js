@@ -92,7 +92,7 @@ const SYSTEM_PROMPT = `Enti assistant réceptionniste mta3 3iyada (dentiste) fi 
 - 9A3DA MO9ADDSA: 3omrek ma t2akked rendez-vous b tari9a nehe2iya wa7dek. Ken el patient ye9bel wa9t, 9oul "d'accord, merhba bik! n2akkedlek w narja3lek" bark — el t2akid el nehe2i yji mel secretaire.
 - Ken el patient yotlob 7ajz w ma 9alch nhar w wa9t wad7in: is2lou "anhou nhar w anhou wa9t yse3dek?" — MA t9tar7ch wa9t mel rassek (el system yet3amel m3a el wa9t ki y9olhoulek).
 - 3andek el conversation el 9dima (history) — 9bal ma tjewb chouf chnowa t9al 9balek. MAMNOU3 t3awed nafs el sou2el 7arfiyan: ken s2elt el patient 3la 7aja w ma jewbch 3liha b wdhuh, ma t3awedch nafs el sou2el — fassrou b tari9a o5ra w a3tih mthel wadh7 (kima "jem3a 10 mta3 sbe7").
-- Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch el jewb, 9oul 7arfiyan: "Ma 3andich el ma3louma hethi. T7eb nes2el el tbib w narja3lek? Ekteb ey." (MAMNOU3 tekteb "n2akkedlek m3a el 3iyada" wa7dou — dima a3redh el sou2el 3al tbib b "ey".)
+- Ma t5tar3ch ma3loumet (wa9t, blasa, soum): ken ma ta3rafch el jewb, a3redh bech tes2el el tbib BEL LUGHA MTA3 EL PATIENT, 7arfiyan b wa7da mel hedhom 7asb lughet el mou7adtha: bel derja: "Ma 3andich el ma3louma hethi. T7eb nes2el el tbib w narja3lek? Ekteb ey." — bel 3arbi: "ما عنديش المعلومة هذي. تحب نسأل الطبيب ونرجعلك؟ اكتب اي." — bel francais: "Je n'ai pas cette information. Voulez-vous que je demande au docteur ? Écrivez oui." (MAMNOU3 tekteb "n2akkedlek m3a el 3iyada" wa7dou — dima a3redh el sou2el 3al tbib b "ey"/"oui"/"اي" 7asb el lugha.)
 - EL GREETING: ki t7el el conversation b t7iya (3aslema/slem...), 9oul 7arfiyan: "3aslema! Ena l'assistant mta3 {CLINIC_NAME} — Kifech najmou n3awnouk?" (badel {CLINIC_NAME} b esm el 3iyada eli 3tithoulek mel fou9). Ken el patient kteb bel 3arabiya: "عسلامة! أنا مساعد {CLINIC_NAME} — كيفاش نجمو نعاونوك؟". MAMNOU3: ma tzidch "kif int"/"kifek"/"labes"/"chnowa 7alek" — ma tes2elch 3la 7al el patient, od5el direct fel moudhou3. MAMNOU3 sigha o5ra — "chnowa n9dar n3awnek" ghalta, w "Nchalllah" ghalta (es7i7a: "Nchallah").
 - JOUMAL EL E5ER (closing): ken t7eb tzid joumla mezyena fel e5er, esta3mel WA7DA mel hedhom 7arfiyan, ma tbadel 7atta 7arf: "ken 3andek ay sou2el e5er, tfadhel" / "t7eb n3awnek b 7aja o5ra?". Ken el patient kteb bel 3arabiya: "لو عندك أي سؤال آخر، تفضل" / "تحب نعاونك بحاجة أخرى؟". MAMNOU3 t5tare3 sigha o5ra — "ma t heshtich t3awdni" joumla ghalta w mamnou3a. Ken mech met2akked mel sigha, ma tzid chay fel e5er.`;
 
@@ -944,7 +944,12 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
 }
 
 function fallbackReply(text, forceAr, clinicName = "") {
-  if (looksLikeFrench(text)) return frenchFallback(text, clinicName);
+  // Fix V: the lenient detector counts too — the strict looksLikeFrench
+  // vetoes any text containing " le " (a Derja negation), which silently
+  // routed ordinary French sentences ("...le docteur...") to the Arabizi
+  // fb_unknown menu. looksLikeFrenchAuto still vetoes real Derja first
+  // (hasDerjaMarker), so Derja routing is unchanged.
+  if (looksLikeFrench(text) || looksLikeFrenchAuto(text)) return frenchFallback(text, clinicName);
   // Fix S: wording from the MSG catalog (fb_* keys); detection order unchanged.
   const lang = (forceAr !== undefined ? forceAr : isAr(text)) ? "ar" : "az";
   const ctx = { clinicName };
@@ -1198,7 +1203,12 @@ function looksLikeFrenchAuto(text) {
   if (/[êëàâçîïôûùœæ]/i.test(raw)) return true; // French diacritics never appear in Arabizi
   const t = " " + raw.toLowerCase() + " ";
   if (hasDerjaMarker(text)) return false;
-  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je|j'ai|aux|est|s'appelle|cabinet|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  // Fix V: "est-ce / docteur / dentiste / fait" added — ordinary French
+  // questions about the doctor ("Est-ce que le docteur fait les implants ?")
+  // scored a single hit ("est") and were read as Derja, so every fallback
+  // answered them in Arabizi. None of these words occur in Arabizi, and
+  // hasDerjaMarker above still vetoes real Derja first.
+  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je|j'ai|aux|est|est-ce|docteur|médecin|medecin|dentiste|fait|faites|s'appelle|cabinet|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
   const hits = (t.match(fr) || []).length;
   if (hits >= 2) return true;
   // One unambiguous French opener is enough ("Bonjour" alone = French).
@@ -2260,7 +2270,13 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // resolves a date with no concrete time, so the old !r0.date gate
   // swallowed it into the slot flow and "answered" with a proposal. A
   // question with no concrete time and no booking intent is a FAQ.
-  const fk = fk0 && (!r0.date || (looksLikeQuestion(text) && r0.needs === "time" && !looksLikeBookingIntent(text))) ? fk0 : null;
+  // Fix V: the looksLikeQuestion test is GONE from the second clause —
+  // it only knows "?" and start-anchored question words, so the same
+  // question without punctuation ("Vous fermez a quelle heure le jeudi",
+  // live 2026-10-13) failed it, fell past this gate into the name gate /
+  // AI fallthrough, and came back as an Arabizi non-answer. An FAQ kind
+  // with no concrete time and no booking intent IS the question shape.
+  const fk = fk0 && (!r0.date || (r0.needs === "time" && !looksLikeBookingIntent(text))) ? fk0 : null;
   // Fix U (BIZ1): price asked for ANOTHER named doctor ("9adech el
   // consultation 3and Dr Jrad?" on the Mahjoub line) — never quote or leak
   // the other clinic; answer for THIS clinic only. Naming THIS clinic's own
@@ -3535,6 +3551,12 @@ function looksLikeDoctorQuestion(text) {
   // routed to the doctor like any doctor question.
   if (/(docteur|médecin|medecin|dentiste|tbib|doktor).{0,40}(rappel|rappeler)/.test(t)) return true;
   if (/(peut|pourra(it)?|peux-tu)\s+(me|nous)\s+rappeler/.test(t)) return true;
+  // Fix V: the French analog of the Derja practice pattern below —
+  // "est-ce que le docteur fait les implants ?" asks about the doctor's
+  // own practice and takes the same escalation offer. Doctor noun +
+  // practice verb only: availability wording ("le docteur est
+  // disponible ?") names no practice verb and keeps its normal path.
+  if (/(docteur|médecin|medecin|dentiste)\s+(fait|pratique|propose|offre|réalise|realise)\b/.test(t)) return true;
   // Fix U (QUE8/BIZ7): a question about the DOCTOR'S OWN practice in Derja
   // ("el tbib ye5dem bel CNAM?", "el tbib ynajem yji lel dar?") — tbib +
   // practice verb. Weekday hours questions ("ye5dem el sabt?") name no
@@ -3791,7 +3813,14 @@ async function processPatientText(phone, text, numberId, displayNumber) {
 
   const pname = await db.getPatientName(phone).catch(() => null);
   const useAr = await scriptAr(phone, text);
-  const reply = await aiReply(text, history, pname, clinic.name, useAr, "", null, clinic.address, clinic.hours);
+  // Fix V: this generic fallthrough must mirror the conversation language.
+  // It used to always hand the AI the Derja SYSTEM_PROMPT, whose canned
+  // "unknown" line is Arabizi-only — a French patient whose message landed
+  // here (e.g. a question at the name gate, live 2026-10-13) got that
+  // Arabizi line back. A French conversation now gets the French prompt,
+  // exactly like the dedicated French path above; Derja/Arabic unchanged.
+  const langF = await resolveLang(phone, text, { history });
+  const reply = await aiReply(text, history, pname, clinic.name, useAr, "", langF === "fr" ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours);
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   rememberQuestionOffer(phone, reply, text, clinic);
   return reply;
