@@ -2115,7 +2115,13 @@ function stripDateSubstrings(text) {
     .replace(/\b\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?\b/g, " ") // 27/10/2026, 27-10, 27.10.26
     .replace(new RegExp(`\\b\\d{1,2}\\s+(${FR_MONTH_RE})\\b`, "gi"), " ") // "27 octobre"
     .replace(new RegExp(`\\b(${FR_MONTH_RE})\\s+\\d{1,2}\\b`, "gi"), " ") // "octobre 27"
-    .replace(new RegExp(`\\d{1,2}\\s+(${AR_MONTH_RE})`, "g"), " "); // "27 أكتوبر"
+    .replace(new RegExp(`\\d{1,2}\\s+(${AR_MONTH_RE})`, "g"), " ") // "27 أكتوبر"
+    // Fix Y: date-OFFSET expressions — their number is a day count, never
+    // an hour candidate for bareHour ("dans 10 jours" must not turn the
+    // time question into "à 10h, matin ou après-midi ?").
+    .replace(/\bdans\s+(\d{1,2}|une?|deux|trois|quatre|cinq|six|sept)\s+(jours?|semaines?)\b/gi, " ")
+    .replace(/\bba3d\s+\d{1,2}\s+(ayam|ayem|nharat|nhar)\b/gi, " ")
+    .replace(/(?:\bba3d|بعد)\s+\d{1,2}\s+(?:أيام|ايام|أيّام)/g, " ");
 }
 
 // Bare hour in the patient's text ("10", "10:30", French "10h" / "10h30")
