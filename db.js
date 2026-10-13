@@ -458,6 +458,18 @@ async function getLatestBooking(phone) {
   return r.rows[0] || null;
 }
 
+// Fix U: ALL bookings for a phone (status questions must be able to report
+// two active bookings, not just the latest).
+async function getBookingsByPhone(phone) {
+  const p = getPool();
+  if (!p) return [];
+  const r = await p.query(
+    "SELECT * FROM bookings WHERE phone=$1 ORDER BY id ASC",
+    [phone]
+  );
+  return r.rows;
+}
+
 async function getPendingBookings(numberId) {
   const p = getPool();
   if (!p) return [];
@@ -687,6 +699,7 @@ module.exports = {
   findPendingBooking,
   getBooking,
   getLatestBooking,
+  getBookingsByPhone,
   getPendingBookings,
   getBookingsForDay,
   setBookingStatus,
