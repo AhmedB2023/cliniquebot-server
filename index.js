@@ -900,9 +900,14 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
   if (clinicAddress) sys += fr
     ? `\n- Adresse de la clinique : "${clinicAddress}" — si on vous demande l'adresse, donnez exactement celle-ci, n'en inventez jamais d'autre.`
     : `\n- 3onwen el 3iyada: "${clinicAddress}" — ki yse2lou 3la el blasa wel 3onwen, jaweb bel 3onwen hedha bedhabt, ma t5alla9ch 3onwen e5er.`;
-  if (clinicHours) sys += fr
-    ? `\n- Horaires de la clinique : "${clinicHours}" — si on vous demande les horaires, donnez exactement ceux-ci, n'en inventez jamais d'autres.`
-    : `\n- wa9t el 5edma: "${clinicHours}" — ki yse2lou 3la el wa9t, jaweb b hedha bedhabt, ma t5alla9ch wa9t e5er.`;
+  // Fix W: the hours fact handed to the AI is rendered in the
+  // conversation's language first — the prompt orders the AI to quote it
+  // exactly, so the raw (Arabizi-authored) config string would otherwise
+  // be quoted verbatim to a French or Arabic patient.
+  const hoursFact = renderHoursText(clinicHours, ar ? "ar" : fr ? "fr" : "az") || clinicHours;
+  if (hoursFact) sys += fr
+    ? `\n- Horaires de la clinique : "${hoursFact}" — si on vous demande les horaires, donnez exactement ceux-ci, n'en inventez jamais d'autres.`
+    : `\n- wa9t el 5edma: "${hoursFact}" — ki yse2lou 3la el wa9t, jaweb b hedha bedhabt, ma t5alla9ch wa9t e5er.`;
 
   let data = null;
   let ok = false;
@@ -1169,9 +1174,12 @@ function faqAnswer(kind, ar, clinic, fr) {
   // Fix S: wording lives in the MSG catalog (faq_* keys); this function only
   // maps the FAQ kind + clinic facts onto it. Signature unchanged (tests).
   const key = { clinic_name: "faq_clinic_name", works_with: "faq_works_with", who: "faq_who", hours: "faq_hours", price: "faq_price" }[kind] || "faq_place";
-  return msg(key, lang3(ar, fr), {
+  const lang = lang3(ar, fr);
+  return msg(key, lang, {
     clinicName: clinic.name || "",
-    hours: clinic.hours || "",
+    // Fix W: the hours fact is rendered in the patient's language, never
+    // the stored config string pasted raw under a translated label.
+    hours: renderHoursText(clinic.hours, lang) || clinic.hours || "",
     address: clinic.address || "",
   });
 }
@@ -1208,7 +1216,11 @@ function looksLikeFrenchAuto(text) {
   // scored a single hit ("est") and were read as Derja, so every fallback
   // answered them in Arabizi. None of these words occur in Arabizi, and
   // hasDerjaMarker above still vetoes real Derja first.
-  const fr = /\b(bonjour|bonsoir|vous|votre|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|où|je|j'ai|aux|est|est-ce|docteur|médecin|medecin|dentiste|fait|faites|s'appelle|cabinet|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
+  // Fix W: "horaires / quels / sont / vos" added on the same basis — the
+  // most standard French hours question ("Quels sont vos horaires ?")
+  // scored zero hits and resolved as Derja in the deterministic layer, so
+  // the (now localized) hours answer still came out in Arabizi.
+  const fr = /\b(bonjour|bonsoir|vous|votre|vos|disponible|pouvez|voulez|auriez|pourriez|comment|combien|avec|quel|quelle|quels|quelles|où|je|j'ai|aux|est|sont|est-ce|docteur|médecin|medecin|dentiste|fait|faites|horaire|horaires|s'appelle|cabinet|je veux|je voudrais|j'ai besoin|je cherche|je souhaite|j'aimerais|merci beaucoup|s'il vous|svp|plait)\b/g;
   const hits = (t.match(fr) || []).length;
   if (hits >= 2) return true;
   // One unambiguous French opener is enough ("Bonjour" alone = French).
@@ -1854,6 +1866,107 @@ function displayedCloseMap(hoursTxt) {
   return any ? out : null;
 }
 
+// Fix W — parse the clinic's free-text hours into a per-weekday schedule
+// ({ dow: [openMin, closeMin] | null(closed) }) so patient answers can be
+// RENDERED in the patient's language instead of pasting the stored string
+// verbatim (live 2026-10-13: a French patient got "Horaires de travail :
+// Thenin lel 5mis: 09:00 - 16:00, Jom3a w Sebt: ..., Ahad: msakker" — a
+// French label over the Arabizi config text). Same segment/day-word
+// approach as displayedCloseMap, but it also keeps the OPEN time and the
+// explicit closed days, and it is strict: a segment naming a weekday with
+// neither a time range nor a closed marker fails the whole parse, so
+// callers fall back to the stored text instead of rendering a partial —
+// possibly invented — schedule. `kinds` records which day-name vocabulary
+// the text was authored in (az Arabizi / ar Arabic / fr French).
+function parseHoursText(hoursTxt) {
+  if (!hoursTxt || typeof hoursTxt !== "string") return null;
+  const DAYSETS = [
+    ["az", { la7ad: 0, a7ad: 0, ahad: 0, ethnin: 1, thenin: 1, thnin: 1, thleth: 2, thletha: 2, erb3a: 3, larb3a: 3, "5mis": 4, khamis: 4, khmis: 4, khemis: 4, jom3a: 5, jem3a: 5, sebt: 6, sabt: 6 }],
+    ["fr", { dimanche: 0, lundi: 1, mardi: 2, mercredi: 3, jeudi: 4, vendredi: 5, samedi: 6 }],
+    ["ar", { "الأحد": 0, "الاحد": 0, "الاثنين": 1, "الإثنين": 1, "الثلاثاء": 2, "الأربعاء": 3, "الاربعاء": 3, "الخميس": 4, "الجمعة": 5, "السبت": 6 }],
+  ];
+  const days = {};
+  const kinds = { az: 0, ar: 0, fr: 0 };
+  let ranged = 0;
+  for (const seg of hoursTxt.split(",")) {
+    const tm = seg.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+    const dayPart = " " + (tm ? seg.slice(0, tm.index) : seg).toLowerCase().replace(/:/g, " ") + " ";
+    const found = new Map(); // dow -> authoring kind
+    for (const [kind, words] of DAYSETS) {
+      for (const w of Object.keys(words)) {
+        if (dayPart.includes(" " + w + " ")) found.set(words[w], kind);
+      }
+    }
+    if (!found.size) continue; // a note naming no weekday: nothing to learn
+    for (const k of new Set(found.values())) kinds[k]++;
+    if (tm) {
+      const open = parseInt(tm[1], 10) * 60 + parseInt(tm[2], 10);
+      const close = parseInt(tm[3], 10) * 60 + parseInt(tm[4], 10);
+      const dows = [...found.keys()];
+      if (/( lel | au | إلى | الى )/.test(dayPart) && dows.length >= 2) {
+        for (let d = Math.min(...dows); d <= Math.max(...dows); d++) days[d] = [open, close];
+      } else {
+        for (const d of dows) days[d] = [open, close];
+      }
+      ranged++;
+    } else if (/(msakker|msaker|مسكر|مسكرة|مغلق|ferm)/i.test(seg)) {
+      for (const d of found.keys()) days[d] = null;
+    } else {
+      return null; // weekday named with neither hours nor "closed": unsafe
+    }
+  }
+  if (!ranged) return null;
+  return { days, kinds };
+}
+
+// Fix W — render the stored hours in the patient's language. Facts come
+// only from parseHoursText (same days, same times); when the text was
+// authored in the patient's own language it IS the rendering (every
+// current config is authored in Arabizi, so Derja answers stay
+// byte-identical), and when the parse fails the stored text is returned
+// as-is — the patient always gets an answer, never silence.
+const HOURS_RENDER = {
+  fr: { names: ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"],
+    lower: ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"],
+    closed: "fermé", sep: " : ", join: ", ",
+    range: (a, b, n) => (n === 2 ? `${a} et ${b}` : `${a} à ${b}`) },
+  ar: { names: ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"],
+    lower: null, closed: "مسكر", sep: ": ", join: "، ",
+    range: (a, b, n) => (n === 2 ? `${a} و${b}` : `من ${a} إلى ${b}`) },
+  az: { names: ["Ahad", "Thenin", "Thleth", "Larb3a", "5mis", "Jom3a", "Sebt"],
+    lower: ["a7ad", "thenin", "thleth", "larb3a", "5mis", "jom3a", "sebt"],
+    closed: "msakker", sep: ": ", join: ", ",
+    range: (a, b, n) => (n === 2 ? `${a} w ${b}` : `${a} lel ${b}`) },
+};
+
+function renderHoursText(hoursTxt, lang) {
+  if (!hoursTxt || typeof hoursTxt !== "string") return null;
+  const p = parseHoursText(hoursTxt);
+  if (!p) return hoursTxt;
+  const others = ["az", "ar", "fr"].filter((k) => k !== lang);
+  if (p.kinds[lang] > 0 && others.every((k) => p.kinds[k] === 0)) return hoursTxt;
+  const R = HOURS_RENDER[lang] || HOURS_RENDER.az;
+  const fmt = (mins) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+  const order = [1, 2, 3, 4, 5, 6, 0]; // Monday first, Sunday last
+  const seen = order.filter((d) => Object.prototype.hasOwnProperty.call(p.days, d));
+  if (!seen.length) return hoursTxt;
+  const groups = [];
+  for (const d of seen) {
+    const v = p.days[d];
+    const key = v ? `${v[0]}-${v[1]}` : "closed";
+    const last = groups[groups.length - 1];
+    if (last && last.key === key && order.indexOf(d) === order.indexOf(last.days[last.days.length - 1]) + 1) last.days.push(d);
+    else groups.push({ key, val: v, days: [d] });
+  }
+  return groups.map((g) => {
+    const first = R.names[g.days[0]];
+    const lastName = (R.lower || R.names)[g.days[g.days.length - 1]];
+    const label = g.days.length === 1 ? first : R.range(first, lastName, g.days.length);
+    const val = g.val ? `${fmt(g.val[0])} - ${fmt(g.val[1])}` : R.closed;
+    return `${label}${R.sep}${val}`;
+  }).join(R.join);
+}
+
 // F10 — Clinic-hours gate. A concrete slot outside working hours (or on a closed
 // day) is rejected with the next suitable open slot, saved as the new proposal.
 function hoursCheck(r, hours, closeMap) {
@@ -1910,8 +2023,10 @@ function suggestOpenDay(dateUTC, ar, hours) {
 
 function hoursRejectMsg(ar, reason, sugDisplay, hoursTxt, fr) {
   // Fix S: wording from the MSG catalog (hours_reject_* keys).
+  // Fix W: the hours payload is rendered in the patient's language.
+  const lang = lang3(ar, fr);
   return msg(reason === "closed" ? "hours_reject_closed" : "hours_reject_hours",
-    lang3(ar, fr), { hrs: hoursTxt || CLINIC_HOURS_TXT, sug: sugDisplay });
+    lang, { hrs: renderHoursText(hoursTxt, lang) || hoursTxt || CLINIC_HOURS_TXT, sug: sugDisplay });
 }
 
 // Date substrings must never leak into the time question: in "27/10/2026"
@@ -2219,9 +2334,12 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // Displayed closing per weekday (Fix T, H1/H2/H3): tells a last bookable
   // start from a start at the real close, inside hoursCheck.
   const closeMap = displayedCloseMap(clinic.hours);
-  const rangeTxt = clinic.hours ? clinic.hours : `mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}`;
-  const rangeTxtAr = clinic.hours ? clinic.hours : `من الاثنين للسبت: ${CLINIC_HOURS_TXT}`;
-  const rangeTxtFr = clinic.hours ? clinic.hours : `du lundi au samedi : ${CLINIC_HOURS_TXT}`;
+  // Fix W: each language's range text is the rendered schedule, not the
+  // stored string (the az render of an Arabizi-authored text is the text
+  // itself, so Derja wording is unchanged).
+  const rangeTxt = clinic.hours ? (renderHoursText(clinic.hours, "az") || clinic.hours) : `mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}`;
+  const rangeTxtAr = clinic.hours ? (renderHoursText(clinic.hours, "ar") || clinic.hours) : `من الاثنين للسبت: ${CLINIC_HOURS_TXT}`;
+  const rangeTxtFr = clinic.hours ? (renderHoursText(clinic.hours, "fr") || clinic.hours) : `du lundi au samedi : ${CLINIC_HOURS_TXT}`;
   // Language (Fix S): ONE central resolver for the whole booking flow —
   // explicit request in this message > Arabic script > saved preference >
   // this message's own markers > sticky context (pending proposal, then
@@ -5040,6 +5158,8 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, hasDerjaMarker, aiLangIsFrench, FRENCH_SYSTEM_PROMPT, frenchFallback,
   // Per-number booking hours (exported for the regression test)
   parseBookingHours, SEED_CLINICS,
+  // Fix W (2026-10-13): localized rendering of the stored hours text
+  parseHoursText, renderHoursText,
   // Dentist viewer token (exported for the regression test)
   viewerToken,
   // Salon vertical (exported for the regression test)
