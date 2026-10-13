@@ -257,9 +257,12 @@ function resolveSlot(rawText, preferAr) {
   }
 
   // \b doesn't work on Arabic letters (non-\w), so Arabic period words use includes().
-  const morning = /\bsbe7\b|\bsbah\b/.test(t) || t.includes(" صباح ") || t.includes(" الصباح ");
-  const afternoon = /\b3chiya\b|\bl3chiya\b|\bla3chiya\b|\b3chya\b|\bl3chya\b|\bla3chya\b|\b3achiya\b|\b3vhiya\b|\bl3vhiya\b|\bla3vhiya\b|\b3chwa\b|\bl3chwa\b|\bla3chwa\b/.test(t) || t.includes(" عشية ") || t.includes(" العشية ");
-  const night = /\blil\b/.test(t) || t.includes(" ليل ") || t.includes(" الليل ");
+  // French period words included (2026-10-13): a French patient answers the
+  // time question with "le matin" / "l'après-midi" / "le soir" — norm() has
+  // already folded "après" -> "apres". None of these words exist in Derja.
+  const morning = /\bsbe7\b|\bsbah\b|\bmatin\b/.test(t) || t.includes(" صباح ") || t.includes(" الصباح ");
+  const afternoon = /\b3chiya\b|\bl3chiya\b|\bla3chiya\b|\b3chya\b|\bl3chya\b|\bla3chya\b|\b3achiya\b|\b3vhiya\b|\bl3vhiya\b|\bla3vhiya\b|\b3chwa\b|\bl3chwa\b|\bla3chwa\b|\bapres[-\s]midi\b/.test(t) || t.includes(" عشية ") || t.includes(" العشية ");
+  const night = /\blil\b|\bsoir\b/.test(t) || t.includes(" ليل ") || t.includes(" الليل ");
 
   let needs = null; // 'time' when the hour is ambiguous (e.g. bare "10")
   let finalHour = hour;
