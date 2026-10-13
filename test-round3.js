@@ -1046,8 +1046,15 @@ async function runConsist() {
     const r = await ctx.say("nheb nfassakh el rendez-vous mte3i");
     ctx.chk.hard(typeof r === "string" && r.length > 0, "the cancel attempt must get a reply", "medium");
     ctx.chk.hard(ctx.bookings().length === 1, "no new booking may appear", "high");
-    ctx.chk.soft(ctx.bookings()[0].status === "cancelled",
-      `a past appointment cancelled by the patient stays '${ctx.bookings()[0].status}' — the record is never cleaned up; reply: ${r}`, "low");
+    // Fix AA SUPERSEDES this scenario's original soft expectation
+    // (that a past appointment still gets cancelled for cleanup):
+    // cancellation NEVER selects a past booking — the record stays
+    // untouched and the reply is the "no upcoming booking" one.
+    // AA3 hard-pins the same shape; see the fixaa family.
+    ctx.chk.soft(ctx.bookings()[0].status === "pending",
+      `Fix AA: a past appointment is never the cancel target — status stays '${ctx.bookings()[0].status}'; reply: ${r}`, "low");
+    ctx.chk.soft(/ma l9it|ma 3andek/i.test(String(r || "")),
+      `Fix AA: with nothing upcoming, the reply is a 'no booking' one; got: ${r}`, "low");
   });
 
   await scenario("CN4", "consist", "Reschedule chain of THREE, each confirmed (Jrad)", JRA, async (ctx) => {
@@ -1575,6 +1582,138 @@ async function runFixY() {
   });
 }
 
+// ================= Family 12: Fix Z — weekday questions =================
+// Live defect (Ahmed, production, Jrad line): the bot itself proposed
+// 31-10-2026 (fin du mois) and asked for the time; the patient asked
+// "quel jour sera t-il ?" and got the ask-the-doctor offer; "le 31
+// c'est quel jour? lundi, mardi....." got '"31" n'est pas une heure
+// valide' (a QUESTION parsed as an invalid hour); "31 octobre quel
+// jour?" got the time question repeated. A weekday question must be
+// answered from the calendar, in the patient's language, and the
+// pending flow must resume. Oct 31 2026 is a Saturday; Dec 25 2026 a
+// Friday (frozen clock: Wed 2026-10-14).
+async function runFixZ() {
+  await scenario("FZ1", "fixz", "Fix Z: 'fin du mois' -> 'quel jour sera t-il ?' answered 'samedi', time question re-asked (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("je veux Un rendez-vous fin du mois");
+    ctx.chk.hard(hasDate(String(r1 || ""), "31-10-2026") && /dites-moi l'heure/i.test(String(r1 || "")),
+      `setup: 31-10-2026 proposed, time asked; got: ${r1}`, "medium");
+    const r2 = await ctx.say("quel jour sera t-il ?");
+    const rr = String(r2 || "");
+    ctx.chk.hard(/samedi/i.test(rr), `the weekday of the pending 31-10 must be answered (samedi); got: ${rr}`, "high");
+    ctx.chk.hard(hasDate(rr, "31-10-2026"), `the answer names the date it is about; got: ${rr}`, "medium");
+    ctx.chk.hard(!/demande au docteur/i.test(rr), `a calendar question is not a doctor question; got: ${rr}`, "high");
+    ctx.chk.hard(/dites-moi l'heure/i.test(rr), `the pending time question is re-asked once (flow resumes); got: ${rr}`, "medium");
+    const prop = ctx.proposal();
+    ctx.chk.hard(!!prop && !prop.slot_at && hasDate(prop.display || "", "31-10-2026"),
+      "the date-only proposal survives the weekday question", "medium");
+    const r3 = await ctx.say("10h");
+    ctx.chk.hard(hasDate(String(r3 || ""), "31-10-2026") && String(r3 || "").includes("10:00"),
+      `the hour answer completes the 31-10 proposal at 10:00; got: ${r3}`, "high");
+  });
+
+  await scenario("FZ2", "fixz", "Fix Z: 'le 31 c'est quel jour?' is never an 'invalid hour'; a bare '10' still resolves (Jrad)", JRA, async (ctx) => {
+    await ctx.say("je veux Un rendez-vous fin du mois");
+    const r2 = await ctx.say("le 31 c'est quel jour? lundi, mardi.....");
+    const rr = String(r2 || "");
+    ctx.chk.hard(!/n'est pas une heure valide/i.test(rr), `a question must never be scolded as an invalid hour; got: ${rr}`, "high");
+    ctx.chk.hard(/samedi/i.test(rr), `the explicit 'le 31' is the target — samedi; got: ${rr}`, "high");
+    const r3 = await ctx.say("31 octobre quel jour?");
+    const r3s = String(r3 || "");
+    ctx.chk.hard(/samedi/i.test(r3s) && !/n'est pas une heure valide/i.test(r3s),
+      `'31 octobre' + weekday question answered samedi; got: ${r3s}`, "high");
+    const r4 = await ctx.say("10");
+    ctx.chk.hard(hasDate(String(r4 || ""), "31-10-2026") && String(r4 || "").includes("10:00"),
+      `a valid bare hour answer still resolves normally in the same state (31-10 10:00); got: ${r4}`, "high");
+  });
+
+  await scenario("FZ3", "fixz", "Fix Z: Derja weekday question mid-flow 'w el 31 chnowa nharou?' -> 'el sebt' (Mahjoub)", MAH, async (ctx) => {
+    const r1 = await ctx.say("nheb na7jez el sebt");
+    ctx.chk.hard(hasDate(String(r1 || ""), "17-10-2026"), `setup: Sat 17-10 date-only proposal; got: ${r1}`, "medium");
+    const r2 = await ctx.say("w el 31 chnowa nharou?");
+    const rr = String(r2 || "");
+    ctx.chk.hard(/el sebt/.test(rr), `the weekday is answered in Derja (el sebt); got: ${rr}`, "high");
+    ctx.chk.hard(hasDate(rr, "31-10-2026"), `the answer is about the explicit 31st; got: ${rr}`, "medium");
+    const prop = ctx.proposal();
+    ctx.chk.hard(!!prop && hasDate(prop.display || "", "17-10-2026"),
+      "the pending 17-10 proposal is untouched by the question about the 31st", "medium");
+    const r3 = await ctx.say("10");
+    ctx.chk.hard(hasDate(String(r3 || ""), "17-10-2026") && String(r3 || "").includes("10:00"),
+      `the hour answer still lands on the pending 17-10 at 10:00; got: ${r3}`, "medium");
+  });
+
+  await scenario("FZ4", "fixz", "Fix Z: cold explicit-date weekday question 'le 25 decembre c'est quel jour?' -> vendredi (Jrad)", JRA, async (ctx) => {
+    const r = await ctx.say("le 25 decembre c'est quel jour?");
+    const rr = String(r || "");
+    ctx.chk.hard(/vendredi/i.test(rr) && hasDate(rr, "25-12-2026"),
+      `Dec 25 2026 is a Friday — answered from the calendar; got: ${rr}`, "high");
+    ctx.chk.hard(!/dites-moi l'heure/i.test(rr), `a pure weekday question is not turned into a booking step; got: ${rr}`, "medium");
+    ctx.chk.hard(ctx.bookings().length === 0 && !ctx.proposal(),
+      "no booking and no proposal are created by a weekday question", "medium");
+  });
+}
+
+// ================= Family 13: Fix AA — cancellation target selection =================
+// Live defect (Ahmed, production, Jrad line): the patient had only a
+// PENDING PROPOSAL in this session and wrote "nfassa5 el rendez-vous";
+// the bot cancelled a STALE PAST booking from an old test session
+// (25 September — already past) and parroted its stored relative
+// display string ("ghodwa 25 septembre, 16:00") in the confirmation.
+// Cancellation must (1) never select a past booking — nearest upcoming
+// wins; (2) render the date from the stored ISO, never the stored
+// relative string; (3) with no upcoming booking, a pending proposal is
+// what gets cancelled. Frozen clock: Wed 2026-10-14 09:00 Tunis.
+async function runFixAA() {
+  const PAST_SLOT = "ghodwa 25 septembre, 16:00"; // stored relative string, like the live row
+  const PAST_ISO = "2026-09-25T15:00:00.000Z";    // 25-09-2026 16:00 Tunis — PAST at the frozen clock
+
+  await scenario("AA1", "fixaa", "Fix AA: past + upcoming bookings -> cancel hits the UPCOMING one, date rendered from ISO (Jrad)", JRA, async (ctx) => {
+    const upcId = await stubDb.saveBooking(ctx.phone, "ghodwa 21 octobre, 10:00", "2026-10-21T09:00:00.000Z", "Patient Test", JRA);
+    // The past row is seeded LAST (latest-created): the old
+    // latest-created default would pick IT — the eligible pool must
+    // exclude it on time alone, whatever the creation order.
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_SLOT, PAST_ISO, "Ancien Test", JRA);
+    await ctx.say("Bonjour");
+    const r = await ctx.say("Annule mon rendez-vous");
+    const rr = String(r || "");
+    const bs = ctx.bookings();
+    const past = bs.find((b) => b.id === pastId);
+    const upc = bs.find((b) => b.id === upcId);
+    ctx.chk.hard(!!upc && upc.status === "cancelled", `the UPCOMING booking is the one cancelled; got: ${JSON.stringify(bs.map((b) => [b.id, b.status]))}`, "high");
+    ctx.chk.hard(!!past && past.status === "pending", `the PAST booking is never selected — untouched; got: ${past && past.status}`, "high");
+    ctx.chk.hard(hasDate(rr, "21-10-2026") && rr.includes("10:00"),
+      `the confirmation renders the date from the stored ISO (21-10-2026, 10:00); got: ${rr}`, "high");
+    ctx.chk.hard(!/ghodwa/i.test(rr) && !/septembre/i.test(rr),
+      `the stored relative string is never parroted; got: ${rr}`, "high");
+    ctx.chk.hard(/annulé le rendez-vous/i.test(rr), `a real booking cancellation is confirmed; got: ${rr}`, "medium");
+  });
+
+  await scenario("AA2", "fixaa", "Fix AA: only a past booking + a pending proposal -> the PROPOSAL is cancelled (Jrad)", JRA, async (ctx) => {
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_SLOT, PAST_ISO, "Ancien Test", JRA);
+    const r1 = await ctx.say("Je voudrais un rendez-vous vendredi a 9h");
+    ctx.chk.hard(!!ctx.proposal() && ctx.bookings().length === 1,
+      `setup: one past booking + one pending proposal (Fri 16-10); got proposal=${JSON.stringify(ctx.proposal())}`, "medium");
+    const r2 = await ctx.say("nfassa5 el rendez-vous");
+    const rr = String(r2 || "");
+    ctx.chk.hard(ctx.proposal() === null, "the pending proposal is cleared by the cancellation", "high");
+    const past = ctx.bookings().find((b) => b.id === pastId);
+    ctx.chk.hard(!!past && past.status === "pending", `the past booking is untouched; got: ${past && past.status}`, "high");
+    ctx.chk.hard(/annulé la proposition/i.test(rr), `the reply says the PROPOSAL/request was cancelled; got: ${rr}`, "high");
+    ctx.chk.hard(!/annulé le rendez-vous/i.test(rr) && !/septembre/i.test(rr),
+      `no fake booking cancellation is claimed; got: ${rr}`, "high");
+  });
+
+  await scenario("AA3", "fixaa", "Fix AA: only a past booking, nothing else -> 'no booking' reply, past booking untouched (Jrad)", JRA, async (ctx) => {
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_SLOT, PAST_ISO, "Ancien Test", JRA);
+    await ctx.say("Bonjour");
+    const r = await ctx.say("Annule mon rendez-vous");
+    const rr = String(r || "");
+    ctx.chk.hard(/Je n'ai trouvé aucun rendez-vous/i.test(rr),
+      `with nothing upcoming, the 'no booking' reply applies; got: ${rr}`, "high");
+    const past = ctx.bookings().find((b) => b.id === pastId);
+    ctx.chk.hard(!!past && past.status === "pending", `the past booking stays untouched; got: ${past && past.status}`, "high");
+  });
+}
+
 (async () => {
   await runLong();
   await runEdge();
@@ -1587,6 +1726,8 @@ async function runFixY() {
   await runLangChaos();
   await runFixX();
   await runFixY();
+  await runFixZ();
+  await runFixAA();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
