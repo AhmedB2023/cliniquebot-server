@@ -317,8 +317,28 @@ function resolveSlot(rawText, preferAr) {
     const dansM = t.match(/\bdans\s+(\d{1,2}|une?|deux|trois|quatre|cinq|six|sept)\s+(jours?|semaines?)\b/);
     if (dansM) {
       const n = /^\d+$/.test(dansM[1]) ? parseInt(dansM[1], 10) : FR_NUM[dansM[1]];
-      if (n) relDays = dansM[2].startsWith("sem") ? n * 7 : n;
-    } else if (/\bba3d\s+(esbou3|osbou3|esbo3|semana|simana|semmana)\b/.test(t) || t.includes(" بعد أسبوع ") || t.includes(" بعد اسبوع ")) {
+      if (n) {
+        relDays = dansM[2].startsWith("sem") ? n * 7 : n;
+        // Fix Y: the offset NUMBER belongs to the DATE — mask the whole
+        // expression out of `rest` (same pattern as section 1) so the
+        // time scan in section 3 can never read it as an hour ("dans 10
+        // jours" invented a concrete 10:00 slot live; "dans 2 semaines"
+        // invented 14:00).
+        rest = rest.replace(dansM[0], " ");
+      }
+    }
+    // Fix Y: Derja "ba3d 3 ayam" / mixed "ba3d 3 أيام" / Arabic "بعد 3
+    // أيام" (+Nd) — previously not parsed as a date at all, so the digit
+    // fell through to the hour scan. Same masking rule for its number.
+    if (relDays === null) {
+      const ba3dM = t.match(/\bba3d\s+(\d{1,2})\s+(ayam|ayem|nharat|nhar)\b/)
+        || t.match(/(?:\bba3d|بعد)\s+(\d{1,2})\s+(?:أيام|ايام|أيّام)/);
+      if (ba3dM) {
+        const n = parseInt(ba3dM[1], 10);
+        if (n >= 1) { relDays = n; rest = rest.replace(ba3dM[0], " "); }
+      }
+    }
+    if (relDays === null && (/\bba3d\s+(esbou3|osbou3|esbo3|semana|simana|semmana)\b/.test(t) || t.includes(" بعد أسبوع ") || t.includes(" بعد اسبوع "))) {
       relDays = 7;
     }
     if (relDays !== null) {
