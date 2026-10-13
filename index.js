@@ -948,6 +948,9 @@ function fallbackReply(text, forceAr, clinicName = "") {
   // Fix S: wording from the MSG catalog (fb_* keys); detection order unchanged.
   const lang = (forceAr !== undefined ? forceAr : isAr(text)) ? "ar" : "az";
   const ctx = { clinicName };
+  // Red line first (Fix T, X9): medication/dosage wording is a medical
+  // hand-off, never the price FAQ — "9adech" must not hijack it.
+  if (looksLikeMedicalQuestion(text)) return msg("fb_medical", lang, ctx);
   if (lang === "ar") {
     if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text)) return msg("fb_greeting", lang, ctx);
     if (/(حجز|رونديفو|موعد)/.test(text)) return msg("fb_booking", lang, ctx);
@@ -1054,6 +1057,10 @@ const CLINIC_HOURS_TXT = "7:00 - 21:00";
 function looksLikeEmergency(text) {
   const t = " " + (text || "").toLowerCase() + " ";
   if (/(fi sedri|fi sadri|sedri youja3|sadri youja3|9albi youja3|9albi ydhor|manajmch netnafes|manajmech netnafes|ma najamch netnafes|n5no9|damm barcha|nazif kbir|dokht|ghmert|urgence|urgent|emergency|est3jeli)/.test(t)) return true;
+  // Fix T (X6): the same red flags in French — a French bleeding emergency
+  // ("je saigne beaucoup…") must escalate exactly like the Derja one
+  // instead of falling into the French chat path's generic greeting.
+  if (/(saigne|saignement|hémorragie|hemorragie|évanoui|evanoui|perdu connaissance|poitrine|n'arrive pas à respirer|n'arrive pas a respirer|difficulté à respirer|difficulte a respirer|je m'étouffe|je m'etouffe)/.test(t)) return true;
   return /(في صدري|صدري يوجع|قلبي يوجع|ما نجمش نتنفس|نخنق|دم برشا|دوخت|غمرت|استعجالي|طوارئ)/.test(text || "");
 }
 
@@ -1105,13 +1112,31 @@ function looksLikeQuestion(text) {
   return /^(win|wen|winech|chkoun|chkon|chnowa|chneya|chno|9adech|kadech|b9adech|kifech|kif |wakteh|wa9tech|3lech|alech|où|comment|combien|quel|quelle|quels|quelles|est-ce|شنوة|شكون|وين|كيفاش|قداش|وقتاش|علاش|هل |شنهي)/i.test(t);
 }
 
+// Medication / dosage wording — the medical red line ("idari = bot,
+// tibbi = insen"): drug names, prescription words and "how many times a
+// day" questions belong to the human hand-off, never to a FAQ answer.
+function looksLikeMedicalQuestion(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(paracétamol|paracetamol|doliprane|ibuprofène|ibuprofene|antibiotique|médicament|medicament|ordonnance)/.test(t)) return true;
+  if (/(دواء|أدوية|علاج|جرعة)/.test(raw)) return true;
+  if (/\b(dwe|dawa)\b/.test(t)) return true;
+  if (/(9adech|قداش|combien de fois).{0,25}(marra|مرة|fois)/.test(t)) return true; // dosage frequency
+  return false;
+}
+
 function faqKind(text) {
   if (looksLikeStatusQuestion(text)) return null; // "win wsol el 7ajz" stays a status question
   const t = " " + (text || "").toLowerCase() + " ";
   if (/(chkoun enti|chkounek|chkon enti|who are you|شكون انت|شكونك|انت شكون)/.test(t)) return "who";
   if (/(chnowa esm|chneya esm|chno esm|esm el 3iyada|what('| i)s the (clinic|practice)( name)?|comment s'appelle|nom du cabinet|nom de la clinique|اسم العيادة|شنوة اسم)/.test(t)) return "clinic_name";
   if (/(te5dem m3a chkoun|te5dem m3a|m3a chkoun te5dem|taba3 chkoun|with (whom|who)|مع شكون|تخدم مع)/.test(t)) return "works_with";
-  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|wa9tech tsakrou|tsakrou|tsekrou|sakrou|ysakrou|7atta wa9tech|ma7loul|horaires|fermez|fermeture|ouvrez|ouverture|وقت الخدمة|وقتاش تحل|وقتاش تسكر)/.test(t)) return "hours";
+  // "te5dem el sabt?" (Fix T, H11): working verb + a weekday = hours question.
+  if (/(wa9t el 5edma|wa9t te5dem|wa9tech t7ell|wa9tech tsakrou|tsakrou|tsekrou|sakrou|ysakrou|7atta wa9tech|ma7loul|horaires|fermez|fermeture|ouvrez|ouverture|وقت الخدمة|وقتاش تحل|وقتاش تسكر)/.test(t)
+    || /(te5dem|te5dmou|ye5dem|t5dem)\s+(el\s+)?(sebt|sabt|la7ad|ethnin|thenin|thleth|erb3a|khmis|jem3a|jom3a|samedi|dimanche|lundi|mardi|mercredi|jeudi|vendredi)/.test(t)) return "hours";
+  // Fix T (X9): medical wording beats the price FAQ — "9adech men marra
+  // ne5ou el paracétamol" is a dosage question, not "9adech el soum".
+  if (looksLikeMedicalQuestion(text)) return null;
   if (/(9adech|b9adech|kadech|soum|prix|bikam|flous|combien|tarif|بقداش|سوم|فلوس|الثمن)/.test(t)) return "price";
   if (/(win |win mawjouda|blasa|3onwen|adresse|o[uù] se trouve|se situe|c'est o[uù]|elle est o[uù]|feyn|feya |وين|بلاصة|عنوان|فين|وين موجودة)/.test(t)) return "place";
   return null;
@@ -1166,7 +1191,10 @@ function looksLikeFrenchAuto(text) {
 // Derja markers: ANY of these in a message means Derja, full stop.
 function hasDerjaMarker(text) {
   const t = " " + (text || "").toLowerCase() + " ";
-  return /(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|slem|slm)/.test(t);
+  // "baddel"/"a7sen" added for Fix T (L2): a full Derja correction sentence
+  // ("le, baddel — el sabt el 10 a7sen liya") carries no older marker, so
+  // the conversation language never switched off the French proposal.
+  return /(n7eb|na7jez|nheb|chnowa|chneya|9adech|kadech|win el|wa9t|ghodwa|lyoum|jem3a|barcha|mriguel|tfadhel|3aslema|ahla|slem|slm|baddel|a7sen)/.test(t);
 }
 
 // Semantic fallback (2026-10-01): the word-list detector can't know every
@@ -1235,6 +1263,12 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 // generic French fallback (fb_booking's fr variant is that same text).
 function frenchFallback(text, clinicName = "") {
   const t = (text || "").toLowerCase();
+  // Red line first (Fix T, X8): a medication question is handed to the
+  // doctor, never answered with the generic menu — and it never names a
+  // drug itself. The "je demande au docteur" wording arms the escalation
+  // offer in processPatientText, exactly like the Derja path.
+  if (/(médicament|medicament|antibiotique|ordonnance|paracétamol|paracetamol|doliprane|ibuprofène|ibuprofene|douleur)/.test(t))
+    return msg("fb_medical", "fr", { clinicName });
   if (/bonjour|bonsoir|salut/.test(t))
     return msg("fb_greeting", "fr", { clinicName });
   return msg("fb_booking", "fr", { clinicName });
@@ -1291,6 +1325,28 @@ function looksLikeTwoAppointments(text) {
   if (/zouz/.test(t) && /(rendez|rdv|7ajz|hajz)/.test(t)) return true;
   // French: "deux rendez-vous" / "2 rendez-vous".
   return /(deux|2)\s+rendez/.test(t);
+}
+
+// Fix T (B5/B6): the FIRST appointment's segment of a two-appointments
+// message — the text up to the SECOND beneficiary marker, with the
+// beneficiary phrases and the "(zouz|deux) rendez-vous" phrase stripped:
+// their number words ("zouz" -> 2, "wa7ed" -> 1) would poison the hour
+// search, and the second appointment's slot must not leak into the first.
+function firstSlotSegment(text) {
+  const raw = text || "";
+  const marks = [];
+  const reD = /\bwa7e?d\s+(?:li[a-z0-9]+|l\s+[a-z0-9]+)/g;
+  const reF = /\bun(?:e)?\s+pour\s+(?:moi|ma\s+\w+|mon\s+\w+)/gi;
+  let m;
+  while ((m = reD.exec(raw))) marks.push(m.index);
+  while ((m = reF.exec(raw))) marks.push(m.index);
+  marks.sort((a, b) => a - b);
+  const seg = marks.length >= 2 ? raw.slice(0, marks[1]) : raw;
+  return seg
+    .replace(/\bwa7e?d\s+(?:li[a-z0-9]+|l\s+[a-z0-9]+)/gi, " ")
+    .replace(/\bun(?:e)?\s+pour\s+(?:moi|ma\s+\w+|mon\s+\w+)/gi, " ")
+    .replace(/(zouz|deux|2)\s+rendez[-\s]?vous/gi, " ")
+    .trim();
 }
 const multiBooking = new Map(); // phone -> extra appointments still to book after the current one
 
@@ -1352,9 +1408,9 @@ function stripTimeTokens(s) {
 function stripDateTokens(s) {
   let out = " " + (s || "").toLowerCase() + " ";
   const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "apres-demain", "la7ad", "l7ad", "lahad", "el 7ad", "dimanche",
-    "ethnin", "thnin", "tnin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
+    "ethnin", "thnin", "tnin", "thenin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
     "erb3a", "larb3a", "mercredi", "khmis", "5mis", "jeudi", "jem3a", "jom3a", "vendredi",
-    "sebt", "sibt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
+    "sebt", "sibt", "sabt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
     "الأحد", "الاحد", "الاثنين", "الإثنين", "الثلاثاء", "الأربعاء", "الاربعاء",
     "الخميس", "الجمعة", "السبت", "غدوة", "غدوا", "بعد غدوة", "اليوم", "البارح", "البارحة"];
   for (const w of words) out = out.split(" " + w + " ").join(" ");
@@ -1388,6 +1444,12 @@ const MSG = {
     ar: "Ok، ما مشكلة.",
     fr: "D'accord, pas de problème.",
     az: "Ok, ma mochkla.",
+  },
+  // ----- deterministic doctor-question offer (Fix T: no-AI-key path) -----
+  doc_q_offer: {
+    ar: "ما عنديش المعلومة هذي. تحب نسأل الطبيب ونرجعلك؟ اكتب اي.",
+    fr: "Je n'ai pas cette information. Voulez-vous que je demande au docteur ? Écrivez oui.",
+    az: "Ma 3andich el ma3louma hethi. T7eb nes2el el tbib w narja3lek? Ekteb ey.",
   },
   // ----- greeting default (only when the clinic config has none) -----
   greeting_default: {
@@ -1431,6 +1493,17 @@ const MSG = {
     ar: "فهمتك — زوز رونديفو. اللول لشكون؟",
     fr: "D'accord — deux rendez-vous. Le premier, c'est pour qui ?",
     az: "Fhemtek — zouz rendez-vous. El louwel lchkoun?",
+  },
+  // ----- two appointments, first slot given up-front (Fix T: B5/B6) -----
+  two_rdv_first_two: {
+    ar: (c) => `فهمتك — زوز رونديفو: واحد ${c.ben1} وواحد ${c.ben2}. نخدمو واحد بواحد: اللول، ${c.display} — تحب نحجزلك؟ اكتب "اي".`,
+    fr: (c) => `D'accord — deux rendez-vous : un ${c.ben1} et un ${c.ben2}. Nous les faisons un par un : le premier, ${c.display} — voulez-vous que je vous le réserve ? Écrivez "oui".`,
+    az: (c) => `Fhemtek — zouz rendez-vous: wa7ed ${c.ben1} w wa7ed ${c.ben2}. Ne5dmou wa7ed b wa7ed: el louwel, ${c.display} — t7eb n7ajzlek? Ekteb "ey".`,
+  },
+  two_rdv_first_any: {
+    ar: (c) => `فهمتك — زوز رونديفو. نخدمو واحد بواحد: اللول، ${c.display} — تحب نحجزلك؟ اكتب "اي".`,
+    fr: (c) => `D'accord — deux rendez-vous. Nous les faisons un par un : le premier, ${c.display} — voulez-vous que je vous le réserve ? Écrivez "oui".`,
+    az: (c) => `Fhemtek — zouz rendez-vous. Ne5dmou wa7ed b wa7ed: el louwel, ${c.display} — t7eb n7ajzlek? Ekteb "ey".`,
   },
   third_party: {
     ar: "سامحني — نجم نشوف كان الرونديفو المحجوز بالرقم هذا. كان الحجز تسجل باسم آخر، قولي الاسم ونتثبت مع العيادة.",
@@ -1602,6 +1675,12 @@ const MSG = {
     fr: (c) => `Rendez-vous déplacé : ${c.display} — je vous confirme et je reviens vers vous.`,
     az: (c) => `Tbadal el rendez-vous: ${c.display} — n2akkedlek w narja3lek.`,
   },
+  // ----- post-booking name correction (Fix T: B16) -----
+  name_corrected: {
+    ar: (c) => `داكور، صلحت الاسم: ${c.name || ""}.`,
+    fr: (c) => `D'accord, j'ai corrigé le nom : ${c.name || ""}.`,
+    az: (c) => `D'accord, tsalla7 el esm: ${c.name || ""}.`,
+  },
   // ----- secretary settle -> patient confirmation -----
   settle_confirmed: {
     ar: (c) => `تأكد الرونديفو متاعك: ${c.slot}. نستناوك! 🌸`,
@@ -1667,7 +1746,7 @@ const MSG = {
   },
   fb_medical: {
     ar: "الأسئلة على الدواء والوجيعة للطبيب برك ⛔ — تحب نحجزلك رونديفو تسألو ديراكت؟",
-    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    fr: "Les questions sur les médicaments et la douleur sont pour le docteur uniquement ⛔ — voulez-vous que je demande au docteur ? Écrivez oui.",
     az: "el sou2elet 3al dwe wel wji3a lel doktor bark ⛔ — t7eb n7ajzlek rendez-vous tes2lou direct?",
   },
   fb_unknown: {
@@ -1695,9 +1774,41 @@ function msg(key, lang, ctx) {
   return typeof v === "function" ? v(ctx || {}) : v;
 }
 
+// Displayed closing time per weekday, parsed from the clinic's free-text
+// hours ("Thenin lel Jom3a: 08:30 - 17:30, Sebt: 08:30 - 13:00, Ahad:
+// msakker"). Needed to tell a LAST bookable start (Mahjoub weekdays:
+// bookings end 17:00 but the clinic closes 17:30 — 17:00 is inside) from
+// a slot starting AT the real close (Jrad 16:00, Mahjoub Saturday 13:00),
+// which can never begin. Null when the text doesn't parse — callers then
+// keep the plain booking-hours rule.
+function displayedCloseMap(hoursTxt) {
+  if (!hoursTxt || typeof hoursTxt !== "string") return null;
+  const DAYW = { la7ad: 0, a7ad: 0, dimanche: 0, ethnin: 1, thenin: 1, thnin: 1, lundi: 1,
+    thleth: 2, thletha: 2, mardi: 2, erb3a: 3, larb3a: 3, mercredi: 3,
+    "5mis": 4, khmis: 4, khemis: 4, jeudi: 4, jom3a: 5, jem3a: 5, vendredi: 5,
+    sebt: 6, sabt: 6, samedi: 6 };
+  const out = {};
+  let any = false;
+  for (const seg of hoursTxt.split(",")) {
+    const tm = seg.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+    if (!tm) continue; // "Ahad: msakker" — no range, nothing to learn
+    const close = parseInt(tm[3], 10) * 60 + parseInt(tm[4], 10);
+    const dayPart = " " + seg.slice(0, tm.index).toLowerCase().replace(/:/g, " ") + " ";
+    const found = [];
+    for (const w of Object.keys(DAYW)) if (dayPart.includes(" " + w + " ")) found.push(DAYW[w]);
+    if (!found.length) continue;
+    if (/ lel /.test(dayPart) && found.length >= 2) {
+      for (let d = Math.min(...found); d <= Math.max(...found); d++) { out[d] = close; any = true; }
+    } else {
+      for (const d of found) { out[d] = close; any = true; }
+    }
+  }
+  return any ? out : null;
+}
+
 // F10 — Clinic-hours gate. A concrete slot outside working hours (or on a closed
 // day) is rejected with the next suitable open slot, saved as the new proposal.
-function hoursCheck(r, hours) {
+function hoursCheck(r, hours, closeMap) {
   // r: concrete resolved slot (date + time, not past). null = inside hours.
   // hours: per-number booking hours (from the clinic config); falls back to
   // the global CLINIC_HOURS when the number has no override.
@@ -1705,7 +1816,13 @@ function hoursCheck(r, hours) {
   const open = bh[r.dow];
   const wall = new Date(Date.parse(r.iso) + 3600000); // Tunis wall time
   const h = wall.getUTCHours(), m = wall.getUTCMinutes();
-  const inside = open && (h > open[0] || (h === open[0] && m >= 0)) && (h < open[1] || (h === open[1] && m === 0));
+  // Fix T (H1/H2/H3): a start exactly at the booking end stays inside ONLY
+  // when the clinic's displayed close is later than the booking end (the
+  // slot still fits before the real close). When the displayed close IS
+  // the booking end, a start at closing can never begin — outside hours.
+  const closeMin = closeMap ? closeMap[r.dow] : null;
+  const atEndOk = !open || closeMin === null || closeMin === undefined || open[1] * 60 < closeMin;
+  const inside = open && (h > open[0] || (h === open[0] && m >= 0)) && (h < open[1] || (h === open[1] && m === 0 && atEndOk));
   if (inside) return null;
   return { reason: open ? "hours" : "closed" };
 }
@@ -1812,6 +1929,22 @@ function parsePatientName(text) {
 // Display helper: "ahmed ben salah" -> "Ahmed Ben Salah" (Arabic names unaffected).
 function capName(s) {
   return (s || "").split(/\s+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+// Post-booking name correction (Fix T, B16): "el esm ghalet — el esm el
+// sa7i7 howa Karim Ben Ammar". Both markers are required (a name word AND a
+// wrongness word), then the corrected name is what follows the
+// "el sa7i7 / correct / vrai" part (after "howa" when present).
+function parseNameCorrection(text) {
+  const raw = (text || "").trim();
+  if (!/(esm|ism|اسم|nom)/i.test(raw)) return null;
+  if (!/(ghalet|ghalat|ghalt|غلط|faux|incorrect|wrong)/i.test(raw)) return null;
+  const parts = raw.split(/sa7i7|sa7ih|s7i7|صحيح|vrai|correct/i);
+  if (parts.length < 2) return null;
+  const tail = parts[parts.length - 1];
+  const m = tail.match(/(?:howa|houwa|huwa|هو|est)\s*[:：]?\s*(.+)$/i) || tail.match(/^\s*[:：—–-]?\s*(.+)$/);
+  if (!m) return null;
+  return parsePatientName(m[1].trim());
 }
 
 function askNameMsg(ar, display, fr) {
@@ -1976,6 +2109,9 @@ async function handleBookingTurn(phone, text, history, clinic) {
   clinic = clinic || {};
   // Per-number booking hours (pilot clinic override) + display text for messages.
   const bh = clinic.bookingHours || CLINIC_HOURS;
+  // Displayed closing per weekday (Fix T, H1/H2/H3): tells a last bookable
+  // start from a start at the real close, inside hoursCheck.
+  const closeMap = displayedCloseMap(clinic.hours);
   const rangeTxt = clinic.hours ? clinic.hours : `mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}`;
   const rangeTxtAr = clinic.hours ? clinic.hours : `من الاثنين للسبت: ${CLINIC_HOURS_TXT}`;
   const rangeTxtFr = clinic.hours ? clinic.hours : `du lundi au samedi : ${CLINIC_HOURS_TXT}`;
@@ -2006,10 +2142,28 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // F7) Cancellation — before the status question: cancelling beats asking.
   if (looksLikeCancellation(text)) return handleCancellation(phone, text, ar, clinic, fr);
 
+  // Fix T (B16) — name correction on an EXISTING booking: update the name
+  // on the booking row (and the remembered patient name), never rebook.
+  const corrName = parseNameCorrection(text);
+  if (corrName) {
+    const bCorr = await db.getLatestBooking(phone).catch(() => null);
+    if (bCorr && (bCorr.status === "pending" || bCorr.status === "confirmed")) {
+      if (typeof db.updateBookingName === "function") await db.updateBookingName(bCorr.id, corrName).catch(() => {});
+      await db.savePatientName(phone, corrName).catch(() => {});
+      return say(phone, msg("name_corrected", lang, { name: capName(corrName) }), clinic);
+    }
+  }
+
   // F8) FAQ / identity — pure questions (no date): answer directly, never
   // swallowed into a stale proposal.
   const r0 = dates.resolveSlot(text, ar);
-  const fk = !r0.date && faqKind(text);
+  const fk0 = faqKind(text);
+  // Fix T (H10/H11/H12): a pure question ABOUT a weekday ("Vous ouvrez le
+  // samedi ?", "Vous fermez à quelle heure le jeudi ?", "te5dem el sabt?")
+  // resolves a date with no concrete time, so the old !r0.date gate
+  // swallowed it into the slot flow and "answered" with a proposal. A
+  // question with no concrete time and no booking intent is a FAQ.
+  const fk = fk0 && (!r0.date || (looksLikeQuestion(text) && r0.needs === "time" && !looksLikeBookingIntent(text))) ? fk0 : null;
   if (fk) return say(phone, faqAnswer(fk, ar, clinic, fr), clinic);
 
   // F11) Walk-in ("n7eb nji tawa") — explain, offer a reserved time, no loop.
@@ -2029,8 +2183,25 @@ async function handleBookingTurn(phone, text, history, clinic) {
     const ben = detectExplicitBeneficiaries(text);
     // Beneficiary names are localized with the same resolved language.
     const benName = (b) => lang === "fr" ? (BEN_FR[b] || b) : lang === "ar" ? (BEN_AR[b] || b) : b;
+    // Fix T (B5/B6): a slot given up-front belongs to the FIRST appointment
+    // — propose it right away instead of re-asking the day. Only a
+    // concrete, future, in-hours slot qualifies; anything else keeps the
+    // ask-day acknowledgement below.
+    const seg = firstSlotSegment(text);
+    let rFirst = null;
+    if (seg) {
+      const rr = dates.resolveSlot(seg, ar);
+      if (rr.found && rr.date && !rr.needs && !rr.past && !hoursCheck(rr, bh, closeMap)) rFirst = rr;
+    }
     let reply;
-    if (ben.length >= 2) {
+    if (rFirst) {
+      await db.saveProposal(phone, seg, rFirst.iso, rFirst.display);
+      reply = msg(ben.length >= 2 ? "two_rdv_first_two" : "two_rdv_first_any", lang, {
+        ben1: ben.length ? benName(ben[0]) : "",
+        ben2: ben.length > 1 ? benName(ben[1]) : "",
+        display: rFirst.display,
+      });
+    } else if (ben.length >= 2) {
       reply = msg("two_rdv_two_ben", lang, { ben1: benName(ben[0]), ben2: benName(ben[1]) });
     } else if (ben.length === 1) {
       reply = msg("two_rdv_one_ben", lang, { ben1: benName(ben[0]) });
@@ -2041,7 +2212,22 @@ async function handleBookingTurn(phone, text, history, clinic) {
   }
 
   // Reschedule intent — move the existing booking, never duplicate it.
-  if (looksLikeReschedule(text)) return handleRescheduleStart(phone, ar, clinic, fr);
+  if (looksLikeReschedule(text)) {
+    // Fix T (B9): the new slot given INSIDE the request ("déplacer à jeudi
+    // 11h") is used directly — proposed for confirmation; the patient's
+    // acceptance then finishes the move (finishReschedule via the
+    // rescheduling marker), instead of the slot being re-asked.
+    if (r0.date && !r0.needs && !r0.past) {
+      const bRes = await db.getLatestBooking(phone).catch(() => null);
+      const activeRes = bRes && (bRes.status === "pending" || bRes.status === "confirmed") ? bRes : null;
+      if (activeRes && !hoursCheck(r0, bh, closeMap)) {
+        rescheduling.set(phone, activeRes.id);
+        await db.saveProposal(phone, text, r0.iso, r0.display);
+        return say(phone, msg("propose_slot", lang, { display: r0.display }), clinic);
+      }
+    }
+    return handleRescheduleStart(phone, ar, clinic, fr);
+  }
 
   // F13) Third-party query — privacy: only this number's bookings are visible.
   if (looksLikeThirdPartyQuery(text)) {
@@ -2060,10 +2246,14 @@ async function handleBookingTurn(phone, text, history, clinic) {
   }
 
   let proposal = _prop0; // fetched once above for the resolver (null if stale/absent)
-  const ar2 = ar || isAr(proposal && proposal.slot_text); // script sticks to the patient's own words
+  // Fix T (L2): the message's OWN detected language beats proposal
+  // stickiness — a full Derja sentence after a French proposal switches
+  // the reply to Derja; only a neutral follow-up ("oui", "sbe7") sticks.
+  const ownLang = langOfText(text);
+  const ar2 = ar || (ownLang !== "fr" && isAr(proposal && proposal.slot_text)); // script sticks to the patient's own words
   // French sticks the same way: a short follow-up ("oui", "le matin") carries
   // no French marker, but the pending proposal's own words do.
-  const fr2 = fr || (!ar2 && !!proposal && looksLikeFrenchAuto(proposal.slot_text || ""));
+  const fr2 = fr || (!ar2 && ownLang !== "az" && ownLang !== "ar" && !!proposal && looksLikeFrenchAuto(proposal.slot_text || ""));
   const lang2 = lang3(ar2, fr2); // proposal-sticky language for the sites below
 
   // A-1) We asked for the patient's name — this message answers that.
@@ -2116,6 +2306,45 @@ async function handleBookingTurn(phone, text, history, clinic) {
         : `\n- 3andek proposal mta3 rendez-vous pending: "${disp}" — ba3d ma tjewb 3al sou2el, kamel b joumla wa7da: "${reAsk}"`;
       const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys, fr2 ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours);
       return say(phone, ans, clinic);
+    }
+  }
+
+  // Fix T (B3/L2) — refuse + counter-propose in ONE message ("le, ma
+  // yse3ednich el jom3a — nheb el sabt el 10", "le, baddel — el sabt el 10
+  // a7sen liya"): the patient rejects the proposed day and names a better
+  // one. The plain merge below glues the message onto the proposal text,
+  // where the REJECTED weekday is named first and wins the parse (and an
+  // unparseable new day used to vanish the same way). Here the rejected
+  // weekday is stripped from the correction before resolving, so the
+  // wished day wins.
+  if (proposal && proposal.slot_text && !proposal.awaiting_name && proposal.slot_at) {
+    const { hadLe, corr } = stripCorrectionPrefix(text);
+    if (hadLe && /(nheb|n7eb|a7sen|ahsen|baddel|je préfère|je prefere|plutôt|plutot|mieux)/i.test(corr)) {
+      const propR = dates.resolveSlot(proposal.slot_text, ar2);
+      // Weekday names grouped by JS day number — the rejected day is the
+      // proposal's own day.
+      const DOW_WORDS = {
+        0: ["la7ad", "l7ad", "lahad", "dimanche", "الأحد", "الاحد"],
+        1: ["ethnin", "ethinin", "thnin", "tnin", "thenin", "lundi", "الاثنين", "الإثنين"],
+        2: ["thletha", "thleth", "tletha", "tlata", "mardi", "الثلاثاء"],
+        3: ["erb3a", "larb3a", "lerb3a", "mercredi", "الأربعاء", "الاربعاء"],
+        4: ["khmis", "5mis", "khemis", "khamis", "kmis", "jeudi", "الخميس"],
+        5: ["jem3a", "jom3a", "vendredi", "الجمعة"],
+        6: ["sebt", "sibt", "sabt", "samedi", "السبت"],
+      };
+      const words = propR.dow !== null && propR.dow !== undefined ? (DOW_WORDS[propR.dow] || []) : [];
+      let cleaned = " " + corr.toLowerCase() + " ";
+      for (const w of words) cleaned = cleaned.split(" " + w + " ").join(" ");
+      cleaned = cleaned.replace(/\s+/g, " ").trim();
+      let rw = dates.resolveSlot(cleaned, ar2);
+      if (rw.found && rw.date && rw.needs === "time") {
+        // The correction names a day but no time: keep the proposal's time.
+        const mergedW = dates.resolveSlot(cleaned + " " + stripDateTokens(proposal.slot_text), ar2);
+        if (mergedW.found && mergedW.date && !mergedW.needs) rw = mergedW;
+      }
+      if (rw.found && rw.date && !rw.needs && !rw.past && rw.dateUTC !== propR.dateUTC) {
+        r = rw; slotText = cleaned;
+      }
     }
   }
 
@@ -2286,7 +2515,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   }
   // F10) concrete slot outside clinic hours (or on a closed day): reject it and
   // offer the next suitable open slot, saved as the new proposal.
-  const hc = hoursCheck(r, bh);
+  const hc = hoursCheck(r, bh, closeMap);
   if (hc) {
     const sug = suggestOpenSlot(r.dateUTC, ar2, bh);
     await db.saveProposal(phone, sug.display, sug.iso, sug.display);
@@ -3173,6 +3402,19 @@ function looksLikePureGreeting(text) {
   return /^(slm|slem|salem|salam|3aslema|3aslama|ahla|sahla|salut|bonjour|bjr|hello|hi|hey)( cv| ca va| ça va| cava| comment cava| comment ca va| comment ça va| labes| labas| lebes| ch3andek)?$/.test(t);
 }
 
+// A question FOR THE DOCTOR ("j'ai une question pour le docteur",
+// "nheb nes2el el tbib", "عندي سؤال للطبيب") — the escalation flow's
+// natural entry point. Doctor-anchored on purpose: an ordinary question
+// (prices, hours) is NOT one of these.
+function looksLikeDoctorQuestion(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(question pour le (docteur|médecin|medecin|dentiste)|demander au (docteur|médecin|medecin|dentiste)|demande au (docteur|médecin|medecin|dentiste))/.test(t)) return true;
+  if (/(nes2el|ns2el|nes2al)\s+(el\s+)?(tbib|doktor|docteur)/.test(t)) return true;
+  if (/(sou2el|so2el)\s+(lel|el)\s+(tbib|doktor)/.test(t)) return true;
+  return /(سؤال للطبيب|سؤال للدكتور|نسأل الطبيب|نسأل الدكتور|اسأل الطبيب|أسأل الطبيب)/.test(raw);
+}
+
 // Shared by the WhatsApp webhook and the /test page.
 // displayNumber: the bot number's display_phone_number from the webhook
 // metadata (optional) — used to resolve the salon vertical without a
@@ -3181,8 +3423,17 @@ function looksLikePureGreeting(text) {
 // patient's next "ey" can be routed to the supervisor via notif_question.
 function rememberQuestionOffer(phone, reply, question, clinic) {
   if (!reply || !question) return;
-  if (/nes2el el tbib/i.test(reply) || /je demande au docteur/i.test(reply)) {
-    pendingQuestion.set(phone, { question: String(question).slice(0, 500), clinicId: clinic && clinic.id, ts: Date.now() });
+  const fr = /je demande au docteur/i.test(reply);
+  // Fix T (Q6): an Arabic-script offer ("تحب نسأل الطبيب؟") arms too — the
+  // detector used to know only the Latin Derja and French wordings, so
+  // the escalation could never trigger for Arabic-script patients. The
+  // offer's own language is stored with it (Fix T, Q3b).
+  const arLang = isAr(reply) && /نسأل (الطبيب|الدكتور)/.test(reply);
+  if (fr || arLang || /nes2el el tbib/i.test(reply)) {
+    pendingQuestion.set(phone, {
+      question: String(question).slice(0, 500), clinicId: clinic && clinic.id, ts: Date.now(),
+      lang: fr ? "fr" : arLang ? "ar" : "az",
+    });
     console.log(`[question] offer armed for ${phone}`);
   }
 }
@@ -3206,8 +3457,18 @@ async function processPatientText(phone, text, numberId, displayNumber) {
       // forward goes through the shared supervisor helper: free-form while
       // the 24h window is open, "notif_question" template otherwise (the
       // old free-form-only send failed live with Meta error 131047).
-      const lang = await resolveLang(phone, text, { history });
-      if (/^(ey|oui|na3m|yes|aye)$/i.test(t)) {
+      let lang = await resolveLang(phone, text, { history });
+      // Fix T (Q3b): on a COLD conversation (the offer was armed
+      // programmatically — no patient message in history to stick to),
+      // the reply language comes from the OFFER itself: a French offer
+      // declined with "Non" is answered in French, never default Arabizi.
+      if (pq.lang && !langOfText(text) && !(history || []).some((m) => m && m.role === "user" && langOfText(m.text))) {
+        lang = pq.lang;
+      }
+      // Fix T (Q6b): Arabic-script "نعم / اي" accept and "لا / لأ" decline,
+      // like their Latin forms — the offer is consumed by this reply
+      // either way, so an unrecognized yes used to vanish silently.
+      if (/^(ey|oui|na3m|yes|aye|نعم|اي|أي)$/i.test(t)) {
         const sup = supervisorNumber(clinic);
         const nm = await db.getPatientName(phone).catch(() => null);
         if (sup) {
@@ -3221,7 +3482,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
         }
         return (await say(phone, msg("esc_asked_doctor", lang), clinic)).reply;
       }
-      if (/^(le|la|non|no)$/i.test(t)) {
+      if (/^(le|la|non|no|لا|لأ)$/i.test(t)) {
         return (await say(phone, msg("esc_declined", lang), clinic)).reply;
       }
     }
@@ -3302,6 +3563,22 @@ async function processPatientText(phone, text, numberId, displayNumber) {
     const lang = await resolveLang(phone, text, { history });
     const dh = await say(phone, msg("other_doctor", lang, { doctor: clinic.otherDoctor, clinicName: clinic.name }), clinic);
     return dh.reply;
+  }
+
+  // Fix T (Q1a/Q2/Q4/Q5) — a question FOR THE DOCTOR in deterministic mode
+  // (no AI key): the AI was the only path that could offer to forward it,
+  // so without a key the offer never armed — the question vanished into a
+  // generic fallback, or a pending booking swallowed the patient's "Oui".
+  // Offer + arm directly, in the patient's language. A pending booking
+  // proposal stays untouched in the db and resumes after the answer.
+  if (!AI_API_KEY && vertical === "dentist" && looksLikeDoctorQuestion(text)
+      && !looksLikeEmergency(text) && !dates.resolveSlot(text).date) {
+    const lang = await resolveLang(phone, text, { history });
+    pendingQuestion.set(phone, {
+      question: String(text).slice(0, 500), clinicId: clinic && clinic.id, ts: Date.now(), lang,
+    });
+    console.log(`[question] offer armed (deterministic) for ${phone}`);
+    return (await say(phone, msg("doc_q_offer", lang), clinic)).reply;
   }
 
   // French path (2026-09-29: text-only — the French voice note was removed;
