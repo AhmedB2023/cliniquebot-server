@@ -1164,6 +1164,146 @@ function looksLikeQuestion(text) {
   return /^(win|wen|winech|chkoun|chkon|chnowa|chneya|chno|9adech|kadech|b9adech|kifech|kif |wakteh|wa9tech|3lech|alech|où|comment|combien|quel|quelle|quels|quelles|est-ce|شنوة|شكون|وين|كيفاش|قداش|وقتاش|علاش|هل |شنهي)/i.test(t);
 }
 
+// Fix Z — weekday questions ("quel jour sera t-il ?", "le 31 c'est
+// quel jour?", "w el 31 chnowa nharou?", "شنوة نهارو؟"): the patient
+// asks WHICH WEEKDAY a date falls on. The bot owns a calendar, so it
+// answers from it — in the patient's language — instead of escalating
+// to the doctor or misreading the date as an hour. (Live 2026-10-13:
+// the bot proposed 31-10-2026 itself, then answered "quel jour sera
+// t-il ?" with the ask-the-doctor offer and "le 31 c'est quel jour?"
+// with '"31" n'est pas une heure valide'.)
+const FR_WEEKDAY_NAMES = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+const AZ_WEEKDAY_NAMES = ["el 7ad", "el ethnin", "el thletha", "el erb3a", "el khmis", "el jem3a", "el sebt"];
+const AR_WEEKDAY_NAMES = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+
+function looksLikeWeekdayQuestion(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/quel\s+jour/.test(t)) return true; // "quel jour sera t-il", "c'est quel jour", "quel jour de la semaine"
+  if (/(chnowa|chneya|chno)\s+(nharou|nharha|nhar)/.test(t)) return true; // "chnowa nharou"
+  if (/nhar\s+(chnowa|chneya|chno)/.test(t)) return true; // "el 31 nhar chnowa"
+  if (/(شنوة|شنوا|شنهو)\s+(نهارو|نهارها|اليوم)/.test(raw)) return true;
+  if (/(نهارو|نهارها)\s+(شنوة|شنوا)/.test(raw)) return true;
+  if (/(أي|اي)\s+يوم/.test(raw)) return true;
+  if (/يوم\s+(شنوة|شنوا|شنو)/.test(raw)) return true;
+  return false;
+}
+
+const WD_MONTH_FR = { janvier: 0, janfi: 0, fevrier: 1, fev: 1, mars: 2, avril: 3, mai: 4, juin: 5, juillet: 6, juil: 6, aout: 7, septembre: 8, sept: 8, octobre: 9, oct: 9, novembre: 10, nov: 10, decembre: 11, dec: 11 };
+const WD_MONTH_AR = { "جانفي": 0, "فيفري": 1, "مارس": 2, "أفريل": 3, "افريل": 3, "ماي": 4, "جوان": 5, "جويلية": 6, "أوت": 7, "اوت": 7, "سبتمبر": 8, "أكتوبر": 9, "اكتوبر": 9, "نوفمبر": 10, "ديسمبر": 11 };
+// Weekday name -> JS day number (mirrors dates.js DAYS, incl. Arabic script).
+const WD_DAYS = [
+  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["dimanche", 0], ["الأحد", 0], ["الاحد", 0],
+  ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["thenin", 1], ["lundi", 1], ["الاثنين", 1], ["الإثنين", 1],
+  ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2], ["الثلاثاء", 2],
+  ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["mercredi", 3], ["الأربعاء", 3], ["الاربعاء", 3],
+  ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4], ["الخميس", 4],
+  ["jem3a", 5], ["jom3a", 5], ["vendredi", 5], ["الجمعة", 5],
+  ["sebt", 6], ["sibt", 6], ["sabt", 6], ["samedi", 6], ["السبت", 6],
+];
+
+function foldForWeekday(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[éèê]/g, "e").replace(/[ûü]/g, "u").replace(/[îï]/g, "i")
+    .replace(/[ôö]/g, "o").replace(/[àâ]/g, "a").replace(/ç/g, "c")
+    .replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d))
+    .replace(/[.,!?;]/g, " ");
+}
+
+// Which date is a weekday question ABOUT? An explicit date in the
+// message wins; otherwise the pending proposal's date. Returns a
+// Tunis-midnight ms (the dates.js dateUTC frame) or null.
+function weekdayQuestionTarget(text, proposal) {
+  const now = dates.tunisNow();
+  const yr = now.getUTCFullYear(), mo = now.getUTCMonth();
+  const todayStart = Date.UTC(yr, mo, now.getUTCDate());
+  const raw = text || "";
+  const t = " " + foldForWeekday(raw) + " ";
+  // 1) explicit "31 octobre" / "31 سبتمبر" (same next-year roll as resolveSlot's D26)
+  let m = t.match(/(\d{1,2})\s+(janvier|janfi|fevrier|fev|mars|avril|mai|juin|juillet|juil|aout|septembre|sept|octobre|oct|novembre|nov|decembre|dec)\b/);
+  if (m) {
+    const day = parseInt(m[1], 10), mon = WD_MONTH_FR[m[2]];
+    const y = mon < mo ? yr + 1 : yr;
+    const probe = new Date(Date.UTC(y, mon, day));
+    if (probe.getUTCMonth() === mon && probe.getUTCDate() === day) return probe.getTime();
+  }
+  m = raw.match(/(\d{1,2})\s+(جانفي|فيفري|مارس|أفريل|افريل|ماي|جوان|جويلية|أوت|اوت|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)/);
+  if (m) {
+    const day = parseInt(m[1], 10), mon = WD_MONTH_AR[m[2]];
+    const y = mon < mo ? yr + 1 : yr;
+    const probe = new Date(Date.UTC(y, mon, day));
+    if (probe.getUTCMonth() === mon && probe.getUTCDate() === day) return probe.getTime();
+  }
+  // 2) numeric "25/12" (day first, Tunisian order)
+  m = t.match(/\b(\d{1,2})[\/-](\d{1,2})\b/);
+  if (m) {
+    const day = parseInt(m[1], 10), mon = parseInt(m[2], 10) - 1;
+    if (mon >= 0 && mon <= 11) {
+      const probe = new Date(Date.UTC(yr, mon, day));
+      if (probe.getUTCMonth() === mon && probe.getUTCDate() === day) return probe.getTime();
+    }
+  }
+  // 3) relative expressions that name their own target day
+  m = t.match(/\bdans\s+(\d{1,2})\s+(jours?|semaines?)\b/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1) return todayStart + (m[2].indexOf("sem") === 0 ? n * 7 : n) * 86400000;
+  }
+  if (/\b(ba3d\s+ghodwa|ba3d\s+ghadwa|apres[-\s]demain|apres\s+ghodwa)\b/.test(t) || raw.includes("بعد غدوة")) return todayStart + 2 * 86400000;
+  if (/\b(ghodwa|ghadwa|ghdwa|demain|tomorrow)\b/.test(t) || /(غدوة|غدا|غداً)/.test(raw)) return todayStart + 86400000;
+  if (/\b(lyoum|elyoum|aujourdhui|today)\b/.test(t) || raw.includes("اليوم")) return todayStart;
+  // 4) a bare day-of-month ("le 31", "w el 31 ...") — its next
+  // occurrence. Checked BEFORE weekday names on purpose: in "le 31
+  // c'est quel jour? lundi, mardi....." the weekdays are filler
+  // examples the patient lists; the 31 is the real target.
+  m = t.match(/\b(?:le|el)\s+(\d{1,2})\b/) || t.match(/(?:^|\s)(\d{1,2})(?=\s|$)/);
+  if (m) {
+    const dom = parseInt(m[1], 10);
+    if (dom >= 1 && dom <= 31) {
+      let cand = Date.UTC(yr, mo, dom);
+      if (cand < todayStart) {
+        let nm = mo + 1, ny = yr;
+        if (nm > 11) { nm = 0; ny++; }
+        cand = Date.UTC(ny, nm, dom);
+      }
+      if (new Date(cand).getUTCDate() === dom) return cand;
+    }
+  }
+  // 5) a weekday name as the subject — its next occurrence (today counts)
+  let bestPos = -1, bestDow = null;
+  for (const [name, d] of WD_DAYS) {
+    const p = t.indexOf(" " + name + " ");
+    if (p !== -1 && (bestPos === -1 || p < bestPos)) { bestPos = p; bestDow = d; }
+  }
+  if (bestDow !== null) {
+    const diff = (bestDow - now.getUTCDay() + 7) % 7;
+    return todayStart + diff * 86400000;
+  }
+  // 6) the pending proposal / pending date in state
+  if (proposal) {
+    const dm = String(proposal.display || "").match(/(\d{2})-(\d{2})-(\d{4})/);
+    if (dm) return Date.UTC(+dm[3], +dm[2] - 1, +dm[1]);
+    if (proposal.slot_at) {
+      const wall = new Date(new Date(proposal.slot_at).getTime() + 3600000);
+      if (!isNaN(wall.getTime())) return Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate());
+    }
+    if (proposal.slot_text) {
+      const rp = dates.resolveSlot(proposal.slot_text, false);
+      if (rp.found && rp.dateUTC) return rp.dateUTC;
+    }
+  }
+  return null;
+}
+
+function weekdayAnswerText(dateUTC, lang) {
+  const disp = dates.fmtDate(dateUTC, false);
+  const dow = new Date(dateUTC).getUTCDay();
+  if (lang === "fr") return `Le ${disp} tombe un ${FR_WEEKDAY_NAMES[dow]}.`;
+  if (lang === "ar") return `${disp} يوافق يوم ${AR_WEEKDAY_NAMES[dow]}.`;
+  return `El ${disp} yji nhar ${AZ_WEEKDAY_NAMES[dow]}.`;
+}
+
 // Medication / dosage wording — the medical red line ("idari = bot,
 // tibbi = insen"): drug names, prescription words and "how many times a
 // day" questions belong to the human hand-off, never to a FAQ answer.
@@ -2376,25 +2516,72 @@ async function handleCancellation(phone, text, ar, clinic, fr) {
     const b = await db.getLatestBooking(phone).catch(() => null);
     if (b && (b.status === "pending" || b.status === "confirmed")) actives = [b];
   }
+  // Fix AA: capture the pending proposal BEFORE clearing it — when no
+  // upcoming booking exists, the proposal is what the patient means.
+  const propBefore = await db.getProposal(phone).catch(() => null);
   await db.clearProposal(phone).catch(() => {});
   rescheduling.delete(phone);
   multiBooking.delete(phone);
   beneficiaryNext.delete(phone);
   bareNumClarify.delete(phone);
-  if (!actives.length) {
+  // Fix AA (live 2026-10-13): the old selection had no notion of time —
+  // it cancelled a STALE PAST booking left over from an old session and
+  // parroted its stored relative display ("ghodwa 25 septembre,
+  // 16:00") in the confirmation. A past slot can never be the cancel
+  // target: among dated bookings only UPCOMING ones are eligible,
+  // nearest first. Undated legacy rows stay eligible only when no
+  // dated upcoming row exists (their pastness cannot be proven).
+  const nowRealMs = dates.tunisNow().getTime() - 3600000; // mockable clock, real-instant frame
+  const tsOf = (x) => {
+    if (!x || !x.slot_at) return null;
+    const t = new Date(x.slot_at).getTime();
+    return isNaN(t) ? null : t;
+  };
+  // The confirmation date is always COMPUTED from the stored ISO —
+  // never the stored display string, which may be a stale relative
+  // phrase ("ghodwa ...") from an older session.
+  const dispOf = (x) => {
+    const t = tsOf(x);
+    if (t === null) return x.slot || "";
+    const wall = new Date(t + 3600000); // Tunis wall frame
+    return dates.slotDisplay(
+      Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate()),
+      wall.getUTCHours(), wall.getUTCMinutes(), ar).display;
+  };
+  let pool = actives.filter((x) => { const t = tsOf(x); return t !== null && t > nowRealMs; });
+  if (!pool.length) pool = actives.filter((x) => tsOf(x) === null);
+  if (!pool.length) {
+    // Nothing upcoming to cancel. A pending proposal/request is what
+    // the patient is cancelling — say THAT was cancelled; never claim
+    // a booking cancellation that did not happen. Neither -> the
+    // plain "no booking" reply.
+    if (propBefore && propBefore.slot_text) {
+      return say(phone, msg("proposal_dropped", lang3(ar, fr)), clinic);
+    }
     return say(phone, msg("cancel_none", lang3(ar, fr)), clinic);
   }
-  let active = actives[actives.length - 1];
-  if (actives.length > 1) {
+  let active = null;
+  if (pool.length > 1) {
+    // Fix U (MEM6) kept: a date named in the message picks its booking
+    // — matched against the ISO-computed display as well as the stored
+    // string (old rows store wordy relative displays).
     const rs = dates.resolveSlot(text, ar);
     if (rs.found && rs.dateDisplay) {
-      const m = actives.find((x) => (x.slot || "").includes(rs.dateDisplay));
-      if (m) active = m;
+      active = pool.find((x) => dispOf(x).includes(rs.dateDisplay) || (x.slot || "").includes(rs.dateDisplay)) || null;
     }
   }
+  if (!active) {
+    // Within the eligible pool, the established default stands: the
+    // latest-created booking (the patient's most recent flow — LT8
+    // pins that a beneficiary cancel lands on the beneficiary's later
+    // booking, never the caller's own earlier one). Fix AA's change
+    // is the pool itself: past bookings are not in it, wherever they
+    // sit in creation order.
+    active = pool[pool.length - 1];
+  }
   await db.setBookingStatus(active.id, "cancelled").catch(() => {});
-  await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`, clinic);
-  let reply = msg("cancel_done", lang3(ar, fr), { slot: active.slot });
+  await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${dispOf(active)}`, clinic);
+  let reply = msg("cancel_done", lang3(ar, fr), { slot: dispOf(active) });
   // Fix U (CHA7): a question riding along with the cancellation ("…w
   // 9adech el consultation?") still gets its answer in the same reply.
   // faqKind vetoes status-shaped texts ("…el rendez-vous mte3i…"), so the
@@ -2709,6 +2896,28 @@ async function handleBookingTurn(phone, text, history, clinic) {
     }
   }
 
+  // Fix Z — a weekday question ("quel jour sera t-il ?", "le 31 c'est
+  // quel jour?", "w el 31 chnowa nharou?") is answered from the
+  // calendar, in the patient's language, and the pending step resumes
+  // (its question is re-asked once). This gate sits before ALL slot
+  // machinery: a question is never booking info, so it can never be
+  // merged into the proposal or reach the bad-hour scolding below.
+  if (looksLikeWeekdayQuestion(text)) {
+    const wdTarget = weekdayQuestionTarget(text, proposal);
+    if (wdTarget !== null) {
+      let ans = weekdayAnswerText(wdTarget, lang2);
+      if (proposal && proposal.slot_text) {
+        if (proposal.slot_at) {
+          ans += "\n" + msg("reask_proposal", lang2, { disp: proposal.display || proposal.slot_text });
+        } else {
+          const rp = dates.resolveSlot(proposal.slot_text, ar2);
+          if (rp.found && rp.date) ans += "\n" + timeQuestionMsg(ar2, rp, proposal.slot_text, fr2);
+        }
+      }
+      return say(phone, ans, clinic);
+    }
+  }
+
   let r = dates.resolveSlot(text, ar);
   let slotText = text; // the phrase the proposal remembers — grows as follow-ups merge
 
@@ -2964,7 +3173,13 @@ async function handleBookingTurn(phone, text, history, clinic) {
   }
   if (r.needs === "time") {
     // Explicit invalid time ("ghodwa 25", "10:99"): flag it, never clarify around it.
-    if (r.badHour) {
+    // Fix Z: a QUESTION is never an hour attempt — the scolding only
+    // fires for hour-shaped inputs without question markers ("le 31
+    // c'est quel jour?" used to be scolded for the "31"). Questions
+    // have already passed the emergency/medical/FAQ/weekday gates
+    // above; a question that still lands here simply resumes the
+    // pending step (the time question below) instead of being scolded.
+    if (r.badHour && !looksLikeQuestion(text)) {
       return say(phone, msg("bad_hour", lang2, { badHour: r.badHour }), clinic);
     }
     // F10b) closed day (Sunday): redirect to the next open day — never ask a
