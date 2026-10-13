@@ -78,7 +78,7 @@ const DAYS = [
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["mercredi", 3],
   ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4],
-  ["jem3a", 5], ["jom3a", 5], ["vendredi", 5],
+  ["jem3a", 5], ["jom3a", 5], ["vendredi", 5], ["venderdi", 5],
   ["sebt", 6], ["sibt", 6], ["sabt", 6], ["samedi", 6],
   // Arabic-script weekday names
   ["الأحد", 0], ["الاحد", 0],
@@ -194,8 +194,17 @@ function resolveSlot(rawText, preferAr) {
   let dayPos = -1; // position of the weekday word in t (Fix T: D10)
   if (dateUTC === null && !nextWeek) {
     let dow = null;
+    // Fix U (CHA8): weekday words BEFORE the last booking verb are filler
+    // ("...el thleth ... el arba3 ... a7jezli el jom3a" = Friday). Weekday
+    // words at/after the verb keep the first-wins rule (round 1: "jem3a
+    // larb3a" = Friday, larb3a = 4 o'clock). No verb -> unchanged.
+    let verbPos = -1;
+    for (const v of ["a7jez", "e7jez", "na7jez", "ne7jez", "احجز", "نحجز"]) {
+      const vp = t.lastIndexOf(v);
+      if (vp > verbPos) verbPos = vp;
+    }
     for (const [name, d] of DAYS) {
-      const p = t.indexOf(" " + name + " ");
+      const p = t.indexOf(" " + name + " ", Math.max(0, verbPos));
       if (p !== -1 && (dayPos === -1 || p < dayPos)) { dow = d; dayWord = name; dayPos = p; }
     }
     if (dow !== null) {
@@ -214,6 +223,8 @@ function resolveSlot(rawText, preferAr) {
       dateDisplay = fmtNum(dd);
     } else if (t.includes(" ba3d ghodwa ") || t.includes(" ba3d ghadwa ") || t.includes(" apres ghodwa ") || t.includes(" بعد غدوة ")) {
       dateUTC = todayStart + 2 * 86400000;
+      // Fix U (DAT4): "ba3d ghodwa b nhar" = day after tomorrow PLUS one day.
+      if (/\bb\s+nhar\b/.test(t)) dateUTC += 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
@@ -229,21 +240,29 @@ function resolveSlot(rawText, preferAr) {
       // French "après-demain" (norm() already folded è -> e; the hyphenated
       // spelling is the correct French one) = day after tomorrow.
       dateUTC = todayStart + 2 * 86400000;
+      if (/\bb\s+nhar\b/.test(t)) dateUTC += 86400000; // Fix U (DAT4), same rule
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
-    } else if (t.includes(" demain ") || t.includes(" demin ") || t.includes(" demen ")) {
-      // French "demain" = tomorrow.
+    } else if (t.includes(" demain ") || t.includes(" demin ") || t.includes(" demen ") || t.includes(" tomorrow ")) {
+      // French "demain" / English "tomorrow" = tomorrow.
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
-    } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ") || t.includes(" غدا ") || t.includes(" غداً ")) {
+    } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" ghdwa ") || t.includes(" غدوة ") || t.includes(" غدوا ") || t.includes(" غدا ") || t.includes(" غداً ")) {
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
-    } else if (t.includes(" lyoum ") || t.includes(" elyoum ") || t.includes(" اليوم ")) {
+    } else if (/(a5er|a5ir|akhir)\s+(el\s+)?(chhar|chaher)/.test(t) || t.includes(" آخر الشهر ")) {
+      // Fix U (DAT10): "a5er el chhar" = last day of the current month.
+      dateUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0);
+      const dd = new Date(dateUTC);
+      const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
+      dateDisplay = fmtNum(dd);
+    } else if (t.includes(" lyoum ") || t.includes(" elyoum ") || t.includes(" اليوم ") || t.includes(" today ") || /\baujourd['’]?hui\b/.test(t) || t.includes(" aujourdhui ")) {
+      // Fix U (DAT19): French "aujourd'hui" / English "today" = today.
       dateUTC = todayStart;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
@@ -324,6 +343,15 @@ function resolveSlot(rawText, preferAr) {
         else if (hour > 23 && dateUTC !== null) { badHour = String(tm[1]); hour = null; }
       }
     }
+  }
+
+  // Fix U (DAT13/DAT14): half-hours trailing an hour — "el wa7da w nos"
+  // (13:30), "midi et demi" (12:30), "العشرة ونص". Only when no minutes
+  // were parsed yet (French "dix heures et demie" already set 30 above).
+  // "nos el nhar" (noon) can't match: the pattern needs w/et BEFORE nos.
+  if (hour !== null && minute === 0 && badHour === null &&
+      (/\b(w|et)\s+(nos{1,2}|noss|demi|demie)\b/.test(restTime) || restTime.includes(" ونص"))) {
+    minute = 30;
   }
 
   // \b doesn't work on Arabic letters (non-\w), so Arabic period words use includes().
