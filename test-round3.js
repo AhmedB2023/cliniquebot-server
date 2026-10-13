@@ -1524,6 +1524,57 @@ async function runFixX() {
   });
 }
 
+// ================= Family 11: Fix Y — date-offset number leak =================
+// Live defect (Ahmed, production): "Je veux un rendez-vous dans 10 jours"
+// answered "D'accord — 23-10-2026, 10:00" — the "10" of "10 jours" was
+// consumed TWICE: once as the day-offset, once by the hour parser as
+// 10:00. A date with NO time must produce a date-only proposal that ASKS
+// for the time (same as a bare weekday), never an invented hour.
+async function runFixY() {
+  await scenario("FY1", "fixy", "Fix Y: French 'dans 10 jours' is DATE-ONLY — asks the time, no invented 10:00 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("Je veux un rendez-vous dans 10 jours");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "24-10-2026"), `the date must resolve to Sat 24-10-2026; got: ${rr}`, "high");
+    ctx.chk.hard(!/24-10-2026,\s*\d{2}:\d{2}/.test(rr), `no concrete hour may be attached to the date (the '10' of '10 jours' is not an hour); got: ${rr}`, "high");
+    ctx.chk.hard(/dites-moi l'heure/i.test(rr), `the reply must ASK for the time (plain time question, not an AM/PM guess about '10h'); got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a date-only turn", "high");
+    const r2 = await ctx.say("10h");
+    ctx.chk.hard(hasDate(String(r2 || ""), "24-10-2026") && String(r2 || "").includes("10:00"),
+      `the follow-up hour must merge onto Sat 24-10 at 10:00; got: ${r2}`, "medium");
+  });
+
+  await scenario("FY2", "fixy", "Fix Y: French 'dans 2 semaines' is DATE-ONLY — no invented 14:00 (Jrad)", JRA, async (ctx) => {
+    const r1 = await ctx.say("Je veux un rendez-vous dans 2 semaines");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "28-10-2026"), `the date must resolve to Wed 28-10-2026; got: ${rr}`, "high");
+    ctx.chk.hard(!/28-10-2026,\s*\d{2}:\d{2}/.test(rr), `no concrete hour may be attached to the date (the '2' of '2 semaines' is not 14:00); got: ${rr}`, "high");
+    ctx.chk.hard(/dites-moi l'heure/i.test(rr), `the reply must ASK for the time; got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a date-only turn", "high");
+  });
+
+  await scenario("FY3", "fixy", "Fix Y: Derja 'ba3d 3 ayam' is DATE-ONLY — +3d, asks the time (Mahjoub)", MAH, async (ctx) => {
+    const r1 = await ctx.say("nheb na7jez ba3d 3 ayam");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "17-10-2026"), `the date must resolve to Sat 17-10-2026 (+3 days); got: ${rr}`, "high");
+    ctx.chk.hard(!/17-10-2026,\s*\d{2}:\d{2}/.test(rr), `no concrete hour may be attached to the date (the '3' of 'ba3d 3 ayam' is not an hour); got: ${rr}`, "high");
+    ctx.chk.hard(/9olli el wa9t/i.test(rr), `the reply must ASK for the time in Derja (plain time question); got: ${rr}`, "high");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a date-only turn", "high");
+  });
+
+  // Positive control: an explicit hour riding along with the offset is a
+  // REAL hour and must be kept. Clock moved to Mon 12-10 so +10d lands on
+  // Thu 22-10, a day Jrad is open past 15:00 (Sat 24-10 closes 14:00).
+  await scenario("FY4", "fixy", "Fix Y control: French 'dans 10 jours a 15h' keeps the concrete 15:00 (Jrad)", JRA, async (ctx) => {
+    ctx.setClock("2026-10-12T08:00:00Z"); // Mon 12-10-2026 09:00 Tunis
+    const r1 = await ctx.say("Je veux un rendez-vous dans 10 jours a 15h");
+    const rr = String(r1 || "");
+    ctx.chk.hard(hasDate(rr, "22-10-2026") && rr.includes("15:00"),
+      `the explicit 15h must be kept on Thu 22-10-2026; got: ${rr}`, "high");
+    ctx.chk.hard(!/dites-moi l'heure/i.test(rr), `a concrete slot must be proposed, not a time question; got: ${rr}`, "medium");
+    ctx.chk.hard(ctx.bookings().length === 0, "no booking after a single probe turn", "high");
+  });
+}
+
 (async () => {
   await runLong();
   await runEdge();
@@ -1535,6 +1586,7 @@ async function runFixX() {
   await runConsist();
   await runLangChaos();
   await runFixX();
+  await runFixY();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
