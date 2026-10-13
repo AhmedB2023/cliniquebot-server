@@ -1714,6 +1714,79 @@ async function runFixAA() {
   });
 }
 
+// ================= Family 14: Fix AB — status content + status language =================
+// Live defect (Ahmed, production, Jrad line): the patient asked in
+// Arabizi "3andi rendez vous confirme wela?" and the bot answered IN
+// ARABIC SCRIPT about a STALE PAST booking ("05-10-2026, 08:00") with
+// a cancellation offer. Two root causes in handleStatusQuestion:
+// (A) it answered from getLatestBooking — latest CREATED, any status,
+// any date — with no notion of upcoming vs past; (B) after resolveLang
+// it FORCED Arabic whenever the latest booking's stored slot display
+// was Arabic-script (a leftover of an earlier Arabic conversation).
+// Fix: Fix AA's eligibility frame (upcoming pool by slot_at, dates
+// computed from the stored ISO), a live pending proposal states the
+// pending state, an upcoming CANCELLED booking keeps the Fix U (MEM7)
+// cancelled answer, everything-past answers "no upcoming appointment",
+// and the current message's language always wins. Frozen clock:
+// Wed 2026-10-14 09:00 Tunis.
+async function runFixAB() {
+  const PAST_AR_SLOT = "05-10-2026، 08:00";        // Arabic-script stored display, like the live row
+  const PAST_ISO = "2026-10-05T07:00:00.000Z";     // 05-10-2026 08:00 Tunis — PAST at the frozen clock
+  const UPC_SLOT = "21-10-2026, 10:00";
+  const UPC_ISO = "2026-10-21T09:00:00.000Z";      // 21-10-2026 10:00 Tunis — upcoming
+
+  await scenario("AB1", "fixab", "Fix AB: past booking + pending proposal -> Arabizi status, PENDING answer with the proposal date (Jrad)", JRA, async (ctx) => {
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_AR_SLOT, PAST_ISO, "Patient Test", JRA);
+    await stubDb.setBookingStatus(pastId, "cancelled"); // the live row was a cancelled past booking
+    const r1 = await ctx.say("nheb na7jez ghodwa el 10 mta3 el sbe7");
+    ctx.chk.hard(!!ctx.proposal(), `setup: a pending proposal exists (Thu 15-10 10:00); r1: ${r1}`, "medium");
+    const r = await ctx.say("3andi rendez vous confirme wela?");
+    const rr = String(r || "");
+    ctx.chk.hard(!isAR(rr), `Arabizi in -> Arabizi out: NO Arabic script in the reply; got: ${rr}`, "high");
+    ctx.chk.hard(hasDate(rr, "15-10-2026"), `the pending state is stated with the PROPOSAL's date (15-10-2026); got: ${rr}`, "high");
+    ctx.chk.hard(/mazel yestanna/i.test(rr), `the reply says the request is still PENDING, not confirmed; got: ${rr}`, "high");
+    ctx.chk.hard(!hasDate(rr, "05-10-2026"), `the PAST booking is never surfaced; got: ${rr}`, "high");
+  });
+
+  await scenario("AB2", "fixab", "Fix AB: past cancelled (latest-created) + upcoming CONFIRMED -> status names the confirmed booking (Jrad)", JRA, async (ctx) => {
+    const upcId = await stubDb.saveBooking(ctx.phone, UPC_SLOT, UPC_ISO, "Patient Test", JRA);
+    await stubDb.setBookingStatus(upcId, "confirmed");
+    // The stale past row is seeded LAST (latest-created): the old
+    // getLatestBooking answer picked IT and reported it as cancelled.
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_AR_SLOT, PAST_ISO, "Patient Test", JRA);
+    await stubDb.setBookingStatus(pastId, "cancelled");
+    const r = await ctx.say("3andi rendez vous confirme wela?");
+    const rr = String(r || "");
+    ctx.chk.hard(!isAR(rr), `Arabizi in -> Arabizi out: NO Arabic script in the reply; got: ${rr}`, "high");
+    ctx.chk.hard(hasDate(rr, "21-10-2026"), `the status names the upcoming CONFIRMED booking (21-10-2026); got: ${rr}`, "high");
+    ctx.chk.hard(/t2akked|m2akked/i.test(rr), `the reply says CONFIRMED; got: ${rr}`, "high");
+    ctx.chk.hard(!hasDate(rr, "05-10-2026"), `the PAST booking is never surfaced; got: ${rr}`, "high");
+  });
+
+  await scenario("AB3", "fixab", "Fix AB: only a past booking -> 'no upcoming appointment', no cancel offer about it (Jrad)", JRA, async (ctx) => {
+    const pastId = await stubDb.saveBooking(ctx.phone, PAST_AR_SLOT, PAST_ISO, "Patient Test", JRA);
+    const r = await ctx.say("3andi rendez vous confirme wela?");
+    const rr = String(r || "");
+    ctx.chk.hard(/Ma l9it 7atta rendez-vous/i.test(rr), `the 'no upcoming appointment' reply applies; got: ${rr}`, "high");
+    ctx.chk.hard(!hasDate(rr, "05-10-2026"), `the past booking is not presented as the patient's appointment; got: ${rr}`, "high");
+    ctx.chk.hard(!isAR(rr), `Arabizi in -> Arabizi out: NO Arabic script in the reply; got: ${rr}`, "high");
+    const past = ctx.bookings().find((b) => b.id === pastId);
+    ctx.chk.hard(!!past && past.status === "pending", `the past booking is untouched; got: ${past && past.status}`, "medium");
+  });
+
+  await scenario("AB4", "fixab", "Fix AB: French status question after Arabic-script history -> French reply, current message wins (Jrad)", JRA, async (ctx) => {
+    const upcId = await stubDb.saveBooking(ctx.phone, "21-10-2026، 10:00", UPC_ISO, "Patient Test", JRA);
+    await stubDb.setBookingStatus(upcId, "confirmed");
+    await ctx.say("سلام"); // Arabic-script history in this same conversation
+    const r = await ctx.say("Mon rendez-vous est-il confirmé ?");
+    const rr = String(r || "");
+    ctx.chk.hard(!isAR(rr), `French in -> French out despite the Arabic history and the Arabic-script stored slot; got: ${rr}`, "high");
+    ctx.chk.hard(isFR(rr), `the reply is French; got: ${rr}`, "high");
+    ctx.chk.hard(/confirmé/i.test(rr) && hasDate(rr, "21-10-2026"),
+      `the confirmed booking is stated in French with its date; got: ${rr}`, "high");
+  });
+}
+
 (async () => {
   await runLong();
   await runEdge();
@@ -1728,6 +1801,7 @@ async function runFixAA() {
   await runFixY();
   await runFixZ();
   await runFixAA();
+  await runFixAB();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
