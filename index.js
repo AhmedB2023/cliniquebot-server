@@ -2470,34 +2470,82 @@ async function handleStatusQuestion(phone, text, clinic, history) {
   try {
     if (dates.resolveSlot(text).found) return { handled: false };
   } catch (e) {}
-  const b = await db.getLatestBooking(phone).catch(() => null);
-  if (!b) return { handled: false }; // no booking -> let normal flow / AI answer
-  // Fix U (MEM4): with TWO active bookings the latest-only answer hid the
-  // second appointment — report every active booking, one line each. A
-  // cancelled LATEST booking keeps the single cancelled answer (flow9).
-  let actives = [];
-  if (typeof db.getBookingsByPhone === "function") {
-    const all = await db.getBookingsByPhone(phone).catch(() => []);
-    actives = (all || []).filter((x) => x.status === "pending" || x.status === "confirmed");
-  }
-  // Fix S: language from the central resolver (sticky via history); the
-  // booking's own slot display still forces Arabic when it is Arabic-script
-  // (the legacy signal for this branch).
   const hist = history || await db.getHistory(phone).catch(() => []);
-  let lang = await resolveLang(phone, text, { history: hist });
-  if (lang !== "ar" && isAr(b.slot)) lang = "ar";
-  const when = b.slot || "";
+  // Fix AB (B): the CURRENT message's language wins. The old code resolved
+  // the language and then FORCED Arabic whenever the latest booking's
+  // stored slot display was Arabic-script — a leftover of an earlier
+  // Arabic conversation — so an Arabizi question ("3andi rendez vous
+  // confirme wela?") was answered in Arabic script. A stored slot string
+  // is history, not the patient's current language: the override is gone.
+  const lang = await resolveLang(phone, text, { history: hist });
+  let rows = [];
+  if (typeof db.getBookingsByPhone === "function") {
+    rows = (await db.getBookingsByPhone(phone).catch(() => [])) || [];
+  }
+  if (!rows.length) {
+    const b = await db.getLatestBooking(phone).catch(() => null);
+    if (b) rows = [b];
+  }
+  const prop = typeof db.getProposal === "function"
+    ? await db.getProposal(phone).catch(() => null) : null;
+  if (!rows.length && !prop) return { handled: false }; // no trace at all -> normal flow / AI answer (unchanged)
+  // Fix AB (A): only UPCOMING bookings describe the patient's current
+  // state — the old code answered from getLatestBooking (latest CREATED,
+  // any status, any date) and surfaced a CANCELLED booking from
+  // 05-10-2026, eight days past, as "your appointment", cancel offer
+  // included. Same eligibility frame as Fix AA: the mockable clock
+  // converted to the real-instant frame, dates always computed from the
+  // stored ISO (never the stored display string), undated legacy rows
+  // eligible only when no dated upcoming row exists.
+  const nowRealMs = dates.tunisNow().getTime() - 3600000;
+  const tsOf = (x) => {
+    if (!x || !x.slot_at) return null;
+    const t = new Date(x.slot_at).getTime();
+    return isNaN(t) ? null : t;
+  };
+  const dispOf = (x) => {
+    const t = tsOf(x);
+    if (t === null) return (x && (x.slot || x.display)) || "";
+    const wall = new Date(t + 3600000); // Tunis wall frame
+    return dates.slotDisplay(
+      Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate()),
+      wall.getUTCHours(), wall.getUTCMinutes(), lang === "ar").display;
+  };
+  const isUpcoming = (x) => { const t = tsOf(x); return t !== null && t > nowRealMs; };
+  const poolOf = (statuses) => {
+    const dated = rows.filter((x) => statuses.includes(x.status) && isUpcoming(x));
+    if (dated.length) return dated;
+    return rows.filter((x) => statuses.includes(x.status) && tsOf(x) === null);
+  };
+  const actives = poolOf(["pending", "confirmed"]);
   let reply;
-  if (actives.length >= 2 && b.status !== "cancelled") {
+  if (actives.length >= 2) {
+    // Fix U (MEM4) kept: report every active booking, one line each.
     reply = actives
-      .map((x) => msg(x.status === "confirmed" ? "status_confirmed" : "status_pending", lang, { when: x.slot || "" }))
+      .map((x) => msg(x.status === "confirmed" ? "status_confirmed" : "status_pending", lang, { when: dispOf(x) }))
       .join("\n");
-  } else if (b.status === "confirmed") {
-    reply = msg("status_confirmed", lang, { when });
-  } else if (b.status === "cancelled") {
-    reply = msg("status_cancelled", lang, { when });
+  } else if (actives.length === 1) {
+    reply = msg(actives[0].status === "confirmed" ? "status_confirmed" : "status_pending",
+      lang, { when: dispOf(actives[0]) });
   } else {
-    reply = msg("status_pending", lang, { when });
+    const cancelled = poolOf(["cancelled"]);
+    if (cancelled.length) {
+      // An upcoming CANCELLED booking is still the truth about the
+      // patient's last request (Fix U MEM7: the status must SAY it was
+      // cancelled — flow9/CN7). A PAST one is not, and never surfaces.
+      reply = msg("status_cancelled", lang, { when: dispOf(cancelled[cancelled.length - 1]) });
+    } else if (prop && (prop.slot_at == null || isNaN(new Date(prop.slot_at).getTime()) || new Date(prop.slot_at).getTime() > nowRealMs)) {
+      // A live pending proposal (a slot was offered, not yet turned
+      // into a booking) is a pending request — state it as such, with
+      // its date, instead of resurrecting a past booking.
+      reply = msg("status_pending", lang,
+        { when: dispOf({ slot_at: prop.slot_at, slot: prop.display || prop.slot_text }) });
+    } else {
+      // History exists but everything in it is past: the truthful
+      // answer is "no upcoming appointment" — never a past booking
+      // dressed up as current, never a cancel offer about it.
+      reply = msg("cancel_none", lang);
+    }
   }
   return say(phone, reply, clinic);
 }
