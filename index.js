@@ -1052,7 +1052,11 @@ function looksLikeBookingIntent(text) {
   // The prefix requirement keeps the bare noun "7ajz" (my booking WHEN?)
   // from matching — that's a status question, not a booking intent.
   if (/[ntyae][aeiou]*[75][aeiou]*j[aeiou]*z/.test(t)) return true;
-  if (/(n7eb|nheb)/.test(t) && /(rendez|rdv|7ajz|hajz|reservation)/.test(t)) return true;
+  // Fix AC: vowel-less verb spellings ("n7b", "nhb") and the frequent
+  // "randez" misspelling / spaced "rendez vous" — "n7b randez vous
+  // nhar la5mis" matched NEITHER side and fell through to the AI
+  // (live 2026-10-13).
+  if (/(n7eb|nheb|n7b|nhb)/.test(t) && /(rendez|randez|rdv|7ajz|hajz|reservation)/.test(t)) return true;
   return false;
 }
 
@@ -1193,13 +1197,18 @@ const WD_MONTH_FR = { janvier: 0, janfi: 0, fevrier: 1, fev: 1, mars: 2, avril: 
 const WD_MONTH_AR = { "جانفي": 0, "فيفري": 1, "مارس": 2, "أفريل": 3, "افريل": 3, "ماي": 4, "جوان": 5, "جويلية": 6, "أوت": 7, "اوت": 7, "سبتمبر": 8, "أكتوبر": 9, "اكتوبر": 9, "نوفمبر": 10, "ديسمبر": 11 };
 // Weekday name -> JS day number (mirrors dates.js DAYS, incl. Arabic script).
 const WD_DAYS = [
-  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["dimanche", 0], ["الأحد", 0], ["الاحد", 0],
+  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el7ad", 0], ["le7ad", 0], ["dimanche", 0], ["الأحد", 0], ["الاحد", 0],
   ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["thenin", 1], ["lundi", 1], ["الاثنين", 1], ["الإثنين", 1],
-  ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2], ["الثلاثاء", 2],
-  ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["mercredi", 3], ["الأربعاء", 3], ["الاربعاء", 3],
+  ["latnin", 1], ["lathnin", 1], ["lethnin", 1], ["lethenin", 1], ["elthnin", 1], ["lthnin", 1],
+  ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["thlath", 2], ["tleth", 2], ["mardi", 2], ["الثلاثاء", 2],
+  ["lathlath", 2], ["latleth", 2], ["lathletha", 2], ["latletha", 2], ["lethletha", 2], ["elthletha", 2], ["lthleth", 2],
+  ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["larba3", 3], ["lerba3", 3], ["elarba3", 3], ["mercredi", 3], ["الأربعاء", 3], ["الاربعاء", 3],
   ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4], ["الخميس", 4],
+  ["la5mis", 4], ["l5mis", 4], ["le5mis", 4], ["el5mis", 4], ["lakhmis", 4], ["lekhmis", 4], ["lakhamis", 4], ["lkhmis", 4],
   ["jem3a", 5], ["jom3a", 5], ["vendredi", 5], ["الجمعة", 5],
+  ["lajom3a", 5], ["lejom3a", 5], ["ljom3a", 5], ["lajem3a", 5], ["eljom3a", 5], ["ljem3a", 5],
   ["sebt", 6], ["sibt", 6], ["sabt", 6], ["samedi", 6], ["السبت", 6],
+  ["lasabt", 6], ["lasebt", 6], ["lsabt", 6], ["lsebt", 6], ["lesabt", 6], ["elsabt", 6], ["lasibt", 6],
 ];
 
 function foldForWeekday(s) {
@@ -1644,10 +1653,10 @@ function stripTimeTokens(s) {
 
 function stripDateTokens(s) {
   let out = " " + (s || "").toLowerCase() + " ";
-  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "apres-demain", "la7ad", "l7ad", "lahad", "el 7ad", "dimanche",
-    "ethnin", "thnin", "tnin", "thenin", "lundi", "thletha", "thleth", "tletha", "tlata", "mardi",
-    "erb3a", "larb3a", "mercredi", "khmis", "5mis", "jeudi", "jem3a", "jom3a", "vendredi",
-    "sebt", "sibt", "sabt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
+  const words = ["ba3d ghodwa", "ba3d ghadwa", "apres ghodwa", "apres demain", "apres-demain", "la7ad", "l7ad", "lahad", "el 7ad", "el7ad", "le7ad", "dimanche",
+    "ethnin", "thnin", "tnin", "thenin", "latnin", "lathnin", "lethnin", "lethenin", "elthnin", "lthnin", "lundi", "thletha", "thleth", "tletha", "tlata", "thlath", "tleth", "lathlath", "latleth", "lathletha", "latletha", "lethletha", "elthletha", "lthleth", "mardi",
+    "erb3a", "larb3a", "larba3", "lerba3", "elarba3", "mercredi", "khmis", "5mis", "la5mis", "l5mis", "le5mis", "el5mis", "lakhmis", "lekhmis", "lakhamis", "lkhmis", "jeudi", "jem3a", "jom3a", "lajom3a", "lejom3a", "ljom3a", "lajem3a", "eljom3a", "ljem3a", "vendredi",
+    "sebt", "sibt", "sabt", "lasabt", "lasebt", "lsabt", "lsebt", "lesabt", "elsabt", "lasibt", "samedi", "ghodwa", "ghadwa", "demain", "demin", "lyoum", "elyoum", "bera7",
     "الأحد", "الاحد", "الاثنين", "الإثنين", "الثلاثاء", "الأربعاء", "الاربعاء",
     "الخميس", "الجمعة", "السبت", "غدوة", "غدوا", "بعد غدوة", "اليوم", "البارح", "البارحة"];
   for (const w of words) out = out.split(" " + w + " ").join(" ");
@@ -3054,13 +3063,13 @@ async function handleBookingTurn(phone, text, history, clinic) {
       // Weekday names grouped by JS day number — the rejected day is the
       // proposal's own day.
       const DOW_WORDS = {
-        0: ["la7ad", "l7ad", "lahad", "dimanche", "الأحد", "الاحد"],
-        1: ["ethnin", "ethinin", "thnin", "tnin", "thenin", "lundi", "الاثنين", "الإثنين"],
-        2: ["thletha", "thleth", "tletha", "tlata", "mardi", "الثلاثاء"],
-        3: ["erb3a", "larb3a", "lerb3a", "mercredi", "الأربعاء", "الاربعاء"],
-        4: ["khmis", "5mis", "khemis", "khamis", "kmis", "jeudi", "الخميس"],
-        5: ["jem3a", "jom3a", "vendredi", "الجمعة"],
-        6: ["sebt", "sibt", "sabt", "samedi", "السبت"],
+        0: ["la7ad", "l7ad", "lahad", "el7ad", "le7ad", "dimanche", "الأحد", "الاحد"],
+        1: ["ethnin", "ethinin", "thnin", "tnin", "thenin", "latnin", "lathnin", "lethnin", "lethenin", "elthnin", "lthnin", "lundi", "الاثنين", "الإثنين"],
+        2: ["thletha", "thleth", "tletha", "tlata", "thlath", "tleth", "lathlath", "latleth", "lathletha", "latletha", "lethletha", "elthletha", "lthleth", "mardi", "الثلاثاء"],
+        3: ["erb3a", "larb3a", "lerb3a", "larba3", "lerba3", "elarba3", "mercredi", "الأربعاء", "الاربعاء"],
+        4: ["khmis", "5mis", "khemis", "khamis", "kmis", "la5mis", "l5mis", "le5mis", "el5mis", "lakhmis", "lekhmis", "lakhamis", "lkhmis", "jeudi", "الخميس"],
+        5: ["jem3a", "jom3a", "lajom3a", "lejom3a", "ljom3a", "lajem3a", "eljom3a", "ljem3a", "vendredi", "الجمعة"],
+        6: ["sebt", "sibt", "sabt", "lasabt", "lasebt", "lsabt", "lsebt", "lesabt", "elsabt", "lasibt", "samedi", "السبت"],
       };
       const words = propR.dow !== null && propR.dow !== undefined ? (DOW_WORDS[propR.dow] || []) : [];
       let cleaned = " " + corr.toLowerCase() + " ";
