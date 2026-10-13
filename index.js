@@ -333,6 +333,35 @@ function supervisorNumber(clinic) {
   return (clinic && clinic.secretary) || SECRETARY_NUMBER || null;
 }
 
+// ---------- ONE supervisor-notification mechanism (Fix S, 2026-10-13) ----------
+// The smart hybrid, implemented exactly once: if the supervisor messaged
+// this bot number <24h ago, a free-form message delivers (and is free);
+// otherwise a template is required — a free-form send outside the 24h
+// window fails with Meta error 131047 (seen live 2026-10-13: Dr Jrad
+// never received a patient's forwarded question because that branch sent
+// free-form unconditionally, while the booking notification already had
+// the hybrid inline). Every supervisor-bound notification goes through
+// here. Callers pass templateName=null when NO template exists for their
+// message: free-form is then sent as before (best effort — outside the
+// window it can still fail; that gap is flagged, never silently invented).
+async function notifySupervisor(clinic, freeFormText, templateName, templateParams) {
+  const sup = supervisorNumber(clinic);
+  if (!sup) {
+    console.log("[notify:SKIP] no supervisor number set");
+    return false;
+  }
+  const nid = clinic && clinic.id;
+  if (templateName) {
+    const lastSupMsg = await db.getLastSupervisorMessageTime(sup, nid).catch(() => null);
+    const windowOpen = lastSupMsg && (Date.now() - new Date(lastSupMsg).getTime()) < 24 * 60 * 60 * 1000;
+    if (!windowOpen) {
+      return sendTemplate(sup, templateName, templateParams || {}, {}, nid).catch(() => false);
+    }
+  }
+  if (freeFormText) return sendWhatsApp(sup, freeFormText, nid).catch(() => false);
+  return sendTemplate(sup, templateName, templateParams || {}, {}, nid).catch(() => false);
+}
+
 // Normalize a phone for comparison: strip the country code so "+1 717..." and
 // "717..." (or "+216 98..." and "98...") always match. General rule, not per-number.
 function normPhoneForCompare(s) {
@@ -472,12 +501,10 @@ async function processSupervisorImage(from, mediaId, clinic, numberId) {
 // Notify the secretary of THIS bot number's clinic (per-number config),
 // falling back to the global SECRETARY_NUMBER.
 async function notifySecretary(text, clinic) {
-  const num = (clinic && clinic.secretary) || SECRETARY_NUMBER;
-  if (!num) {
-    console.log("[secretary:SKIP] no secretary number set");
-    return;
-  }
-  await sendWhatsApp(num, text, clinic && clinic.id);
+  // Via the shared supervisor helper (Fix S). No template exists for these
+  // free-text alerts (cancellation / reschedule / emergency / other-doctor),
+  // so templateName=null: free-form, exactly as before.
+  await notifySupervisor(clinic, text, null, null);
 }
 
 // Sales lead from the demo video ("جرّب"): ping the partner so she calls back.
@@ -716,14 +743,71 @@ function looksLikeLatinRequest(text) {
     /\bb\s*7rouf\b/.test(t) && /ekteb|akteb|ktob/.test(t);
 }
 
-// Does the patient want Arabic script? Order: explicit request > saved
-// preference > Arabic characters in the incoming message.
+// ---------- Central conversation language (Fix S, 2026-10-13) ----------
+// ONE resolver for every patient-facing reply: 'ar' | 'fr' | 'az'.
+// Language handling used to be scattered (scriptAr's binary Arabic-vs-Latin
+// at ~9 call sites + a separate French detection in the booking flow), so a
+// reply branch with only Arabic/Arabizi variants answered a French patient
+// in Arabizi (Prignol incident, 2026-10-13). Every reply path now resolves
+// the conversation language HERE and picks its wording from the MSG catalog.
+// Priority: explicit request in this message > Arabic script in this message
+// > saved preference > this message's own markers > sticky context (pending
+// proposal's words, then the patient's recent messages) > AI semantic check
+// (opt-in, booking path) > Derja default. A short reply ("oui", "ey", "ok",
+// a name) carries no marker, so it falls through to the sticky context and
+// can never flip or reset the conversation language.
+function langOfText(text) {
+  if (isAr(text)) return "ar";
+  if (hasDerjaMarker(text)) return "az";
+  if (looksLikeFrenchAuto(text)) return "fr";
+  return null; // neutral: digits, names, "oui", "ok"...
+}
+
+async function resolveLang(phone, text, opts = {}) {
+  // 1) Explicit requests in THIS message win (and are persisted by the
+  //    caller, exactly like the old script-pref saves).
+  if (looksLikeFrenchRequest(text)) return "fr";
+  if (looksLikeScriptRequest(text)) return "ar";
+  if (looksLikeLatinRequest(text)) return "az";
+  // 2) Arabic script anywhere in the message wins over French.
+  if (isAr(text)) return "ar";
+  // 3) Saved preference (set by an explicit request earlier).
+  const pref = await db.getScriptPref(phone).catch(() => null);
+  if (pref === "ar") return "ar";
+  if (pref === "fr") return "fr";
+  // 4) This message's own markers.
+  const own = langOfText(text);
+  if (own) return own;
+  // 5) Sticky context — SHORT replies only ("oui", "ey", "ok", a name):
+  // a full sentence in another language is a language switch, not a
+  // follow-up, and must win on its own (regression: a Derja availability
+  // question after one French message is answered in Derja). Pending
+  // proposal's words first, then the patient's recent messages.
+  const wordCount = (text || "").trim().split(/\s+/).filter((w) => /[a-zà-ÿ\u0600-\u06FF]/i.test(w)).length;
+  if (wordCount <= 3) {
+    if (opts.proposalText) {
+      const pl = langOfText(opts.proposalText);
+      if (pl) return pl;
+    }
+    const hist = opts.history || [];
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (!hist[i] || hist[i].role !== "user") continue;
+      const hl = langOfText(hist[i].text);
+      if (hl) return hl;
+    }
+  }
+  if (pref === "latin") return "az";
+  // 6) Semantic fallback (AI) — only where the caller opts in: the booking
+  //    path historically asked the AI when the word lists were unsure.
+  if (opts.aiCheck && await aiLangIsFrench(text)) return "fr";
+  return "az";
+}
+
+// Legacy binary view of the resolver (salon/VIXA sales flows and older call
+// sites only ever asked "Arabic script or not?"). New patient-path code
+// must use resolveLang + the MSG catalog instead.
 async function scriptAr(phone, text) {
-  if (looksLikeScriptRequest(text)) return true;
-  if (looksLikeLatinRequest(text)) return false;
-  const pref = await db.getScriptPref(phone);
-  if (pref) return pref === "ar";
-  return isAr(text);
+  return (await resolveLang(phone, text)) === "ar";
 }
 
 // ---------------------------------------------------------------------------
@@ -848,46 +932,42 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
   }
   if (!ok) {
     console.error("[ai:ERROR]", JSON.stringify(data).slice(0, 300));
-    return ar
-      ? "سمحنا، صارت مشكلة صغيرة — نجم نعاونك بحاجة أخرى؟"
-      : "sme7na, saret mochkla s8ira — najem n3awnek b 7aja o5ra?";
+    return msg("ai_error", ar ? "ar" : fr ? "fr" : "az");
   }
   const out = data.choices?.[0]?.message?.content?.trim() || "";
   // Deterministic guard: the AI must never invent a booking, date, time, or price.
   return guardAiOutput(
     enforceScript(out, patientText, ar),
     false,
-    ar ? AI_SAFE_FALLBACK.arabic : AI_SAFE_FALLBACK.latin
+    msg("ai_safe_fallback", ar ? "ar" : fr ? "fr" : "az")
   );
 }
 
 function fallbackReply(text, forceAr, clinicName = "") {
   if (looksLikeFrench(text)) return frenchFallback(text, clinicName);
-  if (forceAr !== undefined ? forceAr : isAr(text)) {
-    if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text))
-      return "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)";
-    if (/(حجز|رونديفو|موعد)/.test(text))
-      return "باش نحجزلك رونديفو — قولي نهار ووقت يساعدك، ونأكدلك مع العيادة 👌";
-    if (/(وين|بلاصة|عنوان|فين)/.test(text))
-      return "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟";
-    if (/(سوم|بقداش|فلوس|prix)/.test(text))
-      return "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. نحجزلك؟";
-    if (/(دواء|دوا|وجيعة|وجع|مريض)/.test(text))
-      return "الأسئلة على الدواء والوجيعة للطبيب برك ⛔ — تحب نحجزلك رونديفو تسألو ديراكت؟";
-    return "ما فهمتش مليح — تنجم تقولي: تحب تحجز رونديفو، تسأل على الوقت، ولا على البلاصة؟";
+  // Fix S: wording from the MSG catalog (fb_* keys); detection order unchanged.
+  const lang = (forceAr !== undefined ? forceAr : isAr(text)) ? "ar" : "az";
+  const ctx = { clinicName };
+  if (lang === "ar") {
+    if (/(سلام|عسلامة|صباح|مساء|اهلا|أهلا)/.test(text)) return msg("fb_greeting", lang, ctx);
+    if (/(حجز|رونديفو|موعد)/.test(text)) return msg("fb_booking", lang, ctx);
+    if (/(وين|بلاصة|عنوان|فين)/.test(text)) return msg("fb_place", lang, ctx);
+    if (/(سوم|بقداش|فلوس|prix)/.test(text)) return msg("fb_price", lang, ctx);
+    if (/(دواء|دوا|وجيعة|وجع|مريض)/.test(text)) return msg("fb_medical", lang, ctx);
+    return msg("fb_unknown", lang, ctx);
   }
   const t = text.toLowerCase();
   if (t.includes("slem") || t.includes("slm") || t.includes("salem") || t.includes("salam") || t.includes("ahla") || t.includes("salut") || t.includes("bonjour") || t.includes("sbe7") || t.includes("mse"))
-    return "ahla w sahla! 👋 chnowa tnajem n3awnek? (7ajz rendez-vous, wa9t el 5edma, el blasa...)";
+    return msg("fb_greeting", lang, ctx);
   if (t.includes("7ajz") || t.includes("7jez") || t.includes("rendez") || t.includes("rdv") || t.includes("wa9t"))
-    return "bech na7jzelek rendez-vous — 9olli nhar w wa9t yse3dek, w n2akkedlek m3a el 3iyada 👌";
+    return msg("fb_booking", lang, ctx);
   if (t.includes("win") || t.includes("blasa") || t.includes("adresse") || t.includes("ou"))
-    return "n2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?";
+    return msg("fb_place", lang, ctx);
   if (t.includes("soum") || t.includes("prix") || t.includes("9adech") || t.includes("bikam"))
-    return "el aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. N7ajzlek?";
+    return msg("fb_price", lang, ctx);
   if (t.includes("dwe") || t.includes("medicament") || t.includes("wji3a") || t.includes("douleur"))
-    return "el sou2elet 3al dwe wel wji3a lel doktor bark ⛔ — t7eb n7ajzlek rendez-vous tes2lou direct?";
-  return "ma fhemtch mli7 — tnajem t9olli: t7eb te7jez rendez-vous, tes2el 3al wa9t, walla 3al blasa?";
+    return msg("fb_medical", lang, ctx);
+  return msg("fb_unknown", lang, ctx);
 }
 
 // ---------- Booking flow (Phase 2 + deterministic Derja dates) ----------
@@ -1039,41 +1119,14 @@ function faqKind(text) {
 
 function faqAnswer(kind, ar, clinic, fr) {
   clinic = clinic || {};
-  const cname = clinic.name || "";
-  if (fr) {
-    if (kind === "clinic_name") return cname ? `Le nom de la clinique : ${cname}.` : "Je suis l'assistant de la clinique — je vous confirme le nom avec la clinique.";
-    if (kind === "works_with") return cname ? `Je travaille avec ${cname}.` : "Je travaille avec cette clinique.";
-    if (kind === "who") return cname
-      ? `Je suis l'assistant de ${cname} — je vous aide à prendre rendez-vous et je réponds aux questions administratives (horaires, adresse, prix). Les questions médicales sont pour le docteur.`
-      : "Je suis l'assistant de la clinique — je vous aide à prendre rendez-vous et je réponds aux questions administratives (horaires, adresse, prix). Les questions médicales sont pour le docteur.";
-    if (kind === "hours") return clinic.hours ? `Horaires de travail : ${clinic.hours}.` : `Nous travaillons du lundi au samedi : ${CLINIC_HOURS_TXT}. Le dimanche, nous sommes fermés.`;
-    if (kind === "price") return "Les prix dépendent du cas — d'abord la consultation, ensuite le docteur vous dira. Voulez-vous que je vous réserve un rendez-vous ?";
-    return clinic.address
-      ? `L'adresse : ${clinic.address} — voulez-vous que je vous réserve un rendez-vous en même temps ?`
-      : "Je vous confirme l'adresse avec la clinique — voulez-vous que je vous réserve un rendez-vous en même temps ?";
-  }
-  if (kind === "clinic_name") return ar
-    ? (cname ? `اسم العيادة: ${cname}.` : "أنا المساعد متاع العيادة — نأكدلك على الاسم مع العيادة.")
-    : (cname ? `Esm el 3iyada: ${cname}.` : "Ena el assistant mta3 el 3iyada — n2akkedlek 3al esm m3a el 3iyada.");
-  if (kind === "works_with") return ar
-    ? (cname ? `نخدم مع ${cname}.` : "نخدم مع العيادة هذي.")
-    : (cname ? `Ne5dem m3a ${cname}.` : "Ne5dem m3a el 3iyada hethi.");
-  if (kind === "who") return ar
-    ? (cname ? `أنا المساعد متاع ${cname} — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.`
-      : "أنا المساعد متاع العيادة — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.")
-    : (cname ? `Ena el assistant mta3 ${cname} — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.`
-      : "Ena el assistant mta3 el 3iyada — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.");
-  if (kind === "hours") return ar
-    ? (clinic.hours ? `وقت الخدمة: ${clinic.hours}.` : `نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}. نهار الأحد مسكرين.`)
-    : (clinic.hours ? `Wa9t el 5edma: ${clinic.hours}.` : `Ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}. Nhar el 7ad msakrin.`);
-  if (kind === "price") return ar
-    ? "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. تحب نحجزلك رونديفو؟"
-    : "El aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. T7eb n7ajzlek rendez-vous?";
-  return ar // place — the clinic verifies the address
-    ? (clinic.address ? `العنوان: ${clinic.address} — تحب نحجزلك رونديفو في نفس الوقت؟`
-      : "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟")
-    : (clinic.address ? `El 3onwen: ${clinic.address} — t7eb n7ajzlek rendez-vous fi nafs el wa9t?`
-      : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?");
+  // Fix S: wording lives in the MSG catalog (faq_* keys); this function only
+  // maps the FAQ kind + clinic facts onto it. Signature unchanged (tests).
+  const key = { clinic_name: "faq_clinic_name", works_with: "faq_works_with", who: "faq_who", hours: "faq_hours", price: "faq_price" }[kind] || "faq_place";
+  return msg(key, lang3(ar, fr), {
+    clinicName: clinic.name || "",
+    hours: clinic.hours || "",
+    address: clinic.address || "",
+  });
 }
 
 // ---------- French test path (2026-09-27) ----------
@@ -1178,12 +1231,13 @@ const FRENCH_SYSTEM_PROMPT = `Vous êtes l'assistant réceptionniste d'une clini
 - Ne vous excusez jamais de parler français : le patient vous a écrit en français. Répondez directement et utilement.`;
 
 // No-AI-key fallback in French (used by the local test; production has the AI key).
+// Fix S: wording from the MSG catalog — greeting -> fb_greeting, else the
+// generic French fallback (fb_booking's fr variant is that same text).
 function frenchFallback(text, clinicName = "") {
-  const cn = clinicName || "la clinique";
   const t = (text || "").toLowerCase();
   if (/bonjour|bonsoir|salut/.test(t))
-    return `Bonjour ! 👋 Je suis l'assistant de ${cn} — comment puis-je vous aider ? (rendez-vous, horaires, adresse...)`;
-  return `Bonjour ! Je suis l'assistant de ${cn} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`;
+    return msg("fb_greeting", "fr", { clinicName });
+  return msg("fb_booking", "fr", { clinicName });
 }
 
 // F11 — Walk-in ("n7eb nji tawa"): explain, offer a reserved time, no question loop.
@@ -1309,6 +1363,338 @@ function stripDateTokens(s) {
   return out.replace(/\s+/g, " ").trim();
 }
 
+// ---------------------------------------------------------------------------
+// MSG — the ONE catalog of deterministic patient-facing replies (Fix S).
+// Every key carries ALL THREE variants (ar / fr / az); reply sites ask
+// msg(key, resolvedLang, ctx) instead of hand-writing per-site ternaries.
+// Variants are the wordings that already existed in the code (moved here
+// verbatim); a French variant was written ONLY where a branch genuinely
+// had none (escalation confirm/decline, settle confirmations, finishBooking
+// second-appointment prompt, AI fallbacks, greeting default).
+// test-lang.js enumerates this catalog mechanically: a key missing any
+// variant fails the suite, so this class of bug cannot ship silently again.
+// ctx fields are read defensively (missing -> "").
+// ---------------------------------------------------------------------------
+function lang3(ar, fr) { return fr ? "fr" : ar ? "ar" : "az"; }
+
+const MSG = {
+  // ----- doctor-question escalation (the Prignol incident branch) -----
+  esc_asked_doctor: {
+    ar: "تمام، سألت الطبيب — نرجعلك بالجواب.",
+    fr: "D'accord, j'ai demandé au docteur — je reviens vers vous avec sa réponse.",
+    az: "D'accord, s2elt el tbib — narja3lek bel jewb.",
+  },
+  esc_declined: {
+    ar: "Ok، ما مشكلة.",
+    fr: "D'accord, pas de problème.",
+    az: "Ok, ma mochkla.",
+  },
+  // ----- greeting default (only when the clinic config has none) -----
+  greeting_default: {
+    ar: "وعليكم السلام! كيفاش نجمو نعاونوك؟",
+    fr: "Bonjour ! Comment puis-je vous aider ?",
+    az: "3alikom salam! Kifech najmou n3awnouk?",
+  },
+  // ----- other-doctor handoff (shared clinic) -----
+  other_doctor: {
+    ar: (c) => `الدكتور ${c.doctor} يخدم في نفس العيادة — باش نوصلو طلبك للسكرتيرة وهي ترجعلك. تحب نحجزلك في ${c.clinicName}؟`,
+    fr: (c) => `Le Dr ${c.doctor} travaille dans le même cabinet — je transmets votre demande à la secrétaire, qui vous recontactera. Voulez-vous un rendez-vous au ${c.clinicName} ?`,
+    az: (c) => `Dr ${c.doctor} ye5dem fi nafs el 3iyada — bech nwaslou talbek lel secretaire w hiya tarja3lek. T7eb n7ajzlek fi ${c.clinicName}?`,
+  },
+  // ----- booking flow: intents before the slot machinery -----
+  emergency: {
+    ar: "الوجيعة هذي تستحق طبيب فيسع — ما تستناش رونديفو: امشي للاستعجالي توا ولا عيط لـ190. البوت ما ينجمش يعاونك في حالة كيما هذي.",
+    fr: "Cette douleur nécessite un médecin rapidement — n'attendez pas un rendez-vous : allez aux urgences dès maintenant ou appelez le 190. L'assistant ne peut pas vous aider dans une situation comme celle-ci.",
+    az: "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.",
+  },
+  frustration: {
+    ar: "سامحني 🙏 شنوة صار بالضبط؟ قولي ونعاونك.",
+    fr: "Pardonnez-moi 🙏 Que s'est-il passé exactement ? Dites-moi et je vous aide.",
+    az: "Sama7ni 🙏 chnowa saret b dhabt? 9olli w n3awnek.",
+  },
+  walkin: {
+    ar: "تنجم تجي توا، أما الاستناة تنجم تطوال حسب الحالة — الأحسن نحجزلك وقت مضمون باش ما تستناش. تحب نحجزلك؟ قولي أنهو نهار وأنهو وقت.",
+    fr: "Vous pouvez venir maintenant, mais l'attente peut être longue selon l'affluence — le mieux est que je vous réserve un créneau garanti pour ne pas attendre. Voulez-vous que je vous réserve ? Dites-moi quel jour et quelle heure.",
+    az: "Tnjem tji tawa, ama el waiting ynajem ykoun twil 7asb el 7ala — el a7sen n7ajzlek wa9t mathmoun bech ma testa7melch. T7eb n7ajzlek? 9olli anhou nhar w anhou wa9t.",
+  },
+  two_rdv_two_ben: {
+    ar: (c) => `فهمتك — زوز رونديفو: واحد ${c.ben1} وواحد ${c.ben2}. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟`,
+    fr: (c) => `D'accord — deux rendez-vous : un ${c.ben1} et un ${c.ben2}. Nous les faisons un par un : le premier, quel jour et quelle heure vous conviennent ?`,
+    az: (c) => `Fhemtek — zouz rendez-vous: wa7ed ${c.ben1} w wa7ed ${c.ben2}. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?`,
+  },
+  two_rdv_one_ben: {
+    ar: (c) => `فهمتك — زوز رونديفو: واحد ${c.ben1}. والثاني لشكون؟`,
+    fr: (c) => `D'accord — deux rendez-vous : un ${c.ben1}. Et le deuxième, c'est pour qui ?`,
+    az: (c) => `Fhemtek — zouz rendez-vous: wa7ed ${c.ben1}. W el theni lchkoun?`,
+  },
+  two_rdv_none: {
+    ar: "فهمتك — زوز رونديفو. اللول لشكون؟",
+    fr: "D'accord — deux rendez-vous. Le premier, c'est pour qui ?",
+    az: "Fhemtek — zouz rendez-vous. El louwel lchkoun?",
+  },
+  third_party: {
+    ar: "سامحني — نجم نشوف كان الرونديفو المحجوز بالرقم هذا. كان الحجز تسجل باسم آخر، قولي الاسم ونتثبت مع العيادة.",
+    fr: "Pardonnez-moi — je ne peux voir que les rendez-vous réservés avec ce numéro. Si la réservation a été faite sous un autre nom, dites-moi le nom et je vérifie avec la clinique.",
+    az: "Sama7ni — najem nchouf ken el rendez-vous el ma7jouz b numero hetha. Ken el 7ajz tsajjel b esm e5er, 9olli el esm w nthabbet m3a el 3iyada.",
+  },
+  sec_cmd_hint: {
+    ar: "هذي commande متاع العيادة — كان تحب تبدل ولا تفسخ الرونديفو متاعك، قولي.",
+    fr: "Ceci est une commande de la clinique — si vous voulez changer ou annuler votre rendez-vous, dites-le-moi.",
+    az: "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.",
+  },
+  proposal_dropped: {
+    ar: "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك.",
+    fr: "D'accord, j'ai annulé la proposition. Voulez-vous un autre horaire ? Dites-moi un jour et une heure qui vous conviennent.",
+    az: "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.",
+  },
+  ask_day_time: {
+    ar: "داكور — أنهو نهار وأنهو وقت تحب؟",
+    fr: "D'accord — quel jour et quelle heure souhaitez-vous ?",
+    az: "D'accord — anhou nhar w anhou wa9t t7eb?",
+  },
+  already_pending: {
+    ar: (c) => `عندك رونديفو مازال يستنى: ${c.slot} — نأكدلك ونرجعلك.`,
+    fr: (c) => `Vous avez déjà un rendez-vous en attente : ${c.slot} — je vous confirme et je reviens vers vous.`,
+    az: (c) => `3andek rendez-vous deja yestanna: ${c.slot} — n2akkedlek w narja3lek.`,
+  },
+  reask_proposal: {
+    ar: (c) => `تحب نحجزلك ${c.disp}؟ اكتب "اي".`,
+    fr: (c) => `Voulez-vous que je vous réserve le ${c.disp} ? Écrivez "oui".`,
+    az: (c) => `T7eb n7ajzlek ${c.disp}? Ekteb "ey".`,
+  },
+  booking_nudge: {
+    ar: "فهمتك تحب تحجز — قولي أنهو نهار وأنهو وقت، كيما: الجمعة 10 متاع الصباح.",
+    fr: "Je comprends, vous voulez réserver — dites-moi quel jour et quelle heure, par exemple : vendredi à 10h du matin.",
+    az: "Fhemtek t7eb ta7jez — 9olli anhou nhar w anhou wa9t, kima: jem3a 10 mta3 sbe7.",
+  },
+  next_week_ask: {
+    ar: "أوك — الجمعة الجاية. أنهو نهار وأنهو وقت يساعدك؟",
+    fr: "D'accord — la semaine prochaine. Quel jour et quelle heure vous conviennent ?",
+    az: "Ok, jem3a jeya — anhou nhar w anhou wa9t?",
+  },
+  ask_day_exact: {
+    ar: "أنهو نهار بالضبط؟ (اكتب كيما: الجمعة، غدوة، 21 سبتمبر...)",
+    fr: "Quel jour exactement ? (écrivez par exemple : vendredi, demain, le 21 septembre...)",
+    az: "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)",
+  },
+  past_slot: {
+    ar: "الوقت هذا فات — أعطيني وقت آخر.",
+    fr: "Ce créneau est déjà passé — donnez-moi un autre horaire.",
+    az: "El wa9t hedha fet — a3tini wa9t e5er.",
+  },
+  bad_hour: {
+    ar: (c) => `"${c.badHour}" موش وقت صحيح — عاود اكتب الوقت (مثال: 10:30).`,
+    fr: (c) => `"${c.badHour}" n'est pas une heure valide — réécrivez l'heure (exemple : 10:30).`,
+    az: (c) => `"${c.badHour}" mech wa9t s7i7 — 3awed ekteb el wa9t (mthel: 10:30).`,
+  },
+  closed_day: {
+    ar: (c) => `نهار الأحد العيادة مسكرة (نخدمو ${c.range}). تحب ${c.sugDay}؟ قولي الوقت.`,
+    fr: (c) => `Le dimanche, la clinique est fermée (nous travaillons ${c.range}). Voulez-vous le ${c.sugDay} ? Dites-moi l'heure.`,
+    az: (c) => `Nhar el 7ad el 3iyada msakra (ne5dmou ${c.range}). T7eb ${c.sugDay}? 9olli el wa9t.`,
+  },
+  afternoon_closed: {
+    ar: (c) => `${c.dateDisplay} العشية مسكرة (نخدمو ${c.hrs}). تحب صباحية؟ قولي الوقت (مثال: 10:30).`,
+    fr: (c) => `${c.dateDisplay} l'après-midi, la clinique est fermée (nous travaillons ${c.hrs}). Voulez-vous le matin ? Dites-moi l'heure (exemple : 10:30).`,
+    az: (c) => `${c.dateDisplay} l3echiya msakra (ne5dmou ${c.hrs}). T7eb sbe7? 9olli el wa9t (mthel: 10:30).`,
+  },
+  confirm_24h: {
+    ar: (c) => `${c.dateDisplay} — باش نتأكد: الـ${c.hourStr} هاذي ${c.am} متاع الصباح ولا ${c.pm} متاع العشية؟`,
+    fr: (c) => `${c.dateDisplay} — pour confirmer : ${c.hourStr}h, c'est ${c.am} le matin ou ${c.pm} l'après-midi ?`,
+    az: (c) => `${c.dateDisplay} — bech net2akked: el ${c.hourStr} hethi ${c.am} mta3 sbe7 walla ${c.pm} mta3 l3chiya?`,
+  },
+  propose_slot: {
+    ar: (c) => `داكور — ${c.display}. تحب نحجزلك؟ اكتب "اي".`,
+    fr: (c) => `D'accord — ${c.display}. Voulez-vous que je vous le réserve ? Écrivez "oui".`,
+    az: (c) => `D'accord — ${c.display}. T7eb n7ajzlek? Ekteb "ey".`,
+  },
+  hours_reject_closed: {
+    ar: (c) => `النهار هذا العيادة مسكرة (نخدمو من الاثنين للسبت: ${c.hrs}). نقترح عليك: ${c.sug} — تحب نحجزلك؟ اكتب "اي".`,
+    fr: (c) => `Ce jour-là, la clinique est fermée (nous travaillons du lundi au samedi : ${c.hrs}). Je vous propose : ${c.sug} — voulez-vous que je vous réserve ce créneau ? Écrivez "oui".`,
+    az: (c) => `El nhar hetha el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${c.hrs}). Ne9tar7oulek: ${c.sug} — t7eb n7ajzlek? Ekteb "ey".`,
+  },
+  hours_reject_hours: {
+    ar: (c) => `الوقت هذا خارج وقت الخدمة (${c.hrs}). نقترح عليك: ${c.sug} — تحب نحجزلك؟ اكتب "اي".`,
+    fr: (c) => `Cet horaire est en dehors des heures de travail (${c.hrs}). Je vous propose : ${c.sug} — voulez-vous que je vous réserve ce créneau ? Écrivez "oui".`,
+    az: (c) => `El wa9t hetha 5arej wa9t el 5edma (${c.hrs}). Ne9tar7oulek: ${c.sug} — t7eb n7ajzlek? Ekteb "ey".`,
+  },
+  // ----- the "which hour?" question (timeQuestionMsg) -----
+  tq_period: {
+    ar: (c) => `${c.dateDisplay} ${c.period === "morning" ? "متاع الصباح" : c.period === "afternoon" ? "متاع العشية" : "متاع الليل"} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`,
+    fr: (c) => `${c.dateDisplay} ${c.period === "morning" ? "le matin" : c.period === "afternoon" ? "l'après-midi" : "le soir"} — à quelle heure exactement ? (écrivez par exemple 10:30)`,
+    az: (c) => `${c.dateDisplay} ${c.period === "morning" ? "mta3 sbe7" : c.period === "afternoon" ? "mta3 l3chiya" : "mta3 lil"} — anhou se3a b dhabt? (ekteb kima 10:30)`,
+  },
+  tq_hour: {
+    ar: (c) => `${c.dateDisplay} — الـ${c.hourStr} هاذي متاع الصباح ولا متاع العشية؟`,
+    fr: (c) => `${c.dateDisplay} — à ${c.hourStr}h, c'est le matin ou l'après-midi ?`,
+    az: (c) => `${c.dateDisplay} — el ${c.hourStr} hethi mta3 sbe7 walla mta3 l3chiya?`,
+  },
+  tq_plain: {
+    ar: (c) => `${c.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع العشية؟ (ولا اكتب الوقت كيما 10:30)`,
+    fr: (c) => `${c.dateDisplay} — dites-moi l'heure : le matin ou l'après-midi ? (ou écrivez l'heure, par exemple 10:30)`,
+    az: (c) => `${c.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`,
+  },
+  // ----- name capture -----
+  ask_name: {
+    ar: (c) => `داكور — ${c.display}. أعطيني الاسم واللقب متاعك؟`,
+    fr: (c) => `D'accord — ${c.display}. Quel est votre nom et votre prénom ?`,
+    az: (c) => `D'accord — ${c.display}. A3tini el esm wel la9ab mta3ek?`,
+  },
+  ask_family_name: {
+    ar: "واللقب متاعك؟",
+    fr: "Et votre nom de famille ?",
+    az: "Wel la9ab mta3ek?",
+  },
+  // ----- booking completion (finishBooking) -----
+  book_dup_pending: {
+    ar: (c) => `الرونديفو متاعك (${c.display}) مازال يستنى — نأكدلك ونرجعلك.`,
+    fr: (c) => `Votre rendez-vous (${c.display}) est déjà en attente — je vous confirme et je reviens vers vous.`,
+    az: (c) => `El rendez-vous mte3ek (${c.display}) deja yestanna — n2akkedlek w narja3lek.`,
+  },
+  book_done: {
+    ar: (c) => `${c.first ? `داكور ${c.first}، مرحبا بيك!` : "داكور، مرحبا بيك!"} نأكدلك رونديفو (${c.display}) ونرجعلك.`,
+    fr: (c) => `${c.first ? `D'accord ${c.first}, bienvenue !` : "D'accord, bienvenue !"} Je vous confirme le rendez-vous (${c.display}) et je reviens vers vous.`,
+    az: (c) => `${c.first ? `D'accord ${c.first}, merhba bik!` : "D'accord, merhba bik!"} n2akkedlek rendez-vous (${c.display}) w narja3lek.`,
+  },
+  book_second_prompt: {
+    ar: "\nوالثاني: أنهو نهار ووقت؟",
+    fr: "\nEt le deuxième : quel jour et quelle heure ?",
+    az: "\nTawa ethani: anhou nhar w wa9t?",
+  },
+  // ----- status question -----
+  status_confirmed: {
+    ar: (c) => `اي، تأكد! ✅ الرونديفو متاعك (${c.when}) مؤكد. نستناوك!`,
+    fr: (c) => `Oui, c'est confirmé ! ✅ Votre rendez-vous (${c.when}) est confirmé. Nous vous attendons !`,
+    az: (c) => `Ey, t2akked! ✅ Rendez-vous mte3ek (${c.when}) m2akked. Nestennewk!`,
+  },
+  status_cancelled: {
+    ar: (c) => `سامحنا، الوقت ${c.when} ما عادش متاح. تحب وقت آخر؟`,
+    fr: (c) => `Pardon, le créneau ${c.when} n'est plus disponible. Voulez-vous un autre horaire ?`,
+    az: (c) => `Sme7na, el wa9t ${c.when} ma 3adech disponible. T7eb na9tar7oulek wa9t e5er?`,
+  },
+  status_pending: {
+    ar: (c) => `الرونديفو متاعك (${c.when}) مازال يستنى — نستناو في التأكيد من العيادة. نأكدلك ونرجعلك. ⏳`,
+    fr: (c) => `Votre rendez-vous (${c.when}) est encore en attente — nous attendons la confirmation de la clinique. Je vous confirme et je reviens vers vous. ⏳`,
+    az: (c) => `El rendez-vous mte3ek (${c.when}) mazel yestanna — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`,
+  },
+  // ----- cancellation / reschedule -----
+  cancel_none: {
+    ar: "ما لقيت حتى رونديفو محجوز بهالرقم. تحب نحجزلك واحد جديد؟",
+    fr: "Je n'ai trouvé aucun rendez-vous réservé avec ce numéro. Voulez-vous que je vous en réserve un nouveau ?",
+    az: "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?",
+  },
+  cancel_done: {
+    ar: (c) => `داكور، فسخت الرونديفو (${c.slot}). تحب وقت آخر؟`,
+    fr: (c) => `D'accord, j'ai annulé le rendez-vous (${c.slot}). Voulez-vous un autre horaire ?`,
+    az: (c) => `D'accord, fassakht el rendez-vous (${c.slot}). T7eb wa9t e5er?`,
+  },
+  resched_none: {
+    ar: "ما لقيت حتى رونديفو باش نبدلوه. تحب نحجزلك واحد جديد؟",
+    fr: "Je n'ai trouvé aucun rendez-vous à déplacer. Voulez-vous que je vous en réserve un nouveau ?",
+    az: "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?",
+  },
+  resched_ask: {
+    ar: (c) => `داكور — باش نبدلو الرونديفو (${c.slot}). قولي النهار والوقت الجديد.`,
+    fr: (c) => `D'accord — nous allons déplacer le rendez-vous (${c.slot}). Dites-moi le nouveau jour et la nouvelle heure.`,
+    az: (c) => `D'accord — bech nbadlou el rendez-vous (${c.slot}). 9olli el nhar wel wa9t el jdid.`,
+  },
+  resched_done: {
+    ar: (c) => `تبدل الرونديفو: ${c.display} — نأكدلك ونرجعلك.`,
+    fr: (c) => `Rendez-vous déplacé : ${c.display} — je vous confirme et je reviens vers vous.`,
+    az: (c) => `Tbadal el rendez-vous: ${c.display} — n2akkedlek w narja3lek.`,
+  },
+  // ----- secretary settle -> patient confirmation -----
+  settle_confirmed: {
+    ar: (c) => `تأكد الرونديفو متاعك: ${c.slot}. نستناوك! 🌸`,
+    fr: (c) => `Votre rendez-vous est confirmé : ${c.slot}. Nous vous attendons ! 🌸`,
+    az: (c) => `T2akked rendez-vous mte3ek: ${c.slot}. Nestennewk! 🌸`,
+  },
+  settle_cancelled: {
+    ar: (c) => `سامحنا، الوقت ${c.slot} ما عادش متاح. تحب وقت آخر؟`,
+    fr: (c) => `Pardon, le créneau ${c.slot} n'est plus disponible. Voulez-vous un autre horaire ?`,
+    az: (c) => `Sme7na, el wa9t ${c.slot} ma 3adech disponible. T7eb wa9t e5er?`,
+  },
+  // ----- FAQ (faqAnswer) -----
+  faq_clinic_name: {
+    ar: (c) => c.clinicName ? `اسم العيادة: ${c.clinicName}.` : "أنا المساعد متاع العيادة — نأكدلك على الاسم مع العيادة.",
+    fr: (c) => c.clinicName ? `Le nom de la clinique : ${c.clinicName}.` : "Je suis l'assistant de la clinique — je vous confirme le nom avec la clinique.",
+    az: (c) => c.clinicName ? `Esm el 3iyada: ${c.clinicName}.` : "Ena el assistant mta3 el 3iyada — n2akkedlek 3al esm m3a el 3iyada.",
+  },
+  faq_works_with: {
+    ar: (c) => c.clinicName ? `نخدم مع ${c.clinicName}.` : "نخدم مع العيادة هذي.",
+    fr: (c) => c.clinicName ? `Je travaille avec ${c.clinicName}.` : "Je travaille avec cette clinique.",
+    az: (c) => c.clinicName ? `Ne5dem m3a ${c.clinicName}.` : "Ne5dem m3a el 3iyada hethi.",
+  },
+  faq_who: {
+    ar: (c) => c.clinicName ? `أنا المساعد متاع ${c.clinicName} — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.` : "أنا المساعد متاع العيادة — نعاونك تحجز رونديفو ونجاوبك على الأسئلة الإدارية (الوقت، البلاصة، الأسوام). الأسئلة الطبية للطبيب.",
+    fr: (c) => c.clinicName ? `Je suis l'assistant de ${c.clinicName} — je vous aide à prendre rendez-vous et je réponds aux questions administratives (horaires, adresse, prix). Les questions médicales sont pour le docteur.` : "Je suis l'assistant de la clinique — je vous aide à prendre rendez-vous et je réponds aux questions administratives (horaires, adresse, prix). Les questions médicales sont pour le docteur.",
+    az: (c) => c.clinicName ? `Ena el assistant mta3 ${c.clinicName} — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.` : "Ena el assistant mta3 el 3iyada — n3awnek ta7jez rendez-vous w njawbek 3al as2la el idariya (el wa9t, el blasa, el aswem). El as2la el tibbiya lel tbib.",
+  },
+  faq_hours: {
+    ar: (c) => c.hours ? `وقت الخدمة: ${c.hours}.` : `نخدمو من الاثنين للسبت: ${CLINIC_HOURS_TXT}. نهار الأحد مسكرين.`,
+    fr: (c) => c.hours ? `Horaires de travail : ${c.hours}.` : `Nous travaillons du lundi au samedi : ${CLINIC_HOURS_TXT}. Le dimanche, nous sommes fermés.`,
+    az: (c) => c.hours ? `Wa9t el 5edma: ${c.hours}.` : `Ne5dmou mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}. Nhar el 7ad msakrin.`,
+  },
+  faq_price: {
+    ar: "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. تحب نحجزلك رونديفو؟",
+    fr: "Les prix dépendent du cas — d'abord la consultation, ensuite le docteur vous dira. Voulez-vous que je vous réserve un rendez-vous ?",
+    az: "El aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. T7eb n7ajzlek rendez-vous?",
+  },
+  faq_place: {
+    ar: (c) => c.address ? `العنوان: ${c.address} — تحب نحجزلك رونديفو في نفس الوقت؟` : "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟",
+    fr: (c) => c.address ? `L'adresse : ${c.address} — voulez-vous que je vous réserve un rendez-vous en même temps ?` : "Je vous confirme l'adresse avec la clinique — voulez-vous que je vous réserve un rendez-vous en même temps ?",
+    az: (c) => c.address ? `El 3onwen: ${c.address} — t7eb n7ajzlek rendez-vous fi nafs el wa9t?` : "N2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?",
+  },
+  // ----- no-AI-key fallbacks (fallbackReply / frenchFallback) -----
+  fb_greeting: {
+    ar: "وعليكم السلام! كيفاش نجم نعاونك؟ (حجز رونديفو، وقت الخدمة، البلاصة...)",
+    fr: (c) => `Bonjour ! 👋 Je suis l'assistant de ${c.clinicName || "la clinique"} — comment puis-je vous aider ? (rendez-vous, horaires, adresse...)`,
+    az: "ahla w sahla! 👋 chnowa tnajem n3awnek? (7ajz rendez-vous, wa9t el 5edma, el blasa...)",
+  },
+  fb_booking: {
+    ar: "باش نحجزلك رونديفو — قولي نهار ووقت يساعدك، ونأكدلك مع العيادة 👌",
+    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    az: "bech na7jzelek rendez-vous — 9olli nhar w wa9t yse3dek, w n2akkedlek m3a el 3iyada 👌",
+  },
+  fb_place: {
+    ar: "نأكدلك على العنوان مع العيادة — تحب نحجزلك رونديفو في نفس الوقت؟",
+    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    az: "n2akkedlek 3al 3onwen m3a el 3iyada — t7eb n7ajzlek rendez-vous fi nafs el wa9t?",
+  },
+  fb_price: {
+    ar: "الأسوام حسب الحالة — الاستشارة الأولى وبعد الطبيب يقولك. نحجزلك؟",
+    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    az: "el aswem 7asb el 7ala — el consultation loula w ba3d el tbib y9ollek. N7ajzlek?",
+  },
+  fb_medical: {
+    ar: "الأسئلة على الدواء والوجيعة للطبيب برك ⛔ — تحب نحجزلك رونديفو تسألو ديراكت؟",
+    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    az: "el sou2elet 3al dwe wel wji3a lel doktor bark ⛔ — t7eb n7ajzlek rendez-vous tes2lou direct?",
+  },
+  fb_unknown: {
+    ar: "ما فهمتش مليح — تنجم تقولي: تحب تحجز رونديفو، تسأل على الوقت، ولا على البلاصة؟",
+    fr: (c) => `Bonjour ! Je suis l'assistant de ${c.clinicName || "la clinique"} — je peux vous aider pour un rendez-vous, les horaires ou l'adresse. Comment puis-je vous aider ?`,
+    az: "ma fhemtch mli7 — tnajem t9olli: t7eb te7jez rendez-vous, tes2el 3al wa9t, walla 3al blasa?",
+  },
+  // ----- AI-path fallbacks (aiReply) -----
+  ai_error: {
+    ar: "سمحنا، صارت مشكلة صغيرة — نجم نعاونك بحاجة أخرى؟",
+    fr: "Pardon, un petit problème technique — puis-je vous aider autrement ?",
+    az: "sme7na, saret mochkla s8ira — najem n3awnek b 7aja o5ra?",
+  },
+  ai_safe_fallback: {
+    ar: AI_SAFE_FALLBACK.arabic,
+    fr: "Pardon, je n'ai pas bien compris — voulez-vous prendre un rendez-vous ou poser une question ?",
+    az: AI_SAFE_FALLBACK.latin,
+  },
+};
+
+function msg(key, lang, ctx) {
+  const e = MSG[key];
+  if (!e) return "";
+  const v = e[lang] !== undefined ? e[lang] : e.az;
+  return typeof v === "function" ? v(ctx || {}) : v;
+}
+
 // F10 — Clinic-hours gate. A concrete slot outside working hours (or on a closed
 // day) is rejected with the next suitable open slot, saved as the new proposal.
 function hoursCheck(r, hours) {
@@ -1358,17 +1744,9 @@ function suggestOpenDay(dateUTC, ar, hours) {
 }
 
 function hoursRejectMsg(ar, reason, sugDisplay, hoursTxt, fr) {
-  const hrs = hoursTxt || CLINIC_HOURS_TXT;
-  if (fr) {
-    if (reason === "closed") return `Ce jour-là, la clinique est fermée (nous travaillons du lundi au samedi : ${hrs}). Je vous propose : ${sugDisplay} — voulez-vous que je vous réserve ce créneau ? Écrivez "oui".`;
-    return `Cet horaire est en dehors des heures de travail (${hrs}). Je vous propose : ${sugDisplay} — voulez-vous que je vous réserve ce créneau ? Écrivez "oui".`;
-  }
-  if (reason === "closed") return ar
-    ? `النهار هذا العيادة مسكرة (نخدمو من الاثنين للسبت: ${hrs}). نقترح عليك: ${sugDisplay} — تحب نحجزلك؟ اكتب "اي".`
-    : `El nhar hetha el 3iyada msakra (ne5dmou mel ethneyn lel sebt: ${hrs}). Ne9tar7oulek: ${sugDisplay} — t7eb n7ajzlek? Ekteb "ey".`;
-  return ar
-    ? `الوقت هذا خارج وقت الخدمة (${hrs}). نقترح عليك: ${sugDisplay} — تحب نحجزلك؟ اكتب "اي".`
-    : `El wa9t hetha 5arej wa9t el 5edma (${hrs}). Ne9tar7oulek: ${sugDisplay} — t7eb n7ajzlek? Ekteb "ey".`;
+  // Fix S: wording from the MSG catalog (hours_reject_* keys).
+  return msg(reason === "closed" ? "hours_reject_closed" : "hours_reject_hours",
+    lang3(ar, fr), { hrs: hoursTxt || CLINIC_HOURS_TXT, sug: sugDisplay });
 }
 
 // Date substrings must never leak into the time question: in "27/10/2026"
@@ -1398,25 +1776,14 @@ function bareHour(text) {
 
 // The "which hour?" question, shared by the slot branch and the bare-"ey"
 // clarification repeat (F9) so both ask identically.
+// Fix S: wording from the MSG catalog (tq_* keys).
 function timeQuestionMsg(ar, r, text, fr) {
-  const period = r.morning ? (ar ? "متاع الصباح" : "mta3 sbe7")
-    : r.afternoon ? (ar ? "متاع العشية" : "mta3 l3chiya")
-    : r.night ? (ar ? "متاع الليل" : "mta3 lil") : null;
+  const period = r.morning ? "morning" : r.afternoon ? "afternoon" : r.night ? "night" : null;
   const hourStr = bareHour(text);
-  if (fr) {
-    const periodFr = r.morning ? "le matin" : r.afternoon ? "l'après-midi" : r.night ? "le soir" : null;
-    if (periodFr) return `${r.dateDisplay} ${periodFr} — à quelle heure exactement ? (écrivez par exemple 10:30)`;
-    if (hourStr) return `${r.dateDisplay} — à ${hourStr}h, c'est le matin ou l'après-midi ?`;
-    return `${r.dateDisplay} — dites-moi l'heure : le matin ou l'après-midi ? (ou écrivez l'heure, par exemple 10:30)`;
-  }
-  if (ar) {
-    if (period) return `${r.dateDisplay} ${period} — أنهو ساعة بالضبط؟ (اكتب كيما 10:30)`;
-    if (hourStr) return `${r.dateDisplay} — الـ${hourStr} هاذي متاع الصباح ولا متاع العشية؟`;
-    return `${r.dateDisplay} — قولي الوقت: متاع الصباح ولا متاع العشية؟ (ولا اكتب الوقت كيما 10:30)`;
-  }
-  if (period) return `${r.dateDisplay} ${period} — anhou se3a b dhabt? (ekteb kima 10:30)`;
-  if (hourStr) return `${r.dateDisplay} — el ${hourStr} hethi mta3 sbe7 walla mta3 l3chiya?`;
-  return `${r.dateDisplay} — 9olli el wa9t: mta3 sbe7 walla mta3 l3chiya? (walla ekteb el wa9t kima 10:30)`;
+  const ctx = { dateDisplay: r.dateDisplay, period, hourStr };
+  if (period) return msg("tq_period", lang3(ar, fr), ctx);
+  if (hourStr) return msg("tq_hour", lang3(ar, fr), ctx);
+  return msg("tq_plain", lang3(ar, fr), ctx);
 }
 
 // ---------- Patient name capture (nom + prenom, asked AFTER slot acceptance) ----------
@@ -1448,15 +1815,11 @@ function capName(s) {
 }
 
 function askNameMsg(ar, display, fr) {
-  if (fr) return `D'accord — ${display}. Quel est votre nom et votre prénom ?`;
-  return ar
-    ? `داكور — ${display}. أعطيني الاسم واللقب متاعك؟`
-    : `D'accord — ${display}. A3tini el esm wel la9ab mta3ek?`;
+  return msg("ask_name", lang3(ar, fr), { display });
 }
 
 function askFamilyNameMsg(ar, fr) {
-  if (fr) return `Et votre nom de famille ?`;
-  return ar ? `واللقب متاعك؟` : `Wel la9ab mta3ek?`;
+  return msg("ask_family_name", lang3(ar, fr));
 }
 
 // The patient is answering our name question (proposal.awaiting_name is set).
@@ -1467,11 +1830,7 @@ async function handleNameAnswer(phone, text, proposal, ar, clinic, fr) {
   // Refusal -> drop the proposal, don't glue it to anything.
   if (looksLikeRefusal(text)) {
     await db.clearProposal(phone).catch(() => {});
-    return say(phone, frHere
-      ? "D'accord, j'ai annulé la proposition. Voulez-vous un autre horaire ? Dites-moi un jour et une heure qui vous conviennent."
-      : ar
-      ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.", clinic);
+    return say(phone, msg("proposal_dropped", lang3(ar, frHere)), clinic);
   }
   // A new concrete slot mid-flow ("le, jem3a 11") -> update the slot, ask the name again.
   const r = dates.resolveSlot(text, ar);
@@ -1509,54 +1868,30 @@ async function finishBooking(phone, p, name, clinic, fr) {
   const shownName = capName(name);
   let reply;
   if (dup) {
-    reply = frHere
-      ? `Votre rendez-vous (${p.display}) est déjà en attente — je vous confirme et je reviens vers vous.`
-      : ar
-      ? `الرونديفو متاعك (${p.display}) مازال يستنى — نأكدلك ونرجعلك.`
-      : `El rendez-vous mte3ek (${p.display}) deja yestanna — n2akkedlek w narja3lek.`;
+    reply = msg("book_dup_pending", lang3(ar, frHere), { display: p.display });
   } else {
     const id = await db.saveBooking(phone, p.display, p.slot_at || null, name || null, clinic && clinic.id);
     console.log(`[booking] #${id} pending: ${phone} (${name || "sans nom"}) -> ${p.display}`);
-    const hi = frHere
-      ? (first ? `D'accord ${first}, bienvenue !` : `D'accord, bienvenue !`)
-      : first
-      ? (ar ? `داكور ${first}، مرحبا بيك!` : `D'accord ${first}, merhba bik!`)
-      : (ar ? `داكور، مرحبا بيك!` : `D'accord, merhba bik!`);
-    reply = frHere
-      ? `${hi} Je vous confirme le rendez-vous (${p.display}) et je reviens vers vous.`
-      : ar
-      ? `${hi} نأكدلك رونديفو (${p.display}) ونرجعلك.`
-      : `${hi} n2akkedlek rendez-vous (${p.display}) w narja3lek.`;
-    // 2026-10-09: booking notification via template (bypasses the 24h window —
-    // always delivers, even if the supervisor hasn't messaged recently).
+    reply = msg("book_done", lang3(ar, frHere), { first, display: p.display });
+    // Supervisor notification via the ONE shared helper (Fix S): smart
+    // hybrid — free-form while the supervisor's 24h window is open,
+    // "notif_booking" template otherwise (always delivers).
     {
-      const sup = supervisorNumber(clinic);
-      if (sup) {
-        // 2026-10-09: SMART HYBRID — check 24h window BEFORE sending.
-        // <24h since supervisor's last message → regular message (free).
-        // >24h or unknown → template directly (works anytime, no wasted attempt).
-        const lastSupMsg = await db.getLastSupervisorMessageTime(sup, clinic && clinic.id).catch(() => null);
-        const windowOpen = lastSupMsg && (Date.now() - lastSupMsg.getTime()) < 24 * 60 * 60 * 1000;
-        if (windowOpen) {
-          const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
-          await sendWhatsApp(sup, notifMsg, clinic && clinic.id).catch(() => {});
-        } else {
-          await sendTemplate(sup, "notif_booking", {
-            patient_name: shownName || phone,
-            patient_phone: phone,
-            slot: p.display,
-            ok_id: id,
-            le_id: id,
-          }, {}, clinic && clinic.id).catch(() => {});
-        }
-      }
+      const notifMsg = `⏳ Rendez-vous jdid mel bot: Esm: ${shownName || phone}, Mel: ${phone}, Wa9t: ${p.display}. Bech tvalidih, ekteb: ok ${id}. Bech tl4ih, ekteb: le ${id} bark.`;
+      await notifySupervisor(clinic, notifMsg, "notif_booking", {
+        patient_name: shownName || phone,
+        patient_phone: phone,
+        slot: p.display,
+        ok_id: id,
+        le_id: id,
+      });
     }
   }
   // F4) two appointments: the first is booked — prompt for the second one.
   const extra = multiBooking.get(phone) || 0;
   if (extra > 0 && !dup) {
     if (extra <= 1) multiBooking.delete(phone); else multiBooking.set(phone, extra - 1);
-    reply += frHere ? "\nEt le deuxième : quel jour et quelle heure ?" : "\nTawa ethani: anhou nhar w wa9t?";
+    reply += msg("book_second_prompt", lang3(ar, frHere));
   }
   await db.clearProposal(phone).catch(() => {});
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
@@ -1572,7 +1907,7 @@ function looksLikeStatusQuestion(text) {
   return /(تأكد|تاكد|وين وصل|الحجز متاعي|حجزي|تم الحجز)/.test(text || "");
 }
 
-async function handleStatusQuestion(phone, text, clinic) {
+async function handleStatusQuestion(phone, text, clinic, history) {
   if (!looksLikeStatusQuestion(text)) return { handled: false };
   // "t2akkedli ghodwa 10" = new booking request, not a status question.
   try {
@@ -1580,28 +1915,20 @@ async function handleStatusQuestion(phone, text, clinic) {
   } catch (e) {}
   const b = await db.getLatestBooking(phone).catch(() => null);
   if (!b) return { handled: false }; // no booking -> let normal flow / AI answer
-  const ar = isAr(text) || isAr(b.slot);
-  const fr = !ar && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text));
+  // Fix S: language from the central resolver (sticky via history); the
+  // booking's own slot display still forces Arabic when it is Arabic-script
+  // (the legacy signal for this branch).
+  const hist = history || await db.getHistory(phone).catch(() => []);
+  let lang = await resolveLang(phone, text, { history: hist });
+  if (lang !== "ar" && isAr(b.slot)) lang = "ar";
   const when = b.slot || "";
   let reply;
   if (b.status === "confirmed") {
-    reply = fr
-      ? `Oui, c'est confirmé ! ✅ Votre rendez-vous (${when}) est confirmé. Nous vous attendons !`
-      : ar
-      ? `اي، تأكد! ✅ الرونديفو متاعك (${when}) مؤكد. نستناوك!`
-      : `Ey, t2akked! ✅ Rendez-vous mte3ek (${when}) m2akked. Nestennewk!`;
+    reply = msg("status_confirmed", lang, { when });
   } else if (b.status === "cancelled") {
-    reply = fr
-      ? `Pardon, le créneau ${when} n'est plus disponible. Voulez-vous un autre horaire ?`
-      : ar
-      ? `سامحنا، الوقت ${when} ما عادش متاح. تحب وقت آخر؟`
-      : `Sme7na, el wa9t ${when} ma 3adech disponible. T7eb na9tar7oulek wa9t e5er?`;
+    reply = msg("status_cancelled", lang, { when });
   } else {
-    reply = fr
-      ? `Votre rendez-vous (${when}) est encore en attente — nous attendons la confirmation de la clinique. Je vous confirme et je reviens vers vous. ⏳`
-      : ar
-      ? `الرونديفو متاعك (${when}) مازال يستنى — نستناو في التأكيد من العيادة. نأكدلك ونرجعلك. ⏳`
-      : `El rendez-vous mte3ek (${when}) mazel yestanna — nestanna el confirmation mel 3iyada. N2akkedlek w narja3lek. ⏳`;
+    reply = msg("status_pending", lang, { when });
   }
   return say(phone, reply, clinic);
 }
@@ -1614,19 +1941,11 @@ async function handleCancellation(phone, text, ar, clinic, fr) {
   rescheduling.delete(phone);
   multiBooking.delete(phone);
   if (!active) {
-    return say(phone, fr
-      ? "Je n'ai trouvé aucun rendez-vous réservé avec ce numéro. Voulez-vous que je vous en réserve un nouveau ?"
-      : ar
-      ? "ما لقيت حتى رونديفو محجوز بهالرقم. تحب نحجزلك واحد جديد؟"
-      : "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?", clinic);
+    return say(phone, msg("cancel_none", lang3(ar, fr)), clinic);
   }
   await db.setBookingStatus(active.id, "cancelled").catch(() => {});
   await notifySecretary(`❌ Patient fassakh rendez-vous #${active.id}: ${active.phone} (${active.patient_name || "sans nom"}) — ${active.slot}`, clinic);
-  return say(phone, fr
-    ? `D'accord, j'ai annulé le rendez-vous (${active.slot}). Voulez-vous un autre horaire ?`
-    : ar
-    ? `داكور، فسخت الرونديفو (${active.slot}). تحب وقت آخر؟`
-    : `D'accord, fassakht el rendez-vous (${active.slot}). T7eb wa9t e5er?`, clinic);
+  return say(phone, msg("cancel_done", lang3(ar, fr), { slot: active.slot }), clinic);
 }
 
 // Rescheduling: move an EXISTING booking to a new slot — never a duplicate row.
@@ -1635,29 +1954,17 @@ async function handleRescheduleStart(phone, ar, clinic, fr) {
   const active = b && (b.status === "pending" || b.status === "confirmed") ? b : null;
   await db.clearProposal(phone).catch(() => {});
   if (!active) {
-    return say(phone, fr
-      ? "Je n'ai trouvé aucun rendez-vous à déplacer. Voulez-vous que je vous en réserve un nouveau ?"
-      : ar
-      ? "ما لقيت حتى رونديفو باش نبدلوه. تحب نحجزلك واحد جديد؟"
-      : "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?", clinic);
+    return say(phone, msg("resched_none", lang3(ar, fr)), clinic);
   }
   rescheduling.set(phone, active.id);
-  return say(phone, fr
-    ? `D'accord — nous allons déplacer le rendez-vous (${active.slot}). Dites-moi le nouveau jour et la nouvelle heure.`
-    : ar
-    ? `داكور — باش نبدلو الرونديفو (${active.slot}). قولي النهار والوقت الجديد.`
-    : `D'accord — bech nbadlou el rendez-vous (${active.slot}). 9olli el nhar wel wa9t el jdid.`, clinic);
+  return say(phone, msg("resched_ask", lang3(ar, fr), { slot: active.slot }), clinic);
 }
 
 async function finishReschedule(phone, id, target, ar, clinic, fr) {
   await db.updateBookingSlot(id, target.display, target.slot_at).catch(() => {});
   rescheduling.delete(phone);
   await db.clearProposal(phone).catch(() => {});
-  const reply = fr
-    ? `Rendez-vous déplacé : ${target.display} — je vous confirme et je reviens vers vous.`
-    : ar
-    ? `تبدل الرونديفو: ${target.display} — نأكدلك ونرجعلك.`
-    : `Tbadal el rendez-vous: ${target.display} — n2akkedlek w narja3lek.`;
+  const reply = msg("resched_done", lang3(ar, fr), { display: target.display });
   await notifySecretary(`🔁 Patient badal rendez-vous #${id} (${phone}) -> ${target.display}`, clinic);
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   return { handled: true, reply };
@@ -1672,32 +1979,28 @@ async function handleBookingTurn(phone, text, history, clinic) {
   const rangeTxt = clinic.hours ? clinic.hours : `mel ethneyn lel sebt: ${CLINIC_HOURS_TXT}`;
   const rangeTxtAr = clinic.hours ? clinic.hours : `من الاثنين للسبت: ${CLINIC_HOURS_TXT}`;
   const rangeTxtFr = clinic.hours ? clinic.hours : `du lundi au samedi : ${CLINIC_HOURS_TXT}`;
-  // Script: explicit patient request ("aktebli bel 3arbi") > saved preference
-  // > Arabic characters in the message.
-  const ar = await scriptAr(phone, text);
-  // French (2026-10-13, the owner's standing rule): a patient who writes in
-  // French is understood AND answered in French through the WHOLE booking
-  // flow — same detection as the AI path (word lists, then the AI itself
-  // when unsure). Arabic script always wins over French.
-  const fr = !ar && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text));
+  // Language (Fix S): ONE central resolver for the whole booking flow —
+  // explicit request in this message > Arabic script > saved preference >
+  // this message's own markers > sticky context (pending proposal, then
+  // history) > AI semantic check > Derja. A short follow-up ("oui", "ey")
+  // can never flip the conversation language. `ar`/`fr` stay as booleans
+  // for the legacy (ar, fr) helper signatures used below.
+  const _prop0 = await db.getProposal(phone).catch(() => null);
+  const lang = await resolveLang(phone, text, {
+    history, proposalText: _prop0 && _prop0.slot_text, aiCheck: true,
+  });
+  const ar = lang === "ar";
+  const fr = lang === "fr";
 
   // F1) Emergency — chest pain etc.: never a booking, direct to urgent care.
   if (looksLikeEmergency(text)) {
     await notifySecretary(`🚨 URGENCE? patient ${phone}: "${text}"`, clinic).catch(() => {});
-    return say(phone, fr
-      ? "Cette douleur nécessite un médecin rapidement — n'attendez pas un rendez-vous : allez aux urgences dès maintenant ou appelez le 190. L'assistant ne peut pas vous aider dans une situation comme celle-ci."
-      : ar
-      ? "الوجيعة هذي تستحق طبيب فيسع — ما تستناش رونديفو: امشي للاستعجالي توا ولا عيط لـ190. البوت ما ينجمش يعاونك في حالة كيما هذي."
-      : "El wji3a hethi test7a9 tbib fissa3 — matestanech rendez-vous: emchi lel urgence tawa walla 3ayet lel 190. El bot maynajemch y3awnek fi 7ala kima hethi.", clinic);
+    return say(phone, msg("emergency", lang), clinic);
   }
 
   // F6) Frustrated patient — brief "sama7ni", ask what went wrong, resume.
   if (looksLikeFrustration(text)) {
-    return say(phone, fr
-      ? "Pardonnez-moi 🙏 Que s'est-il passé exactement ? Dites-moi et je vous aide."
-      : ar
-      ? "سامحني 🙏 شنوة صار بالضبط؟ قولي ونعاونك."
-      : "Sama7ni 🙏 chnowa saret b dhabt? 9olli w n3awnek.", clinic);
+    return say(phone, msg("frustration", lang), clinic);
   }
 
   // F7) Cancellation — before the status question: cancelling beats asking.
@@ -1713,11 +2016,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   if (looksLikeWalkin(text)) {
     await db.clearProposal(phone).catch(() => {});
     rescheduling.delete(phone);
-    return say(phone, fr
-      ? "Vous pouvez venir maintenant, mais l'attente peut être longue selon l'affluence — le mieux est que je vous réserve un créneau garanti pour ne pas attendre. Voulez-vous que je vous réserve ? Dites-moi quel jour et quelle heure."
-      : ar
-      ? "تنجم تجي توا، أما الاستناة تنجم تطوال حسب الحالة — الأحسن نحجزلك وقت مضمون باش ما تستناش. تحب نحجزلك؟ قولي أنهو نهار وأنهو وقت."
-      : "Tnjem tji tawa, ama el waiting ynajem ykoun twil 7asb el 7ala — el a7sen n7ajzlek wa9t mathmoun bech ma testa7melch. T7eb n7ajzlek? 9olli anhou nhar w anhou wa9t.", clinic);
+    return say(phone, msg("walkin", lang), clinic);
   }
 
   // F4) Two appointments — acknowledge both, one at a time, first one first.
@@ -1728,27 +2027,17 @@ async function handleBookingTurn(phone, text, history, clinic) {
     rescheduling.delete(phone);
     multiBooking.set(phone, 1);
     const ben = detectExplicitBeneficiaries(text);
-    let msg;
+    // Beneficiary names are localized with the same resolved language.
+    const benName = (b) => lang === "fr" ? (BEN_FR[b] || b) : lang === "ar" ? (BEN_AR[b] || b) : b;
+    let reply;
     if (ben.length >= 2) {
-      msg = fr
-        ? `D'accord — deux rendez-vous : un ${BEN_FR[ben[0]] || ben[0]} et un ${BEN_FR[ben[1]] || ben[1]}. Nous les faisons un par un : le premier, quel jour et quelle heure vous conviennent ?`
-        : ar
-        ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]} وواحد ${BEN_AR[ben[1]] || ben[1]}. نخدمو واحد بواحد: اللول، أنهو نهار وأنهو وقت يساعدك؟`
-        : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]} w wa7ed ${ben[1]}. Ne5dmou wa7ed b wa7ed: el louwel, anhou nhar w anhou wa9t yse3dek?`;
+      reply = msg("two_rdv_two_ben", lang, { ben1: benName(ben[0]), ben2: benName(ben[1]) });
     } else if (ben.length === 1) {
-      msg = fr
-        ? `D'accord — deux rendez-vous : un ${BEN_FR[ben[0]] || ben[0]}. Et le deuxième, c'est pour qui ?`
-        : ar
-        ? `فهمتك — زوز رونديفو: واحد ${BEN_AR[ben[0]] || ben[0]}. والثاني لشكون؟`
-        : `Fhemtek — zouz rendez-vous: wa7ed ${ben[0]}. W el theni lchkoun?`;
+      reply = msg("two_rdv_one_ben", lang, { ben1: benName(ben[0]) });
     } else {
-      msg = fr
-        ? "D'accord — deux rendez-vous. Le premier, c'est pour qui ?"
-        : ar
-        ? "فهمتك — زوز رونديفو. اللول لشكون؟"
-        : "Fhemtek — zouz rendez-vous. El louwel lchkoun?";
+      reply = msg("two_rdv_none", lang);
     }
-    return say(phone, msg, clinic);
+    return say(phone, reply, clinic);
   }
 
   // Reschedule intent — move the existing booking, never duplicate it.
@@ -1756,33 +2045,26 @@ async function handleBookingTurn(phone, text, history, clinic) {
 
   // F13) Third-party query — privacy: only this number's bookings are visible.
   if (looksLikeThirdPartyQuery(text)) {
-    return say(phone, fr
-      ? "Pardonnez-moi — je ne peux voir que les rendez-vous réservés avec ce numéro. Si la réservation a été faite sous un autre nom, dites-moi le nom et je vérifie avec la clinique."
-      : ar
-      ? "سامحني — نجم نشوف كان الرونديفو المحجوز بالرقم هذا. كان الحجز تسجل باسم آخر، قولي الاسم ونتثبت مع العيادة."
-      : "Sama7ni — najem nchouf ken el rendez-vous el ma7jouz b numero hetha. Ken el 7ajz tsajjel b esm e5er, 9olli el esm w nthabbet m3a el 3iyada.", clinic);
+    return say(phone, msg("third_party", lang), clinic);
   }
 
   // A0) Status question — real DB status beats AI guessing.
-  const st = await handleStatusQuestion(phone, text, clinic);
+  const st = await handleStatusQuestion(phone, text, clinic, history);
   if (st.handled) return st;
 
   // Patient-side "ok 5" — a secretary-command shape, never a validation.
   // (The webhook only routes real secretary commands from SECRETARY_NUMBER;
   // this is the in-bot safety net.)
   if (/^(ok|le|faskh|cancel)\s+\d+\s*$/.test(text.trim().toLowerCase())) {
-    return say(phone, fr
-      ? "Ceci est une commande de la clinique — si vous voulez changer ou annuler votre rendez-vous, dites-le-moi."
-      : ar
-      ? "هذي commande متاع العيادة — كان تحب تبدل ولا تفسخ الرونديفو متاعك، قولي."
-      : "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.", clinic);
+    return say(phone, msg("sec_cmd_hint", lang), clinic);
   }
 
-  let proposal = await db.getProposal(phone).catch(() => null); // null if stale/absent
+  let proposal = _prop0; // fetched once above for the resolver (null if stale/absent)
   const ar2 = ar || isAr(proposal && proposal.slot_text); // script sticks to the patient's own words
   // French sticks the same way: a short follow-up ("oui", "le matin") carries
   // no French marker, but the pending proposal's own words do.
   const fr2 = fr || (!ar2 && !!proposal && looksLikeFrenchAuto(proposal.slot_text || ""));
+  const lang2 = lang3(ar2, fr2); // proposal-sticky language for the sites below
 
   // A-1) We asked for the patient's name — this message answers that.
   if (proposal && proposal.awaiting_name) {
@@ -1805,11 +2087,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   // French form ("Non, pas ce jour-là") counts too — in a French conversation.
   if (proposal && proposal.slot_text && (looksLikeRefusal(text) || (fr2 && looksLikeFrenchRefusal(text)))) {
     await db.clearProposal(phone).catch(() => {});
-    return say(phone, fr2
-      ? "D'accord, j'ai annulé la proposition. Voulez-vous un autre horaire ? Dites-moi un jour et une heure qui vous conviennent."
-      : ar2
-      ? "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك."
-      : "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.", clinic);
+    return say(phone, msg("proposal_dropped", lang2), clinic);
   }
 
   // Q) Question during a pending proposal — THE GENERAL RULE: a question is
@@ -1832,8 +2110,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
       // Unknown question -> the AI answers with the real clinic data in its
       // prompt (address/hours — never invented), then re-presents the pending
       // proposal so the booking thread isn't lost.
-      const reAsk = fr2 ? `Voulez-vous que je vous réserve le ${disp} ? Écrivez "oui".`
-        : ar2 ? `تحب نحجزلك ${disp}؟ اكتب "اي".` : `T7eb n7ajzlek ${disp}? Ekteb "ey".`;
+      const reAsk = msg("reask_proposal", lang2, { disp });
       const extraSys = fr2
         ? `\n- Vous avez une proposition de rendez-vous en attente : "${disp}" — après avoir répondu à la question, terminez par une seule phrase : "${reAsk}"`
         : `\n- 3andek proposal mta3 rendez-vous pending: "${disp}" — ba3d ma tjewb 3al sou2el, kamel b joumla wa7da: "${reAsk}"`;
@@ -1905,11 +2182,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
         return say(phone, timeQuestionMsg(ar2, rp, proposal.slot_text, fr2), clinic);
       }
       await db.clearProposal(phone).catch(() => {});
-      return say(phone, fr2
-        ? "D'accord — quel jour et quelle heure souhaitez-vous ?"
-        : ar2
-        ? "داكور — أنهو نهار وأنهو وقت تحب؟"
-        : "D'accord — anhou nhar w anhou wa9t t7eb?", clinic);
+      return say(phone, msg("ask_day_time", lang2), clinic);
     }
     if (!target) {
       // Don't hijack "ey" answers to non-booking questions (address info,
@@ -1923,11 +2196,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
       // remind instead of inventing a new one.
       const existing = await db.getLatestBooking(phone).catch(() => null);
       if (existing && (existing.status === "pending" || existing.status === "confirmed")) {
-        return say(phone, fr2
-          ? `Vous avez déjà un rendez-vous en attente : ${existing.slot} — je vous confirme et je reviens vers vous.`
-          : ar2
-          ? `عندك رونديفو مازال يستنى: ${existing.slot} — نأكدلك ونرجعلك.`
-          : `3andek rendez-vous deja yestanna: ${existing.slot} — n2akkedlek w narja3lek.`, clinic);
+        return say(phone, msg("already_pending", lang2, { slot: existing.slot }), clinic);
       }
       return { handled: false }; // no pending slot: let the AI answer
     }
@@ -1945,11 +2214,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   if (!r.found && looksLikeBookingIntent(text)) {
     const lastAsst = [...history].reverse().find((m) => m.role === "assistant");
     if (lastAsst && /(nhar w anhou wa9t|anhou nhar|wa9t yse3dek|أنهو نهار|وقت يساعدك|quel jour et quelle heure)/i.test(lastAsst.text)) {
-      return say(phone, fr
-        ? "Je comprends, vous voulez réserver — dites-moi quel jour et quelle heure, par exemple : vendredi à 10h du matin."
-        : ar
-        ? "فهمتك تحب تحجز — قولي أنهو نهار وأنهو وقت، كيما: الجمعة 10 متاع الصباح."
-        : "Fhemtek t7eb ta7jez — 9olli anhou nhar w anhou wa9t, kima: jem3a 10 mta3 sbe7.", clinic);
+      return say(phone, msg("booking_nudge", lang), clinic);
     }
     return { handled: false }; // first time asking: let the AI do it
   }
@@ -1960,11 +2225,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
     // "jem3a jeya" = next WEEK (Tunisian usage), no specific day: ask which
     // day of next week, don't fall through to the generic question.
     if (r.nextWeek) {
-      return say(phone, fr
-        ? "D'accord — la semaine prochaine. Quel jour et quelle heure vous conviennent ?"
-        : ar
-        ? "أوك — الجمعة الجاية. أنهو نهار وأنهو وقت يساعدك؟"
-        : "Ok, jem3a jeya — anhou nhar w anhou wa9t?", clinic);
+      return say(phone, msg("next_week_ask", lang), clinic);
     }
     // Time but no date, and the time is outside clinic hours ("nos el lil"
     // = midnight): reject it immediately — never ask for a day first.
@@ -1979,36 +2240,25 @@ async function handleBookingTurn(phone, text, history, clinic) {
         return say(phone, hoursRejectMsg(ar, open ? "hours" : "closed", sug ? sug.display : "", clinic.hours || "", fr), clinic);
       }
     }
-    return say(phone, fr
-      ? "Quel jour exactement ? (écrivez par exemple : vendredi, demain, le 21 septembre...)"
-      : ar
-      ? "أنهو نهار بالضبط؟ (اكتب كيما: الجمعة، غدوة، 21 سبتمبر...)"
-      : "Anhou nhar b dhabt? (ekteb kima: jem3a, ghodwa, 21 septembre...)", clinic);
+    return say(phone, msg("ask_day_exact", lang), clinic);
   }
   if (r.past) {
-    return say(phone, fr
-      ? "Ce créneau est déjà passé — donnez-moi un autre horaire."
-      : ar ? "الوقت هذا فات — أعطيني وقت آخر." : "El wa9t hedha fet — a3tini wa9t e5er.", clinic);
+    return say(phone, msg("past_slot", lang), clinic);
   }
   if (r.needs === "time") {
     // Explicit invalid time ("ghodwa 25", "10:99"): flag it, never clarify around it.
     if (r.badHour) {
-      return say(phone, fr2
-        ? `"${r.badHour}" n'est pas une heure valide — réécrivez l'heure (exemple : 10:30).`
-        : ar2
-        ? `"${r.badHour}" موش وقت صحيح — عاود اكتب الوقت (مثال: 10:30).`
-        : `"${r.badHour}" mech wa9t s7i7 — 3awed ekteb el wa9t (mthel: 10:30).`, clinic);
+      return say(phone, msg("bad_hour", lang2, { badHour: r.badHour }), clinic);
     }
     // F10b) closed day (Sunday): redirect to the next open day — never ask a
     // time for a day the clinic is closed.
     if (r.dow !== null && !bh[r.dow]) {
       const sug = suggestOpenDay(r.dateUTC, ar2, bh);
       await db.saveProposal(phone, sug.dateDisplay, null, sug.dateDisplay);
-      return say(phone, fr2
-        ? `Le dimanche, la clinique est fermée (nous travaillons ${rangeTxtFr}). Voulez-vous le ${sug.dateDisplay} ? Dites-moi l'heure.`
-        : ar2
-        ? `نهار الأحد العيادة مسكرة (نخدمو ${rangeTxtAr}). تحب ${sug.dateDisplay}؟ قولي الوقت.`
-        : `Nhar el 7ad el 3iyada msakra (ne5dmou ${rangeTxt}). T7eb ${sug.dateDisplay}? 9olli el wa9t.`, clinic);
+      return say(phone, msg("closed_day", lang2, {
+        range: lang2 === "fr" ? rangeTxtFr : lang2 === "ar" ? rangeTxtAr : rangeTxt,
+        sugDay: sug.dateDisplay,
+      }), clinic);
     }
     // F10c) "afternoon" requested but the day closes at/before 14:00 (e.g. Saturday
     // 09:00-14:00): afternoon is outside hours — say so, suggest morning instead.
@@ -2016,11 +2266,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
       const open = bh[r.dow];
       const hrs = `${String(open[0]).padStart(2, "0")}:00 - ${String(open[1]).padStart(2, "0")}:00`;
       await db.saveProposal(phone, slotText, null, r.dateDisplay);
-      return say(phone, fr2
-        ? `${r.dateDisplay} l'après-midi, la clinique est fermée (nous travaillons ${hrs}). Voulez-vous le matin ? Dites-moi l'heure (exemple : 10:30).`
-        : ar2
-        ? `${r.dateDisplay} العشية مسكرة (نخدمو ${hrs}). تحب صباحية؟ قولي الوقت (مثال: 10:30).`
-        : `${r.dateDisplay} l3echiya msakra (ne5dmou ${hrs}). T7eb sbe7? 9olli el wa9t (mthel: 10:30).`, clinic);
+      return say(phone, msg("afternoon_closed", lang2, { dateDisplay: r.dateDisplay, hrs }), clinic);
     }
     await db.saveProposal(phone, slotText, null, r.dateDisplay);
     const q = timeQuestionMsg(ar2, r, text, fr2);
@@ -2034,11 +2280,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
       const mm = parts[1] || "00";
       const am = `${String(hh).padStart(2, "0")}:${mm}`;
       const pm = `${String(hh + 12).padStart(2, "0")}:${mm}`;
-      return say(phone, fr2
-        ? `${r.dateDisplay} — pour confirmer : ${hourStr}h, c'est ${am} le matin ou ${pm} l'après-midi ?`
-        : ar2
-        ? `${r.dateDisplay} — باش نتأكد: الـ${hourStr} هاذي ${am} متاع الصباح ولا ${pm} متاع العشية؟`
-        : `${r.dateDisplay} — bech net2akked: el ${hourStr} hethi ${am} mta3 sbe7 walla ${pm} mta3 l3chiya?`, clinic);
+      return say(phone, msg("confirm_24h", lang2, { dateDisplay: r.dateDisplay, hourStr, am, pm }), clinic);
     }
     return say(phone, q, clinic);
   }
@@ -2052,11 +2294,7 @@ async function handleBookingTurn(phone, text, history, clinic) {
   }
   // concrete date+time -> propose it back, wait for "ey"
   await db.saveProposal(phone, slotText, r.iso, r.display);
-  return say(phone, fr2
-    ? `D'accord — ${r.display}. Voulez-vous que je vous le réserve ? Écrivez "oui".`
-    : ar2
-    ? `داكور — ${r.display}. تحب نحجزلك؟ اكتب "اي".`
-    : `D'accord — ${r.display}. T7eb n7ajzlek? Ekteb "ey".`, clinic);
+  return say(phone, msg("propose_slot", lang2, { display: r.display }), clinic);
 }
 
 // ---------- Vendor (sales) mode: dentist wrote "جرّب" from the demo video ----------
@@ -2962,31 +3200,41 @@ async function processPatientText(phone, text, numberId, displayNumber) {
     pendingQuestion.delete(phone); // one shot: any reply consumes the offer
     const t = (text || "").trim();
     if (Date.now() - pq.ts <= QUESTION_TTL_MS) {
-      const ar = await scriptAr(phone, text);
+      // Fix S: the reply language comes from the central resolver (sticky —
+      // a bare "oui" keeps the conversation's French; the Prignol incident
+      // was this branch answering a French patient in Arabizi), and the
+      // forward goes through the shared supervisor helper: free-form while
+      // the 24h window is open, "notif_question" template otherwise (the
+      // old free-form-only send failed live with Meta error 131047).
+      const lang = await resolveLang(phone, text, { history });
       if (/^(ey|oui|na3m|yes|aye)$/i.test(t)) {
         const sup = supervisorNumber(clinic);
         const nm = await db.getPatientName(phone).catch(() => null);
         if (sup) {
-          // 2026-10-09: Regular message (not template) — Meta rejects B2B templates.
           const qMsg = `❓ Sou2el jdid mel patient ${nm || phone}: ${String(pq.question || "").slice(0, 500)} bark. El patient yestanna el jewb mte3ek.`;
-          await sendWhatsApp(sup, qMsg, clinic && clinic.id).catch(() => {});
+          await notifySupervisor(clinic, qMsg, "notif_question", {
+            patient_name: nm || phone,
+            question: String(pq.question || "").slice(0, 500),
+          });
           pendingDoctorAnswer.set(clinic.id, { patientPhone: phone, question: pq.question, ts: Date.now() });
           console.log(`[question] forwarded to supervisor for ${phone}`);
         }
-        return (await say(phone, ar
-          ? "تمام، سألت الطبيب — نرجعلك بالجواب."
-          : "D'accord, s2elt el tbib — narja3lek bel jewb.", clinic)).reply;
+        return (await say(phone, msg("esc_asked_doctor", lang), clinic)).reply;
       }
       if (/^(le|la|non|no)$/i.test(t)) {
-        return (await say(phone, ar ? "Ok، ما مشكلة." : "Ok, ma mochkla.", clinic)).reply;
+        return (await say(phone, msg("esc_declined", lang), clinic)).reply;
       }
     }
     // Expired or anything else: fall through to normal handling (offer consumed).
   }
 
   // Explicit script request ("aktebli bel 3arbi" / "aktebli b 7rouf"):
-  // remembered per patient, honored from this message on.
+  // remembered per patient, honored from this message on. An explicit
+  // French request ("ektebli bel francais") is remembered the same way
+  // (Fix S) — checked before the Latin branch, whose pattern also matches
+  // "francais" wording.
   if (looksLikeScriptRequest(text)) await db.saveScriptPref(phone, "ar").catch(() => {});
+  else if (looksLikeFrenchRequest(text)) await db.saveScriptPref(phone, "fr").catch(() => {});
   else if (looksLikeLatinRequest(text)) await db.saveScriptPref(phone, "latin").catch(() => {});
 
   // Vendor (sales) mode — DENTIST numbers only. Salon numbers run the salon
@@ -3051,13 +3299,8 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // for them, hand to the secretary (per-number config: otherDoctor).
   if (clinic.otherDoctor && new RegExp(String(clinic.otherDoctor).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text || "")) {
     await notifySecretary(`👨‍⚕️ Patient ${phone} yes2el 3la Dr ${clinic.otherDoctor}: "${(text || "").slice(0, 120)}"`, clinic).catch(() => {});
-    const arx = await scriptAr(phone, text);
-    const frx = !arx && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text));
-    const dh = await say(phone, arx
-      ? `الدكتور ${clinic.otherDoctor} يخدم في نفس العيادة — باش نوصلو طلبك للسكرتيرة وهي ترجعلك. تحب نحجزلك في ${clinic.name}؟`
-      : frx
-      ? `Le Dr ${clinic.otherDoctor} travaille dans le même cabinet — je transmets votre demande à la secrétaire, qui vous recontactera. Voulez-vous un rendez-vous au ${clinic.name} ?`
-      : `Dr ${clinic.otherDoctor} ye5dem fi nafs el 3iyada — bech nwaslou talbek lel secretaire w hiya tarja3lek. T7eb n7ajzlek fi ${clinic.name}?`, clinic);
+    const lang = await resolveLang(phone, text, { history });
+    const dh = await say(phone, msg("other_doctor", lang, { doctor: clinic.otherDoctor, clinicName: clinic.name }), clinic);
     return dh.reply;
   }
 
@@ -3098,10 +3341,11 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // Neutral greeting: no vendeur pitch, no réceptionniste steering.
   // The next message decides the mode.
   if (looksLikePureGreeting(text)) {
-    const ar = await scriptAr(phone, text);
-    const g = await say(phone, ar
-      ? (clinic.greetingAr || clinic.greeting || "وعليكم السلام! كيفاش نجمو نعاونوك؟")
-      : (clinic.greeting || "3alikom salam! Kifech najmou n3awnouk?"), clinic);
+    const lang = await resolveLang(phone, text, { history });
+    const fallback = msg("greeting_default", lang);
+    const g = await say(phone, lang === "ar"
+      ? (clinic.greetingAr || clinic.greeting || fallback)
+      : (clinic.greeting || fallback), clinic);
     return g.reply;
   }
 
@@ -3295,10 +3539,22 @@ async function settleBooking(id, approve, clinic) {
   if (clinic && clinic.id && b.number_id && b.number_id !== clinic.id)
     return `Rendez-vous #${id} mech teba3 el 3iyada mte3ek. ❌`;
   await db.setBookingStatus(id, approve ? "confirmed" : "cancelled");
-  const ar = isAr(b.slot); // the slot display carries the patient's script
-  const patientMsg = approve
-    ? (ar ? `تأكد الرونديفو متاعك: ${b.slot}. نستناوك! 🌸` : `T2akked rendez-vous mte3ek: ${b.slot}. Nestennewk! 🌸`)
-    : (ar ? `سامحنا، الوقت ${b.slot} ما عادش متاح. تحب وقت آخر؟` : `Sme7na, el wa9t ${b.slot} ma 3adech disponible. T7eb wa9t e5er?`);
+  // Fix S: the settle message uses the patient's conversation language —
+  // saved preference, then their recent messages (sticky), Derja default;
+  // an Arabic-script slot display still forces Arabic (the legacy signal).
+  let lang = "az";
+  const pref = await db.getScriptPref(b.phone).catch(() => null);
+  if (pref === "ar" || pref === "fr") lang = pref;
+  else {
+    const hist = await db.getHistory(b.phone).catch(() => []);
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (!hist[i] || hist[i].role !== "user") continue;
+      const l = langOfText(hist[i].text);
+      if (l) { lang = l; break; }
+    }
+  }
+  if (isAr(b.slot)) lang = "ar"; // the slot display carries the patient's script
+  const patientMsg = msg(approve ? "settle_confirmed" : "settle_cancelled", lang, { slot: b.slot });
   await db.saveMessage(b.phone, "assistant", patientMsg, clinic && clinic.id);
   // The patient hears back from the same bot number they wrote to.
   await sendWhatsApp(b.phone, patientMsg, (b.number_id) || (clinic && clinic.id));
@@ -4231,6 +4487,9 @@ app.listen(PORT, () => {
 module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, formatFeedback, submitFeedback, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // templates 2026-10-09 (exported for the regression test)
   sendTemplate, supervisorNumber, rememberQuestionOffer,
+  // Fix S (2026-10-13): central language resolver + MSG catalog + the ONE
+  // supervisor-notification helper (exported for test-lang.js)
+  MSG, msg, resolveLang, langOfText, notifySupervisor,
   _pendingQuestion: pendingQuestion, _pendingDoctorAnswer: pendingDoctorAnswer,
   // viewer PIN 2026-10-09 (exported for the regression test)
   pinCookieValue, pinCookieOk, viewerPinOk, parseCookies,
