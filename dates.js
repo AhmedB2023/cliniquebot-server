@@ -72,14 +72,25 @@ const NUM_WORDS = [
 ];
 
 // weekday name -> JS day number (0 = Sunday)
+// Fix AC: GLUED article forms for every weekday — patients write the
+// article attached to the day name ("nhar la5mis" = le + 5mis,
+// "latnin", "lajom3a", "lasabt"...). The matcher below is token-based
+// (" " + name + " "), so each glued spelling needs its own entry;
+// without them the whole turn fell through to the AI, which invented
+// vocabulary ("5lass") for a plain Thursday request (live 2026-10-13).
 const DAYS = [
-  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el 7ad", 0], ["dimanche", 0],
+  ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el 7ad", 0], ["el7ad", 0], ["le7ad", 0], ["dimanche", 0],
   ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["thenin", 1], ["lundi", 1],
-  ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
-  ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["mercredi", 3],
+  ["latnin", 1], ["lathnin", 1], ["lethnin", 1], ["lethenin", 1], ["elthnin", 1], ["lthnin", 1],
+  ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["thlath", 2], ["tleth", 2], ["mardi", 2],
+  ["lathlath", 2], ["latleth", 2], ["lathletha", 2], ["latletha", 2], ["lethletha", 2], ["elthletha", 2], ["lthleth", 2],
+  ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["larba3", 3], ["lerba3", 3], ["elarba3", 3], ["mercredi", 3],
   ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4],
+  ["la5mis", 4], ["l5mis", 4], ["le5mis", 4], ["el5mis", 4], ["lakhmis", 4], ["lekhmis", 4], ["lakhamis", 4], ["lkhmis", 4],
   ["jem3a", 5], ["jom3a", 5], ["vendredi", 5], ["venderdi", 5],
+  ["lajom3a", 5], ["lejom3a", 5], ["ljom3a", 5], ["lajem3a", 5], ["eljom3a", 5], ["ljem3a", 5],
   ["sebt", 6], ["sibt", 6], ["sabt", 6], ["samedi", 6],
+  ["lasabt", 6], ["lasebt", 6], ["lsabt", 6], ["lsebt", 6], ["lesabt", 6], ["elsabt", 6], ["lasibt", 6],
   // Arabic-script weekday names
   ["الأحد", 0], ["الاحد", 0],
   ["الاثنين", 1], ["الإثنين", 1],
