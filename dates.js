@@ -65,17 +65,21 @@ const NUM_WORDS = [
   ["ثلاثة", 3],
   ["اثنين", 2], ["إثنين", 2],
   ["واحد", 1], ["واحدة", 1],
+  // Arabic ordinal hour words ("elsa3a el 3achra" = 10 o'clock) — the
+  // " ال" split in the time search turns these into "العاشرة" etc. (L5).
+  ["عاشرة", 10], ["تاسعة", 9], ["ثامنة", 8], ["سابعة", 7], ["سادسة", 6],
+  ["خامسة", 5], ["رابعة", 4], ["ثالثة", 3], ["ثانية", 2],
 ];
 
 // weekday name -> JS day number (0 = Sunday)
 const DAYS = [
   ["la7ad", 0], ["l7ad", 0], ["lahad", 0], ["el 7ad", 0], ["dimanche", 0],
-  ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["lundi", 1],
+  ["ethnin", 1], ["ethinin", 1], ["thnin", 1], ["tnin", 1], ["thenin", 1], ["lundi", 1],
   ["thletha", 2], ["thleth", 2], ["tletha", 2], ["tlata", 2], ["mardi", 2],
   ["erb3a", 3], ["larb3a", 3], ["lerb3a", 3], ["mercredi", 3],
   ["khmis", 4], ["5mis", 4], ["khemis", 4], ["khamis", 4], ["kmis", 4], ["jeudi", 4],
   ["jem3a", 5], ["jom3a", 5], ["vendredi", 5],
-  ["sebt", 6], ["sibt", 6], ["samedi", 6],
+  ["sebt", 6], ["sibt", 6], ["sabt", 6], ["samedi", 6],
   // Arabic-script weekday names
   ["الأحد", 0], ["الاحد", 0],
   ["الاثنين", 1], ["الإثنين", 1],
@@ -134,9 +138,15 @@ function resolveSlot(rawText, preferAr) {
   if (dm) {
     const day = parseInt(dm[1], 10);
     const mon = MONTHS[dm[2]];
-    const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
+    // Fix T (D26): a month NAME already past this year ("le 5 janvier"
+    // said in October) means NEXT year — a named month is a plan, not a
+    // typo. Only the month decides: a past DAY in the current month stays
+    // past ("le 10 septembre" mid-September), and DD/MM keeps the old
+    // no-roll rule below.
+    const yr = mon < now.getUTCMonth() ? now.getUTCFullYear() + 1 : now.getUTCFullYear();
+    const probe = new Date(Date.UTC(yr, mon, day));
     if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
-      const dms = Date.UTC(now.getUTCFullYear(), mon, day);
+      const dms = Date.UTC(yr, mon, day);
       explicitPast = dms < todayStart;
       dateUTC = dms;
       dateDisplay = fmtNum(probe);
@@ -145,9 +155,10 @@ function resolveSlot(rawText, preferAr) {
   } else if (dma) {
     const day = parseInt(dma[1], 10);
     const mon = MONTHS_AR[dma[2]];
-    const probe = new Date(Date.UTC(now.getUTCFullYear(), mon, day));
+    const yr = mon < now.getUTCMonth() ? now.getUTCFullYear() + 1 : now.getUTCFullYear(); // D26, same rule
+    const probe = new Date(Date.UTC(yr, mon, day));
     if (probe.getUTCMonth() === mon && probe.getUTCDate() === day && day >= 1 && day <= 31) {
-      const dms = Date.UTC(now.getUTCFullYear(), mon, day);
+      const dms = Date.UTC(yr, mon, day);
       explicitPast = dms < todayStart;
       dateUTC = dms;
       dateDisplay = fmtNum(probe);
@@ -179,9 +190,10 @@ function resolveSlot(rawText, preferAr) {
   const nextWeek = dateUTC === null && (
     /\b(el\s+)?(jem3a(t)?|semaine|smena|simana)\s+e?jj?eya\b/.test(t) || // "jem3a jeya", "el jem3a ejjeya", "semaine jeya"
     /\b(el\s+)?(osbou3|osbo3)\s+e?jj?ey\b/.test(t));                     // "osbou3 ejjey"
+  let fromWeekday = false; // the date came from a weekday word (Fix T: D5/D10)
+  let dayPos = -1; // position of the weekday word in t (Fix T: D10)
   if (dateUTC === null && !nextWeek) {
     let dow = null;
-    let dayPos = -1;
     for (const [name, d] of DAYS) {
       const p = t.indexOf(" " + name + " ");
       if (p !== -1 && (dayPos === -1 || p < dayPos)) { dow = d; dayWord = name; dayPos = p; }
@@ -189,6 +201,14 @@ function resolveSlot(rawText, preferAr) {
     if (dow !== null) {
       const diff = (dow - now.getUTCDay() + 7) % 7; // 0 = today
       dateUTC = todayStart + diff * 86400000;
+      fromWeekday = true;
+      // Fix T (D5): "<weekday> el jay" when today IS that weekday means
+      // NEXT week — "el thleth el jay" on a Tuesday is never today (the
+      // patient means the coming one; today's slots are already gone).
+      const afterDay = t.slice(dayPos + dayWord.length + 2);
+      if (diff === 0 && /^\s*(el\s+)?(jay|jey|jeya|ejjey|ejjeya)\b/.test(afterDay)) {
+        dateUTC += 7 * 86400000;
+      }
       const dd = new Date(dateUTC);
       const dname = ar ? AR_DAY[dow] : DERJA_DAY[dow];
       dateDisplay = fmtNum(dd);
@@ -218,7 +238,7 @@ function resolveSlot(rawText, preferAr) {
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
       dateDisplay = fmtNum(dd);
-    } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ")) {
+    } else if (t.includes(" ghodwa ") || t.includes(" ghadwa ") || t.includes(" غدوة ") || t.includes(" غدوا ") || t.includes(" غدا ") || t.includes(" غداً ")) {
       dateUTC = todayStart + 86400000;
       const dd = new Date(dateUTC);
       const mname = ar ? AR_MONTH[dd.getUTCMonth()] : FR_MONTH[dd.getUTCMonth()];
@@ -239,6 +259,32 @@ function resolveSlot(rawText, preferAr) {
   for (const [w, d] of NUM_WORDS) {
     restTime = restTime.split(" " + w + " ").join(" " + d + " ");
     restTime = restTime.split(" ال" + w + " ").join(" " + d + " "); // "الخمسة" -> 5
+  }
+  // Fix T (D10): "<weekday> 23 <time>" — a 13-31 number directly after the
+  // weekday is the DAY OF THE MONTH, not an hour: "el jom3a 23 el 10 mta3
+  // el sbe7" = Friday the 23rd at 10:00. Fires only when another time
+  // signal follows; a lone "jem3a 21" keeps the old 21:00 reading (G1).
+  if (fromWeekday && dayPos >= 0) {
+    const afterDay = rest.slice(dayPos + dayWord.length + 2); // rest === t on this path
+    const dmNum = afterDay.match(/^\s*(?:el\s+)?(\d{1,2})(?=\s)/);
+    if (dmNum) {
+      const dom = parseInt(dmNum[1], 10);
+      if (dom >= 13 && dom <= 31) {
+        const cand = restTime.replace(" " + dom + " ", " ");
+        if (cand !== restTime && (/\d/.test(cand) || /heure/.test(cand) || /\bnos\b/.test(cand))) {
+          let probe = dateUTC;
+          for (let i = 0; i < 6; i++) {
+            probe += 7 * 86400000; // same weekday, one week later
+            if (new Date(probe).getUTCDate() === dom) {
+              dateUTC = probe;
+              dateDisplay = fmtNum(new Date(probe));
+              restTime = cand;
+              break;
+            }
+          }
+        }
+      }
+    }
   }
   let hour = null;
   let minute = 0;
@@ -284,7 +330,7 @@ function resolveSlot(rawText, preferAr) {
   // French period words included (2026-10-13): a French patient answers the
   // time question with "le matin" / "l'après-midi" / "le soir" — norm() has
   // already folded "après" -> "apres". None of these words exist in Derja.
-  const morning = /\bsbe7\b|\bsbah\b|\bmatin\b/.test(t) || t.includes(" صباح ") || t.includes(" الصباح ");
+  const morning = /\bsbe7\b|\bsbah\b|\bmatin\b/.test(t) || t.includes(" صباح ") || t.includes(" الصباح ") || t.includes(" صباحا ") || t.includes(" صباحاً ");
   const afternoon = /\b3chiya\b|\bl3chiya\b|\bla3chiya\b|\b3chya\b|\bl3chya\b|\bla3chya\b|\b3achiya\b|\b3vhiya\b|\bl3vhiya\b|\bla3vhiya\b|\b3chwa\b|\bl3chwa\b|\bla3chwa\b|\bapres[-\s]midi\b/.test(t) || t.includes(" عشية ") || t.includes(" العشية ");
   const night = /\blil\b|\bsoir\b/.test(t) || t.includes(" ليل ") || t.includes(" الليل ");
 
