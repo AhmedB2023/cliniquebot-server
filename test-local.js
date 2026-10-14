@@ -2582,7 +2582,7 @@ async function run() {
     await stubDb.savePatientName(bk, "Test Templati");
     const rbook = await mahTx(bk, "ey");
     has("S23: booking confirmed", rbook, "n2akkedlek");
-    const t4 = textBodies().filter((b) => b.to === SUP && /Rendez-vous jdid/.test(b.text.body));
+    const t4 = textBodies().filter((b) => b.to === "216" + SUP && /Rendez-vous jdid/.test(b.text.body)); // Fix AE: outbound is normalized to intl
     ok("S23: booking sends regular notif", t4.length === 1, `n=${t4.length}`);
     ok("S23: notif has ok/le ids", /ok \d+/.test(t4[0].text.body) && /le \d+/.test(t4[0].text.body), t4[0].text.body.slice(0, 80));
 
@@ -2596,7 +2596,7 @@ async function run() {
     const rq = await mahTx(qp, "ey");
     has("S23: ey confirms escalation", rq, "s2elt el tbib");
     // 2026-10-09: notif_question as REGULAR message (Meta rejects B2B templates).
-    const t5 = textBodies().filter((b) => b.to === SUP && /Sou2el jdid/.test(b.text.body));
+    const t5 = textBodies().filter((b) => b.to === "216" + SUP && /Sou2el jdid/.test(b.text.body)); // Fix AE: outbound is normalized to intl
     ok("S23: notif_question sent", t5.length === 1, `n=${t5.length}`);
     ok("S23: notif_question carries question",
       /consultation/.test(t5[0].text.body), t5[0].text.body.slice(0, 80));
