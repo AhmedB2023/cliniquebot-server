@@ -200,7 +200,7 @@ async function scenario(id, family, title, clinicId, fn) {
     phone, say, chk,
     bookings: () => stubDb._inspect().bookings.filter((b) => b.phone === phone),
     sent: () => parseBodies(fetchCalls.slice(fetchStart)),
-    forwardsTo: (sup) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === sup && (b.type === "text" || b.type === "template")),
+    forwardsTo: (sup) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === bot.normalizePhoneIntl(sup) && (b.type === "text" || b.type === "template")), // Fix AE: sends are normalized to intl
     sentTo: (num) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === num),
     armed: () => bot._pendingQuestion.has(phone),
     replies: () => log.map((l) => l.out),
