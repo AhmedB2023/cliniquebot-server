@@ -5147,7 +5147,10 @@ app.post("/webhook", async (req, res) => {
       // 2026-10-09: the global admin (Ahmed) can also send supervisor commands
       // to any clinic — the clinic's own supervisor is NOT removed.
       const isSecretary = clinic.secretary && samePhone(from, clinic.secretary);
-      const isAdmin = ADMIN_NUMBER && samePhone(from, ADMIN_NUMBER);
+      // 2026-10-14: Ahmed's own number is ALWAYS admin, even if the
+      // ADMIN_NUMBER env was changed during tests (env drift silently
+      // locked him out — his wasel got the patient greeting).
+      const isAdmin = (ADMIN_NUMBER && samePhone(from, ADMIN_NUMBER)) || samePhone(from, "17174204057");
       if (isSecretary || isAdmin) {
         console.log(`[secretary] ${from}: ${text}${isAdmin && !isSecretary ? " (admin)" : ""}`);
         await db.saveMessage(from, "user", text, clinic && clinic.id);
