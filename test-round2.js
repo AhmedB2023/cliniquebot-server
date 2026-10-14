@@ -214,7 +214,7 @@ async function scenario(id, family, title, clinicId, fn, opts = {}) {
     bookings: () => stubDb._inspect().bookings.filter((b) => b.phone === phone),
     allBookings: () => stubDb._inspect().bookings,
     sent: () => parseBodies(fetchCalls.slice(fetchStart)),
-    forwardsTo: (sup) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === sup && (b.type === "text" || b.type === "template")),
+    forwardsTo: (sup) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === bot.normalizePhoneIntl(sup) && (b.type === "text" || b.type === "template")), // Fix AE: sends are normalized to intl
     sentTo: (num) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === num),
     templatesTo: (num, name) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === num && b.template && (!name || b.template.name === name)),
     textsTo: (num) => parseBodies(fetchCalls.slice(fetchStart)).filter((b) => b.to === num && b.type === "text"),
