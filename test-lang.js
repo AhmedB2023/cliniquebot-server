@@ -176,6 +176,8 @@ const MAH = "1364750653386950";
 const JRA = "1445223932002571";
 const SUP_MAH = "98800749";   // Mahjoub supervisor (seed)
 const SUP_JRA = "28192232";   // Jrad supervisor (seed)
+const SUP_MAH_TO = "21698800749"; // Fix AE: outbound sends are normalized to intl
+const SUP_JRA_TO = "21628192232";
 const HOURS_MAH = "Thenin lel Jom3a: 08:30 - 17:30, Sebt: 08:30 - 13:00, Ahad: msakker";
 const HOURS_JRA = "Thenin lel 5mis: 09:00 - 16:00, Jom3a w Sebt: 09:00 - 14:00, Ahad: msakker";
 
@@ -291,7 +293,7 @@ async function runLang() {
     ok("FR prignol: escalation confirmation is FRENCH", isFR(r6), JSON.stringify(r6));
     has("FR prignol: confirmation wording", r6, "j'ai demandé au docteur");
     ok("FR prignol: question forwarded to supervisor (free-form, window open)",
-      textBodiesTo(SUP_JRA).some((b) => /Sou2el jdid/.test(b.text.body) && /blanchiment/.test(b.text.body)),
+      textBodiesTo(SUP_JRA_TO).some((b) => /Sou2el jdid/.test(b.text.body) && /blanchiment/.test(b.text.body)),
       JSON.stringify(sentBodies().map((b) => b.to)));
 
     // French decline of the same offer.
@@ -396,11 +398,11 @@ async function runLang() {
       const r = await bot.processPatientText(phone, "ey", MAH);
       has("hybrid>24h: patient still confirmed", r, "s2elt el tbib");
       ok("hybrid>24h: notif_question TEMPLATE sent to supervisor",
-        templateBodiesTo("notif_question", SUP_MAH).length === 1,
+        templateBodiesTo("notif_question", SUP_MAH_TO).length === 1,
         JSON.stringify(sentBodies()));
       ok("hybrid>24h: NO free-form text to supervisor (would fail 131047)",
-        textBodiesTo(SUP_MAH).length === 0, JSON.stringify(sentBodies()));
-      const tpl = templateBodiesTo("notif_question", SUP_MAH)[0];
+        textBodiesTo(SUP_MAH_TO).length === 0, JSON.stringify(sentBodies()));
+      const tpl = templateBodiesTo("notif_question", SUP_MAH_TO)[0];
       const params = ((tpl.template.components || []).find((c) => c.type === "body") || {}).parameters || [];
       ok("hybrid>24h: template carries the question",
         params.some((x) => /consultation/.test(x.text || "")), JSON.stringify(params));
@@ -412,9 +414,9 @@ async function runLang() {
       clearFetch();
       await bot.processPatientText(bp, "ey", MAH);
       ok("hybrid>24h: notif_booking TEMPLATE sent",
-        templateBodiesTo("notif_booking", SUP_MAH).length === 1, JSON.stringify(sentBodies()));
+        templateBodiesTo("notif_booking", SUP_MAH_TO).length === 1, JSON.stringify(sentBodies()));
       ok("hybrid>24h: NO free-form booking notif",
-        !textBodiesTo(SUP_MAH).some((b) => /Rendez-vous jdid/.test(b.text.body)),
+        !textBodiesTo(SUP_MAH_TO).some((b) => /Rendez-vous jdid/.test(b.text.body)),
         JSON.stringify(sentBodies()));
     } finally {
       stubDb.getLastSupervisorMessageTime = origSupTime;
@@ -425,8 +427,8 @@ async function runLang() {
     clearFetch();
     await bot.processPatientText(phone2, "ey", MAH);
     ok("hybrid<24h: free-form question forward",
-      textBodiesTo(SUP_MAH).some((b) => /Sou2el jdid/.test(b.text.body)), JSON.stringify(sentBodies()));
-    ok("hybrid<24h: no template used", templateBodiesTo("notif_question", SUP_MAH).length === 0,
+      textBodiesTo(SUP_MAH_TO).some((b) => /Sou2el jdid/.test(b.text.body)), JSON.stringify(sentBodies()));
+    ok("hybrid<24h: no template used", templateBodiesTo("notif_question", SUP_MAH_TO).length === 0,
       JSON.stringify(sentBodies()));
   }
 
