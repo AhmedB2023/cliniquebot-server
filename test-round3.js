@@ -561,7 +561,7 @@ async function runMed() {
     ctx.chk.hard(!/(faites-le boire|donnez-lui du lait|faites-le vomir|boire du lait)/i.test(String(r || "")),
       `no home-remedy / first-aid instructions may be given; got: ${r}`, "high");
     ctx.chk.hard(!MED_NAMES.test(String(r || "")), `no medication may be named; got: ${r}`, "high");
-    ctx.chk.soft(ctx.forwardsTo(SUP_MAH).length >= 1, "the supervisor should be notified of the emergency", "medium");
+    ctx.chk.soft(ctx.forwardsTo(SEC_FROM[MAH]) /* Fix AE: forwards are normalized to intl */.length >= 1, "the supervisor should be notified of the emergency", "medium");
     ctx.chk.hard(ctx.bookings().length === 0, "an emergency is never turned into a booking");
   });
 
@@ -1239,7 +1239,7 @@ async function runFixX() {
     const r = await ctx.say("ولدي شرب منظف، شنعمل؟");
     ctx.chk.hard(String(r || "").includes("190"), `child ingestion must be directed to 190; got: ${r}`, "high");
     ctx.chk.hard(ctx.bookings().length === 0, "an emergency is never a booking", "high");
-    ctx.chk.soft(ctx.forwardsTo(SUP_MAH).length >= 1, "the supervisor should be notified of the emergency", "medium");
+    ctx.chk.soft(ctx.forwardsTo(SEC_FROM[MAH]) /* Fix AE: forwards are normalized to intl */.length >= 1, "the supervisor should be notified of the emergency", "medium");
   });
 
   // MD12 — faint anchor variants (do5 / ghemret).
@@ -1871,6 +1871,170 @@ async function runFixAC() {
   });
 }
 
+// ================= Fix AD family: STUBBED-AI instance =================
+// index.js reads AI_API_KEY / AI_BASE_URL at require time, so this family
+// re-requires it with a stub key and a fetch router that answers the
+// chat-completions call from AI_STUB (the language-detector call gets its
+// own canned answer). The stub db (require cache) and the frozen dates
+// module are SHARED with the main instance — proposals/bookings carry
+// over — and the family runs LAST, after every no-key family.
+const AI_STUB = { reply: "", langDetect: "NON" };
+let botAi = null;
+function loadBotAi() {
+  if (botAi) return botAi;
+  const prevFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes("ai.stub.test")) {
+      let sys = "";
+      try { sys = (JSON.parse(opts.body).messages || [])[0].content || ""; } catch {}
+      const content = sys.includes("détecteur de langue") ? AI_STUB.langDetect : AI_STUB.reply;
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    }
+    return prevFetch(url, opts);
+  };
+  process.env.AI_API_KEY = "stub-ai-key";
+  process.env.AI_BASE_URL = "https://ai.stub.test/v1";
+  process.env.PORT = "43129";
+  const idxPath = require.resolve(path.join(__dirname, "index.js"));
+  delete require.cache[idxPath];
+  botAi = require("./index.js");
+  return botAi;
+}
+
+async function scenarioAi(id, title, clinicId, fn) {
+  dates.setNow(DEFAULT_NOW_MS);
+  const b = loadBotAi();
+  const phone = newPhone();
+  const log = [];
+  const say = async (text, cid) => {
+    const r = await b.processPatientText(phone, text, cid || clinicId);
+    log.push({ inn: text, out: r });
+    return r;
+  };
+  const chk = {
+    problems: [], verdict: "PASS",
+    hard(cond, msg, sev) { if (!cond) { this.problems.push({ kind: "FAIL", msg, sev: sev || "medium" }); this.verdict = "FAIL"; } },
+    soft(cond, msg, sev) { if (!cond) { this.problems.push({ kind: "GAP", msg, sev: sev || "low" }); if (this.verdict === "PASS") this.verdict = "GAP"; } },
+  };
+  const ctx = {
+    phone, say, chk,
+    bookings: () => stubDb._inspect().bookings.filter((x) => x.phone === phone),
+    proposal: () => stubDb._inspect().proposals.get(phone) || null,
+    last: () => (log.length ? log[log.length - 1].out : null),
+  };
+  try { await fn(ctx); }
+  catch (e) { chk.problems.push({ kind: "FAIL", msg: "EXCEPTION: " + (e && e.message), sev: "high" }); chk.verdict = "FAIL"; }
+  const res = { id, family: "fixad", title, clinicId, verdict: chk.verdict, problems: chk.problems, log, bookings: ctx.bookings() };
+  results.push(res);
+  console.log(`\n===== ${id} [${chk.verdict}] (fixad) ${title}`);
+  for (const t of log) {
+    console.log("  Patient: " + t.inn);
+    console.log("  Bot: " + String(t.out == null ? "(null)" : t.out).replace(/\n/g, " / "));
+  }
+  for (const bk of res.bookings) console.log(`  >> booking: ${bk.slot} | at=${bk.slot_at} | status=${bk.status} | name=${bk.patient_name || "-"}`);
+  for (const p of chk.problems) console.log(`  !! ${p.kind} (${p.sev}): ${p.msg}`);
+  return res;
+}
+
+async function runFixAD() {
+  const WIFI_Q = "el wifi mawjoud fel 9a3et el intidhar?";
+  const bookTomorrow10 = async (ctx) => {
+    await ctx.say("nheb na7jez ghodwa el 10 mta3 sbe7");
+    const prop = ctx.proposal();
+    ctx.chk.hard(!!prop && !!prop.slot_at && hasDate(prop.display || "", "15-10-2026"),
+      "setup: a complete proposal (15-10-2026, 10:00) is pending", "high");
+    return prop;
+  };
+
+  await scenarioAi("AD1", "Fix AD: AI invents a price mid-flow -> price sentence stripped, benign answer kept, catalog re-ask appended (Jrad, stubbed AI)", JRA, async (ctx) => {
+    const prop = await bookTomorrow10(ctx);
+    AI_STUB.reply = "Ey, el wifi mawjoud fel 9a3a. El consultation b 90 dinars.";
+    const r = String(await ctx.say(WIFI_Q) || "");
+    ctx.chk.hard(!/90/.test(r), `the invented price must never reach the patient; got: ${r}`, "high");
+    ctx.chk.hard(/wifi/.test(r), `the benign part of the AI answer survives; got: ${r}`, "high");
+    const reAsk = bot.msg("reask_proposal", "az", { disp: prop.display });
+    ctx.chk.hard(r.endsWith(reAsk), `the pending proposal is re-presented with the CATALOG re-ask (not the AI's wording); got: ${r}`, "high");
+    ctx.chk.hard(!!ctx.proposal(), "the proposal is still pending after the off-flow question", "medium");
+  });
+
+  await scenarioAi("AD2", "Fix AD: AI invents a time different from the active proposal -> stripped, proposal time intact via catalog re-ask (Jrad, stubbed AI)", JRA, async (ctx) => {
+    const prop = await bookTomorrow10(ctx);
+    AI_STUB.reply = "El rendez-vous mte3ek el 14:30. El wifi mawjoud fel 9a3a.";
+    const r = String(await ctx.say(WIFI_Q) || "");
+    ctx.chk.hard(!/14:30/.test(r), `the invented 14:30 must be stripped; got: ${r}`, "high");
+    ctx.chk.hard(/wifi/.test(r), `the benign sentence survives; got: ${r}`, "high");
+    const reAsk = bot.msg("reask_proposal", "az", { disp: prop.display });
+    ctx.chk.hard(r.endsWith(reAsk) && /10:00/.test(r), `the patient sees the REAL proposal time (10:00) in the catalog re-ask; got: ${r}`, "high");
+  });
+
+  await scenarioAi("AD3", "Fix AD: AI invents a date -> stripped (the phantom patterns alone did not catch this shape) (Jrad, stubbed AI)", JRA, async (ctx) => {
+    const prop = await bookTomorrow10(ctx);
+    AI_STUB.reply = "N7ajzlek le 25 octobre. El wifi mawjoud fel 9a3a.";
+    const r = String(await ctx.say(WIFI_Q) || "");
+    ctx.chk.hard(!/25/.test(r), `the invented date (25 octobre) must be stripped; got: ${r}`, "high");
+    ctx.chk.hard(/wifi/.test(r), `the benign sentence survives; got: ${r}`, "high");
+    const reAsk = bot.msg("reask_proposal", "az", { disp: prop.display });
+    ctx.chk.hard(r.endsWith(reAsk) && hasDate(r, "15-10-2026"), `the real proposal date is re-presented by the catalog; got: ${r}`, "high");
+  });
+
+  await scenarioAi("AD4", "Fix AD: booking intent reaching the AI path (B0 first ask) -> the CATALOG ask_day_time verbatim, never the AI's composed question (Jrad, stubbed AI)", JRA, async (ctx) => {
+    AI_STUB.reply = "Ahla! N7ajzlek ghodwa el 18:30, mriguel?";
+    const r = String(await ctx.say("nheb na7jez rendez-vous") || "");
+    ctx.chk.hard(r === bot.msg("ask_day_time", "az"),
+      `the flow-driving question must be the catalog text verbatim; got: ${r}`, "high");
+    ctx.chk.hard(!/18:30/.test(r), `the AI's invented slot must not appear; got: ${r}`, "high");
+    ctx.chk.hard(!ctx.proposal() && ctx.bookings().length === 0, "the ask creates no proposal and no booking", "medium");
+  });
+
+  await scenarioAi("AD5", "Fix AD: off-flow chit-chat, benign AI reply (no facts) -> passes through unchanged (Jrad, stubbed AI)", JRA, async (ctx) => {
+    AI_STUB.reply = "Ahla bik, nchallah weslet b5ir! Kifech najmou n3awnouk?";
+    const r = String(await ctx.say("rani raja3 mel safar, kont fi tounes el 3assima w el jaw ken skhoun") || "");
+    ctx.chk.hard(r === AI_STUB.reply, `a benign off-flow AI reply must pass through byte-for-byte; got: ${r}`, "high");
+  });
+
+  await scenarioAi("AD6", "Fix AD: patient states a price figure and the AI echoes it -> NOT stripped (mirror, not invention) (Jrad, stubbed AI)", JRA, async (ctx) => {
+    await bookTomorrow10(ctx);
+    AI_STUB.reply = "El 90 dinars elli 5allasthom kanou lel visite. El wifi mawjoud.";
+    const r = String(await ctx.say("5allast 90 dinars 3and tbib e5er, w el wifi mawjoud 3andkom?") || "");
+    ctx.chk.hard(/90 dinars/.test(r), `the patient's own figure, echoed back, must survive the guard; got: ${r}`, "high");
+    ctx.chk.hard(/wifi/.test(r), `the answer part survives too; got: ${r}`, "medium");
+  });
+
+  await scenarioAi("AD7", "Fix AD: French path — AI invents a price off-flow -> stripped, benign French sentence kept (Jrad, stubbed AI)", JRA, async (ctx) => {
+    AI_STUB.reply = "Merci pour votre confiance ! La consultation coûte 90 dinars.";
+    const r = String(await ctx.say("Un ami m'a recommandé votre cabinet, il m'a dit que vous étiez très professionnels") || "");
+    ctx.chk.hard(!/90/.test(r), `the invented French price must be stripped; got: ${r}`, "high");
+    ctx.chk.hard(/Merci pour votre confiance/.test(r), `the benign French sentence survives; got: ${r}`, "medium");
+  });
+
+  await scenarioAi("AD8", "Fix AD: AI reply is ONLY an invented price -> patient gets the catalog safe fallback in their language (Jrad, stubbed AI)", JRA, async (ctx) => {
+    AI_STUB.reply = "El consultation b 90 dinars.";
+    const r = String(await ctx.say("rani raja3 mel safar, kont fi tounes el 3assima w el jaw ken skhoun") || "");
+    ctx.chk.hard(r === bot.msg("ai_safe_fallback", "az"),
+      `a fully-stripped reply falls back to the catalog deflection, never silence; got: ${r}`, "high");
+  });
+}
+
+async function runFixAE() {
+  await scenario("AE1", "FixAE", "Fix AE: outbound phone normalization — TN local 8-digit numbers get the 216 prefix (the auto-rapport 131026 bug)", JRA, async (ctx) => {
+    const n = bot.normalizePhoneIntl;
+    ctx.chk.hard(typeof n === "function", "normalizePhoneIntl is exported", "high");
+    ctx.chk.hard(n("28192232") === "21628192232", `Jrad supervisor local -> intl; got ${n("28192232")}`, "high");
+    ctx.chk.hard(n("98800749") === "21698800749", `Mahjoub supervisor local -> intl; got ${n("98800749")}`, "high");
+    ctx.chk.hard(n("0021628192232") === "21628192232", `00-prefix dropped, no double prefix; got ${n("0021628192232")}`, "medium");
+    ctx.chk.hard(n("+216 28 192 232") === "21628192232", `plus/spaces stripped; got ${n("+216 28 192 232")}`, "medium");
+  });
+
+  await scenario("AE2", "FixAE", "Fix AE: already-international numbers pass through untouched (patients, FR, US)", JRA, async (ctx) => {
+    const n = bot.normalizePhoneIntl;
+    ctx.chk.hard(n("21628192232") === "21628192232", "TN intl unchanged", "high");
+    ctx.chk.hard(n("21653180566") === "21653180566", "TN patient intl unchanged", "high");
+    ctx.chk.hard(n("33649329426") === "33649329426", "FR intl unchanged", "high");
+    ctx.chk.hard(n("17174204057") === "17174204057", "US intl unchanged", "high");
+    ctx.chk.hard(n("") === "", "empty stays empty", "low");
+  });
+}
+
 (async () => {
   await runLong();
   await runEdge();
@@ -1887,6 +2051,8 @@ async function runFixAC() {
   await runFixAA();
   await runFixAB();
   await runFixAC();
+  await runFixAD();
+  await runFixAE();
   const by = { PASS: 0, GAP: 0, FAIL: 0 };
   const fam = {};
   for (const r of results) {
