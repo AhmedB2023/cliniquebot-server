@@ -5921,9 +5921,13 @@ async function sendAutoRapports() {
       const pdf = await buildRapportPdf({ clinicName: clinic.name || "Clinique", dateLabel: day, bookings }).catch(() => null);
       if (!pdf) { console.log(`[auto-rapport] skip ${numberId}: pdf failed`); continue; }
       // 2026-10-09: template with document header — always delivers (no 24h limit).
+      // Fix AF (2026-10-14): "date" sent as plain TEXT param. The date_time
+      // param type made Meta reject Mahjoub's send with (#100) "Parameter
+      // name is missing or empty"; the template's {{date}}/{{count}} are
+      // plain named variables (verified in WhatsApp Manager 2026-10-14).
       const ok = await sendTemplate(clinic.secretary, "rapport",
         { date: day, count: String(bookings.length) },
-        { dateParams: ["date"], headerDocument: { buffer: pdf, filename: `rapport-${day}.pdf` } },
+        { headerDocument: { buffer: pdf, filename: `rapport-${day}.pdf` } },
         numberId).catch(() => false);
       console.log(`[auto-rapport] ${numberId} -> ${clinic.secretary}: ${ok ? "sent" : "FAILED"}`);
     } catch (e) { console.error(`[auto-rapport:ERROR] ${numberId}`, e.message); }
