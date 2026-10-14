@@ -117,11 +117,27 @@ const SALON_SYSTEM_PROMPT = `Enti "Assistant Salon" — assistant WhatsApp lel l
 - Ma t5tar3ch ma3loumet: ken ma ta3rafch 7aja, 9oul "fel tajrba hethi ma 3andich el ma3louma — fel salon el 7a9i9i el assistant ykoun m3abbi b les infos mte3ek."
 - Ken el 7arifa met9al9a, ibda b "sama7ni" 9bal ma tkemel.`;
 
+// ---------- Phone normalization for OUTBOUND sends (Fix AE, 2026-10-13) ----------
+// Meta requires the full international format. Clinic configs often store
+// Tunisian numbers locally (8 digits, e.g. supervisor "28192232"): sent raw,
+// Meta accepts the request ("sent") then delivery fails with 131026
+// "Message undeliverable" — this broke the auto-rapport to Jrad's supervisor
+// twice while the wasel path (which prepends 216 itself) delivered fine.
+// Rule: digits only; drop a leading "00"; exactly 8 digits -> prepend "216".
+// Anything already international (216..., 33..., 1...) is left untouched.
+function normalizePhoneIntl(to) {
+  let d = String(to == null ? "" : to).replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length === 8) d = "216" + d;
+  return d || String(to == null ? "" : to);
+}
+
 // ---------- Meta: send a WhatsApp text message ----------
 // numberId: which bot number (phone_number_id) sends — defaults to the global
 // PHONE_NUMBER_ID for single-number deployments.
 const DEFAULT_NUMBER_ID = PHONE_NUMBER_ID;
 async function sendWhatsApp(to, text, numberId) {
+  to = normalizePhoneIntl(to);
   const nid = numberId || DEFAULT_NUMBER_ID;
   if (!WHATSAPP_TOKEN || !nid) {
     console.log(`[send:SKIP] no token/phone_number_id. Would send to ${to}: ${text}`);
@@ -199,6 +215,7 @@ function buildRapportPdf({ clinicName, dateLabel, bookings }) {
 
 // Uploads a PDF to Meta media endpoint, then sends it as a WhatsApp document.
 async function sendWhatsAppDocument(to, pdfBuffer, filename, caption, numberId) {
+  to = normalizePhoneIntl(to);
   const nid = numberId || DEFAULT_NUMBER_ID;
   if (!WHATSAPP_TOKEN || !nid) {
     console.log(`[sendDoc:SKIP] no token/phone_number_id. Would send PDF to ${to}`);
@@ -263,6 +280,7 @@ async function uploadMedia(buffer, filename, numberId) {
 }
 
 async function sendTemplate(to, templateName, bodyParams, opts, numberId) {
+  to = normalizePhoneIntl(to);
   const nid = numberId || DEFAULT_NUMBER_ID;
   if (!WHATSAPP_TOKEN || !nid) {
     console.log(`[template:SKIP] no token/phone_number_id. Would send ${templateName} to ${to}`);
@@ -857,11 +875,165 @@ function stripPhantomSentences(text) {
   return kept.join(" ").trim();
 }
 
-function guardAiOutput(aiText, aiFailed, fallbackText) {
+// ---------------------------------------------------------------------------
+// Fix AD (2026-10-13) — TOKEN guard. The phantom patterns above catch claim
+// SHAPES; this layer validates every concrete fact TOKEN in an AI reply —
+// a clock time, a calendar date, a price figure — against the real state.
+// A token that matches no anchor condemns its whole sentence, exactly like
+// a phantom claim. Anchors (built by aiGuardAnchors): the active proposal,
+// the patient's existing bookings, the clinic's configured opening/closing
+// hours, today — and the patient's own words in the current message:
+// echoing a figure the patient just stated is a mirror, not an invention.
+// Prices have NO other anchor: the bot holds no price data anywhere, so a
+// price figure the patient didn't just state is invented by definition.
+// aiReply builds anchors whenever the caller identifies the conversation
+// (phone); legacy 3-argument guardAiOutput calls keep the pre-AD behavior
+// byte-for-byte.
+// ---------------------------------------------------------------------------
+const AR_INDIC_DIGITS = { "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4", "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9" };
+const normDigits = (s) => String(s || "").replace(/[٠-٩]/g, (c) => AR_INDIC_DIGITS[c]);
+
+// Clock times -> Set of "H:MM" (24h). Shapes: "10:30", "10h30", "10h",
+// "10 heures", Arabic "الساعة 10", Derja "el 10 mta3 sbe7".
+function extractTimeTokens(text) {
+  const t = normDigits(text);
+  const out = new Set();
+  const add = (h, mi) => {
+    h = parseInt(h, 10); mi = mi === undefined ? 0 : parseInt(mi, 10);
+    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) out.add(h + ":" + String(mi).padStart(2, "0"));
+  };
+  let m;
+  const reHM = /(\d{1,2})[:h](\d{2})/g;
+  while ((m = reHM.exec(t))) add(m[1], m[2]);
+  const reH = /(\d{1,2})\s*(?:h|heures?)\b/g;
+  while ((m = reH.exec(t))) add(m[1], 0);
+  const reAr = /الساعة\s*(\d{1,2})/g;
+  while ((m = reAr.exec(t))) add(m[1], 0);
+  const reDz = /\bel\s+(\d{1,2})\b(?=[^.!?؟\n]{0,16}\b(?:mta3|sbe7|sbeh|3chiya|lil|صباح|مساء|الصباح|العشية)\b)/g;
+  while ((m = reDz.exec(t))) add(m[1], 0);
+  return out;
+}
+
+const MONTHS_FR = { janvier: 1, fevrier: 2, "février": 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, "août": 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12, "décembre": 12 };
+const WEEKDAY_RE = "(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|jom3a|jem3a|sabt|sebt|a7ad|la7ad|thnin|tnin|ethnin|thletha|tletha|arb3a|erba3|larba3|5mis|khmis|khamis|الجمعة|السبت|الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس)";
+// Calendar dates -> [{ d, mo, y }] (mo/y null when the text doesn't say).
+// Shapes: "15-10-2026", "15/10/2026", ISO, "15 octobre", French "le 15",
+// weekday + day ("vendredi 16", "el jom3a 16"), "nhar 15" / "يوم 15".
+function extractDateTokens(text) {
+  const t = normDigits(text);
+  const out = [];
+  const push = (d, mo, y) => {
+    d = parseInt(d, 10);
+    if (d >= 1 && d <= 31) out.push({ d, mo: mo == null ? null : parseInt(mo, 10), y: y == null ? null : parseInt(y, 10) });
+  };
+  let m;
+  const reFull = /(\d{1,2})[-/](\d{1,2})[-/](\d{4})/g;
+  while ((m = reFull.exec(t))) push(m[1], m[2], m[3]);
+  const reIso = /(\d{4})-(\d{1,2})-(\d{1,2})/g;
+  while ((m = reIso.exec(t))) push(m[3], m[2], m[1]);
+  const reMonth = /(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\b/gi;
+  while ((m = reMonth.exec(t))) push(m[1], MONTHS_FR[m[2].toLowerCase()], null);
+  const reLe = /\ble\s+(\d{1,2})(?![\d:/-])/g;
+  while ((m = reLe.exec(t))) push(m[1], null, null);
+  const reWd = new RegExp(WEEKDAY_RE + "\\s+(?:el\\s+)?(\\d{1,2})(?![\\d:/-])", "gi");
+  while ((m = reWd.exec(t))) push(m[1], null, null);
+  const reNhar = /(?:\bnhar|يوم|نهار)\s+(\d{1,2})(?![\d:/-])/g;
+  while ((m = reNhar.exec(t))) push(m[1], null, null);
+  return out;
+}
+
+function dateTokenAnchored(tok, anchors) {
+  return (anchors || []).some((a) => a.d === tok.d
+    && (tok.mo == null || a.mo === tok.mo)
+    && (tok.y == null || a.y === tok.y));
+}
+
+const PRICE_WORD_RE = /(prix|tarif|coûte|coute|coût|soum|thaman|ثمن|سعر|الثمن|السعر)/i;
+// Price figures in ONE sentence: a number carrying a currency unit, or —
+// in a sentence that talks about price — any number not already spoken
+// for by a time/date token.
+function extractPriceFigures(sentence) {
+  const t = normDigits(sentence);
+  const out = [];
+  let m;
+  const reUnit = /(\d+(?:[.,]\d+)?)\s*(?:dt|dinars?|tnd|دينار|دنانير)/gi;
+  while ((m = reUnit.exec(t))) out.push(parseFloat(m[1].replace(",", ".")));
+  if (PRICE_WORD_RE.test(t)) {
+    const rest = t
+      .replace(/(\d{1,2})[:h](\d{2})/g, " ")
+      .replace(/(\d{1,2})[-/](\d{1,2})[-/](\d{4})/g, " ")
+      .replace(/(\d{4})-(\d{1,2})-(\d{1,2})/g, " ");
+    const reNums = /\d+(?:[.,]\d+)?/g;
+    while ((m = reNums.exec(rest))) out.push(parseFloat(m[0].replace(",", ".")));
+  }
+  return out;
+}
+
+// Everything the AI is allowed to state, for one patient conversation.
+async function aiGuardAnchors(phone, patientText, clinicHoursText) {
+  const times = new Set(extractTimeTokens(clinicHoursText || ""));
+  const dateAnchors = [];
+  const pushD = (d, mo, y) => { if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) dateAnchors.push({ d, mo, y }); };
+  // Dates as stored by dates.js: UTC fields read Tunisia wall time.
+  const fromMs = (ms) => { const dt = new Date(ms); pushD(dt.getUTCDate(), dt.getUTCMonth() + 1, dt.getUTCFullYear()); };
+  // slot_at is a real UTC instant; Tunis wall = +1h.
+  const fromSlotAt = (iso) => {
+    if (!iso) return;
+    const ms = new Date(iso).getTime();
+    if (!isFinite(ms)) return;
+    const wall = new Date(ms + 3600000);
+    pushD(wall.getUTCDate(), wall.getUTCMonth() + 1, wall.getUTCFullYear());
+    times.add(wall.getUTCHours() + ":" + String(wall.getUTCMinutes()).padStart(2, "0"));
+  };
+  const fromText = (txt) => {
+    if (!txt) return;
+    for (const t of extractTimeTokens(txt)) times.add(t);
+    for (const tk of extractDateTokens(txt)) {
+      if (tk.mo) pushD(tk.d, tk.mo, tk.y || dates.tunisNow().getUTCFullYear());
+    }
+  };
+  fromMs(dates.tunisNow().getTime()); // today is always a legal date to name
+  fromText(patientText); // the patient's own words: an echo is a mirror
+  const patientNums = new Set();
+  for (const m of normDigits(patientText || "").matchAll(/\d+(?:[.,]\d+)?/g)) patientNums.add(parseFloat(m[0].replace(",", ".")));
+  if (phone) {
+    const prop = await db.getProposal(phone).catch(() => null);
+    if (prop) {
+      fromSlotAt(prop.slot_at);
+      fromText(prop.display);
+      if (prop.slot_text) {
+        const rp = dates.resolveSlot(prop.slot_text);
+        if (rp && rp.found && rp.dateUTC != null) fromMs(rp.dateUTC);
+        if (rp && rp.found && rp.date && rp.hour != null) times.add(rp.hour + ":" + String(rp.minute || 0).padStart(2, "0"));
+      }
+    }
+    const rows = await db.getBookingsByPhone(phone).catch(() => []);
+    for (const b of rows || []) { fromSlotAt(b.slot_at); fromText(b.slot); }
+  }
+  return { times, dates: dateAnchors, patientNums };
+}
+
+function sentenceHasInventedToken(sentence, guard) {
+  for (const t of extractTimeTokens(sentence)) if (!guard.times.has(t)) return true;
+  for (const tk of extractDateTokens(sentence)) if (!dateTokenAnchored(tk, guard.dates)) return true;
+  for (const p of extractPriceFigures(sentence)) if (!guard.patientNums.has(p)) return true;
+  return false;
+}
+
+function guardAiOutput(aiText, aiFailed, fallbackText, guard = null) {
   if (aiFailed || !aiText) return fallbackText;
-  if (!aiClaimsBooking(aiText)) return fixKnownTypos(aiText);
-  const stripped = stripPhantomSentences(aiText);
-  return stripped ? fixKnownTypos(stripped) : fallbackText;
+  if (!guard) {
+    if (!aiClaimsBooking(aiText)) return fixKnownTypos(aiText);
+    const stripped = stripPhantomSentences(aiText);
+    return stripped ? fixKnownTypos(stripped) : fallbackText;
+  }
+  // Fix AD: phantom shapes AND unanchored fact tokens, sentence by sentence.
+  // A clean reply is returned untouched (no split/rejoin normalization).
+  const parts = String(aiText).split(/(?<=[.!?؟])\s+/);
+  const isBad = (s) => aiClaimsBooking(s) || sentenceHasInventedToken(s, guard);
+  if (!parts.some(isBad)) return fixKnownTypos(aiText);
+  const kept = parts.filter((s) => !isBad(s)).join(" ").trim();
+  return kept ? fixKnownTypos(kept) : fallbackText;
 }
 
 // Deterministic typo guard (2026-10-01): the AI keeps inventing "Nchalllah"
@@ -875,7 +1047,7 @@ function fixKnownTypos(s) {
 }
 
 // ---------- AI: Derja reply (with conversation history) ----------
-async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "", sysOverride = null, clinicAddress = "", clinicHours = "") {
+async function aiReply(patientText, history = [], patientName = null, clinicName = "", useAr = null, extraSys = "", sysOverride = null, clinicAddress = "", clinicHours = "", phone = null) {
   // Resolved script: explicit patient request > saved preference > message script.
   const ar = useAr !== null ? useAr : isAr(patientText);
 
@@ -941,10 +1113,15 @@ async function aiReply(patientText, history = [], patientName = null, clinicName
   }
   const out = data.choices?.[0]?.message?.content?.trim() || "";
   // Deterministic guard: the AI must never invent a booking, date, time, or price.
+  // Fix AD: when the caller identifies the conversation (phone), every
+  // date/time/price TOKEN in the reply is also validated against the real
+  // state (proposal, bookings, clinic hours, today) — see aiGuardAnchors.
+  const guard = phone ? await aiGuardAnchors(phone, patientText, clinicHours).catch(() => null) : null;
   return guardAiOutput(
     enforceScript(out, patientText, ar),
     false,
-    msg("ai_safe_fallback", ar ? "ar" : fr ? "fr" : "az")
+    msg("ai_safe_fallback", ar ? "ar" : fr ? "fr" : "az"),
+    guard
   );
 }
 
@@ -3043,8 +3220,14 @@ async function handleBookingTurn(phone, text, history, clinic) {
       const extraSys = fr2
         ? `\n- Vous avez une proposition de rendez-vous en attente : "${disp}" — après avoir répondu à la question, terminez par une seule phrase : "${reAsk}"`
         : `\n- 3andek proposal mta3 rendez-vous pending: "${disp}" — ba3d ma tjewb 3al sou2el, kamel b joumla wa7da: "${reAsk}"`;
-      const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys, fr2 ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours);
-      return say(phone, ans, clinic);
+      const ans = await aiReply(text, history, pname, clinic.name, ar2, extraSys, fr2 ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours, phone);
+      // Fix AD: the re-presentation of the pending proposal is a
+      // flow-driving prompt — CATALOG text, guaranteed by code, not left
+      // to the AI's prompt compliance. (Real AI path only: without a key
+      // aiReply returns the deterministic fallback and the pinned no-key
+      // behavior is unchanged.)
+      const finalAns = AI_API_KEY && ans && !ans.includes(reAsk) ? ans + "\n" + reAsk : ans;
+      return say(phone, finalAns, clinic);
     }
   }
 
@@ -4440,7 +4623,7 @@ async function processPatientText(phone, text, numberId, displayNumber) {
     !!parseBeneficiarySwap(text);
   if (!_hasSlot && !_prop && !_detIntent && (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text) || await aiLangIsFrench(text))) {
     const freply = AI_API_KEY
-      ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours)
+      ? await aiReply(text, history, await db.getPatientName(phone).catch(() => null), clinic.name, false, "", FRENCH_SYSTEM_PROMPT, clinic.address, clinic.hours, phone)
       : frenchFallback(text, clinic.name, clinic.address); // deterministic French without AI key (local tests)
     await db.saveMessage(phone, "assistant", freply, clinic && clinic.id);
     rememberQuestionOffer(phone, freply, text, clinic);
@@ -4470,7 +4653,36 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   // Arabizi line back. A French conversation now gets the French prompt,
   // exactly like the dedicated French path above; Derja/Arabic unchanged.
   const langF = await resolveLang(phone, text, { history });
-  const reply = await aiReply(text, history, pname, clinic.name, useAr, "", langF === "fr" ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours);
+  // Fix AD (2026-10-13) — FLOW COMPOSITION. When a booking flow is active
+  // (a pending proposal) or starts on this very turn (booking intent with
+  // nothing resolved — handleBookingTurn's B0 hands first asks here), the
+  // flow-driving reply is the CATALOG text for that state; the AI never
+  // composes it. Only on the real AI path: without a key this fallthrough
+  // returns the deterministic fallback and its pinned behavior is
+  // unchanged. Deliberately NOT gated: the name gate — an off-flow
+  // question there is answered by the guarded AI (Fix V) and the name
+  // prompt itself is already catalog-composed by handleNameAnswer.
+  if (AI_API_KEY) {
+    const propF = await db.getProposal(phone).catch(() => null);
+    let flowTxt = null;
+    if (propF && propF.slot_at) {
+      flowTxt = msg("reask_proposal", langF, { disp: propF.display || propF.slot_text });
+    } else if (propF && propF.slot_text && !propF.awaiting_name) {
+      const rpF = dates.resolveSlot(propF.slot_text, langF === "ar");
+      if (rpF.found && rpF.date && rpF.needs === "time") {
+        flowTxt = timeQuestionMsg(langF === "ar", rpF, propF.slot_text, langF === "fr");
+      }
+    }
+    if (!flowTxt && !propF && looksLikeBookingIntent(text)) {
+      flowTxt = msg("ask_day_time", langF);
+    }
+    if (flowTxt) {
+      await db.saveMessage(phone, "assistant", flowTxt, clinic && clinic.id);
+      rememberQuestionOffer(phone, flowTxt, text, clinic);
+      return flowTxt;
+    }
+  }
+  const reply = await aiReply(text, history, pname, clinic.name, useAr, "", langF === "fr" ? FRENCH_SYSTEM_PROMPT : null, clinic.address, clinic.hours, phone);
   await db.saveMessage(phone, "assistant", reply, clinic && clinic.id);
   rememberQuestionOffer(phone, reply, text, clinic);
   return reply;
@@ -5763,7 +5975,7 @@ app.listen(PORT, () => {
 });
 
 // Exported for the local regression test (test-local.js). No effect on the running server.
-module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, formatFeedback, submitFeedback, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
+module.exports = { processPatientText, processSecretaryText, dates, buildRapportPdf, samePhone, normPhoneForCompare, parseAgendaJson, agendaItemSlot, autoRapportDue, normalizePhoneIntl, formatFeedback, submitFeedback, _pendingAgenda: pendingAgenda, looksLikeAcceptance, looksLikeStatusQuestion, looksLikeRefusal, SYSTEM_PROMPT, isAr, enforceScript, validateSignup,
   // templates 2026-10-09 (exported for the regression test)
   sendTemplate, supervisorNumber, rememberQuestionOffer,
   // Fix S (2026-10-13): central language resolver + MSG catalog + the ONE
@@ -5782,6 +5994,8 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   // batch fix 2026-09-25 (exported for the regression test)
   getClinic, scriptAr, looksLikeScriptRequest, looksLikeLatinRequest,
   aiClaimsBooking, guardAiOutput, fixKnownTypos, AI_SAFE_FALLBACK, detectExplicitBeneficiaries, faqAnswer,
+  // Fix AD (2026-10-13): token guard helpers (exported for test-round3 fixad)
+  extractTimeTokens, extractDateTokens, extractPriceFigures, aiGuardAnchors, sentenceHasInventedToken,
   // French text path (exported for the regression test)
   looksLikeFrench, looksLikeFrenchRequest, looksLikeFrenchAuto, hasDerjaMarker, aiLangIsFrench, FRENCH_SYSTEM_PROMPT, frenchFallback,
   // Per-number booking hours (exported for the regression test)
