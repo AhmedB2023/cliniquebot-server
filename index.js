@@ -405,6 +405,7 @@ const pendingAgenda = new Map(); // supervisorPhone -> [{name, date, time, unsur
 // The supervisor's next free-text reply becomes the doctor's answer to the patient.
 const pendingQuestion = new Map(); // patientPhone -> {question, clinicId, ts}
 const pendingDoctorAnswer = new Map(); // clinicId -> {patientPhone, question, ts}
+const pendingBareQuestion = new Map(); // patientPhone -> {ts, lang} (Fix AG: "3andi sou2el" invite armed)
 const QUESTION_TTL_MS = 30 * 60 * 1000; // patient offer expires after 30 min
 const ANSWER_TTL_MS = 2 * 3600 * 1000; // doctor answer window: 2h
 
@@ -1219,8 +1220,28 @@ function rootRe(root) {
 }
 
 // Booking intent without any date/time ("n7eb na7jez", "nheb na5jez rendez vous", "نحب نحجز").
+// Fix AG (2026-10-15): a NEGATED booking wish is not a booking intent.
+// "لا ما نحبش نحجز، عندي سؤال" matched the bare noun "نحجز" and the bot
+// pushed the booking flow on a patient who had just refused it (live,
+// Mahjoub 52). The guard needs BOTH halves in the same message: a
+// booking word AND a negated-want phrase; a positive booking phrase
+// anywhere in the message cancels the guard.
+function negatesBooking(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  const hasBookingWord = /(احجز|حجز|موعد|نحجز)/.test(raw)
+    || /(na7jez|ne7jez|rendez|reservation|booking|appointment|rdv|7ajz|hajz)/.test(t);
+  if (!hasBookingWord) return false;
+  if (/نحب\s*(نحجز|ناخذ)/.test(raw)) return false; // positive wish wins
+  if (/(ما نحبش|مانحبش|ما نريدش|مانريدش|لا أريد|لا اريد|مش حابب|ما عادش نحب)/.test(raw)) return true;
+  if (/\b(ma\s?n7ebch|man7ebch|ma\s?nhebch|manhebch|ma\s?n7ibch|man7ibch|ma\s?na7bech|mana7bech)\b/.test(t)) return true;
+  if (/(je ne veux pas|je veux pas|ne veux pas|je ne souhaite pas|don't want|do not want|dont want|not booking)/.test(t)) return true;
+  return false;
+}
+
 function looksLikeBookingIntent(text) {
   const raw = (text || "").trim();
+  if (negatesBooking(raw)) return false;
   if (/نحب\s*(نحجز|ناخذ)/.test(raw)) return true;
   if (/(احجز|احجزلي|حجز|موعد)/.test(raw)) return true;
   const t = " " + raw.toLowerCase() + " ";
@@ -1870,6 +1891,12 @@ const MSG = {
     // for test-local S23) — the old three-word text read as French.
     az: "Ok, ma mochkla — ken t7eb nes2elou el tbib marra o5ra, 9olli.",
   },
+  // ----- bare-question invite (Fix AG: "3andi sou2el" with nothing asked yet) -----
+  q_invite: {
+    ar: "تفضل، شنوة سؤالك؟ اكتبو هوني — كان إداري (الثمن، المواقيت، العنوان) نجاوبك، وكان للطبيب نوصلوهولك.",
+    fr: "Bien sûr — quelle est votre question ? Écrivez-la ici : si elle est administrative (prix, horaires, adresse), je vous réponds ; si elle est pour le docteur, je la lui transmets.",
+    az: "Tfadhel, chnowa sou2elek? Ektbou houni — ken idari (el soum, el mawa9it, el adresse) njewebek, w ken lel tbib nwaslouhoulek.",
+  },
   // ----- deterministic doctor-question offer (Fix T: no-AI-key path) -----
   doc_q_offer: {
     ar: "ما عنديش المعلومة هذي. تحب نسأل الطبيب ونرجعلك؟ اكتب اي.",
@@ -1941,12 +1968,12 @@ const MSG = {
     az: "Hethi commande mta3 el 3iyada — ken t7eb tbadal walla tfassakh el rendez-vous mte3ek, 9olli.",
   },
   proposal_dropped: {
-    ar: "داكور، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك.",
+    ar: "ok، فسخت الاقتراح. تحب وقت آخر؟ قولي نهار ووقت يساعدك.",
     fr: "D'accord, j'ai annulé la proposition. Voulez-vous un autre horaire ? Dites-moi un jour et une heure qui vous conviennent.",
     az: "D'accord, l4it el i9tira7. T7eb wa9t e5er? 9olli nhar w wa9t yse3dek.",
   },
   ask_day_time: {
-    ar: "داكور — أنهو نهار وأنهو وقت تحب؟",
+    ar: "ok — أنهو نهار وأنهو وقت تحب؟",
     fr: "D'accord — quel jour et quelle heure souhaitez-vous ?",
     az: "D'accord — anhou nhar w anhou wa9t t7eb?",
   },
@@ -2001,7 +2028,7 @@ const MSG = {
     az: (c) => `${c.dateDisplay} — bech net2akked: el ${c.hourStr} hethi ${c.am} mta3 sbe7 walla ${c.pm} mta3 l3chiya?`,
   },
   propose_slot: {
-    ar: (c) => `داكور — ${c.display}. تحب نحجزلك؟ اكتب "اي".`,
+    ar: (c) => `ok — ${c.display}. تحب نحجزلك؟ اكتب "اي".`,
     fr: (c) => `D'accord — ${c.display}. Voulez-vous que je vous le réserve ? Écrivez "oui".`,
     az: (c) => `D'accord — ${c.display}. T7eb n7ajzlek? Ekteb "ey".`,
   },
@@ -2049,7 +2076,7 @@ const MSG = {
   },
   // ----- name capture -----
   ask_name: {
-    ar: (c) => `داكور — ${c.display}. أعطيني الاسم واللقب متاعك؟`,
+    ar: (c) => `ok — ${c.display}. أعطيني الاسم واللقب متاعك؟`,
     fr: (c) => `D'accord — ${c.display}. Quel est votre nom et votre prénom ?`,
     az: (c) => `D'accord — ${c.display}. A3tini el esm wel la9ab mta3ek?`,
   },
@@ -2065,7 +2092,7 @@ const MSG = {
     az: (c) => `El rendez-vous mte3ek (${c.display}) deja yestanna — n2akkedlek w narja3lek.`,
   },
   book_done: {
-    ar: (c) => `${c.first ? `داكور ${c.first}، مرحبا بيك!` : "داكور، مرحبا بيك!"} نأكدلك رونديفو (${c.display}) ونرجعلك.`,
+    ar: (c) => `${c.first ? `ok ${c.first}، مرحبا بيك!` : "ok، مرحبا بيك!"} نأكدلك رونديفو (${c.display}) ونرجعلك.`,
     fr: (c) => `${c.first ? `D'accord ${c.first}, bienvenue !` : "D'accord, bienvenue !"} Je vous confirme le rendez-vous (${c.display}) et je reviens vers vous.`,
     az: (c) => `${c.first ? `D'accord ${c.first}, merhba bik!` : "D'accord, merhba bik!"} n2akkedlek rendez-vous (${c.display}) w narja3lek.`,
   },
@@ -2113,7 +2140,7 @@ const MSG = {
     az: "Ma l9it 7atta rendez-vous ma7jouz b hal numero. T7eb na7jzelek wa7ed jdid?",
   },
   cancel_done: {
-    ar: (c) => `داكور، فسخت الرونديفو (${c.slot}). تحب وقت آخر؟`,
+    ar: (c) => `ok، فسخت الرونديفو (${c.slot}). تحب وقت آخر؟`,
     fr: (c) => `D'accord, j'ai annulé le rendez-vous (${c.slot}). Voulez-vous un autre horaire ?`,
     az: (c) => `D'accord, fassakht el rendez-vous (${c.slot}). T7eb wa9t e5er?`,
   },
@@ -2123,7 +2150,7 @@ const MSG = {
     az: "Ma l9it 7atta rendez-vous bech nbadlouh. T7eb na7jzelek wa7ed jdid?",
   },
   resched_ask: {
-    ar: (c) => `داكور — باش نبدلو الرونديفو (${c.slot}). قولي النهار والوقت الجديد.`,
+    ar: (c) => `ok — باش نبدلو الرونديفو (${c.slot}). قولي النهار والوقت الجديد.`,
     fr: (c) => `D'accord — nous allons déplacer le rendez-vous (${c.slot}). Dites-moi le nouveau jour et la nouvelle heure.`,
     az: (c) => `D'accord — bech nbadlou el rendez-vous (${c.slot}). 9olli el nhar wel wa9t el jdid.`,
   },
@@ -2134,7 +2161,7 @@ const MSG = {
   },
   // ----- post-booking name correction (Fix T: B16) -----
   name_corrected: {
-    ar: (c) => `داكور، صلحت الاسم: ${c.name || ""}.`,
+    ar: (c) => `ok، صلحت الاسم: ${c.name || ""}.`,
     fr: (c) => `D'accord, j'ai corrigé le nom : ${c.name || ""}.`,
     az: (c) => `D'accord, tsalla7 el esm: ${c.name || ""}.`,
   },
@@ -3520,7 +3547,7 @@ async function handleVendorTurn(phone, text, lead, clinic) {
     await db.saveVendorLead(phone, "done", lead.clinic_name);
     await notifySales(`📞 "${lead.clinic_name || "—"}" (${phone}) y7eb appel: "${when}"`);
     return say(phone, ar
-      ? `داكور! ✅ باش نتصلو بيك ${when}. كان عندك أي سؤال اكتب هوني.`
+      ? `ok! ✅ باش نتصلو بيك ${when}. كان عندك أي سؤال اكتب هوني.`
       : `D'accord! ✅ Bech nettaslou bik ${when}. Ken 3andek ay sou2el ekteb houni.`, clinic);
   }
 
@@ -3659,7 +3686,7 @@ async function handleSalonDemoBooking(phone, text, ar, clinic) {
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     salonDemo.delete(phone);
     return say(phone, ar
-      ? "داكور، لغيت التجربة. تحب حاجة أخرى؟"
+      ? "ok، لغيت التجربة. تحب حاجة أخرى؟"
       : "D'accord, l4it el tajrba. T7eb 7aja o5ra?", clinic);
   }
   const st = salonDemo.get(phone) || {};
@@ -3748,7 +3775,7 @@ async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone, ar
-      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للصالون متاعي»."
+      ? "ok، لغيت الطلب. كان بدلت رايك اكتب «نحب للصالون متاعي»."
       : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel salon mte3i».", clinic);
   }
   const d = salonLeadData(lead);
@@ -3810,7 +3837,7 @@ async function handleSalonLeadTurn(phone, text, lead, ar, clinic) {
     await db.saveVendorLead(phone, "salon_done", JSON.stringify(d));
     const cn = capName(name);
     return say(phone, ar
-      ? `داكور ${cn}! ✅ باش نتصلو بيك قريب باش نحضرولك المساعد للصالون "${salon}" (${city}). شكرا! 🙏`
+      ? `ok ${cn}! ✅ باش نتصلو بيك قريب باش نحضرولك المساعد للصالون "${salon}" (${city}). شكرا! 🙏`
       : `D'accord ${cn}! ✅ Bech nettaslou bik 9rib bech n7adhroulek el assistant lel salon "${salon}" (${city}). Merci! 🙏`, clinic);
   }
 
@@ -3946,14 +3973,14 @@ async function handleSalonQualifyTurn(phone, text, ar, clinic, lead) {
       "D'accord ! La réservation ici est juste un essai, pas une vraie réservation.\n" +
       "Quel service vous intéresse ? 💅 (brushing, chignon, maquillage, manucure...)", clinic);
     return say(phone, (ar
-      ? "داكور! الحجز هوني للتجربة برك (موش حجز حقيقي).\n"
+      ? "ok! الحجز هوني للتجربة برك (موش حجز حقيقي).\n"
       : "D'accord! El 7ajz houni lel tajrba bark (mouch 7ajz 7a9i9i).\n") + salonAskServiceMsg(ar), clinic);
   }
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone,
       fr ? "D'accord, pas de problème." :
-      ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
+      ar ? "ok، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
   }
   // Unclear -> ask again, simply.
   return say(phone,
@@ -4148,7 +4175,7 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone, ar
-      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      ? "ok، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
       : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
   }
   const d = vixaLeadData(lead);
@@ -4158,14 +4185,14 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   if (vixaRefusesCall(text)) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone, lang === "fr" ? "D'accord, pas d'appel. 👍 Si vous changez d'avis, écrivez « je veux un assistant »."
-      : lang === "ar" ? "داكور، بلا مكالمة. 👍 كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      : lang === "ar" ? "ok، بلا مكالمة. 👍 كان بدلت رايك اكتب «نحب للعيادة متاعي»."
       : "D'accord, blech appel. 👍 Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
   }
   // General dismissal ("manheb chay tawa", "sayeb 3laya") at any stage -> cancel.
   if (vixaDismissal(text)) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone, ar
-      ? "داكور، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
+      ? "ok، لغيت الطلب. كان بدلت رايك اكتب «نحب للعيادة متاعي»."
       : "D'accord, l4it el demande. Ken badelt rayek ekteb «n7eb lel 3iyada mte3i».", clinic);
   }
   // Info question mid-flow: answer it, then return to the pending question
@@ -4239,7 +4266,7 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
     await db.saveVendorLead(phone, "vixa_done", JSON.stringify(d));
     const cnd = capName(name);
     return say(phone, lang === "fr" ? `D'accord ${cnd} ! ✅ On vous appellera ${when} pour préparer l'assistant pour la clinique "${cn3}". Merci ! 🙏`
-      : ar ? `داكور ${cnd}! ✅ باش نتصلو بيك ${when} باش نحضرولك المساعد للعيادة "${cn3}". شكرا! 🙏`
+      : ar ? `ok ${cnd}! ✅ باش نتصلو بيك ${when} باش نحضرولك المساعد للعيادة "${cn3}". شكرا! 🙏`
       : `D'accord ${cnd}! ✅ Bech nettaslou bik ${when} bech n7adhroulek el assistant lel 3iyada "${cn3}". Merci! 🙏`, clinic);
   }
 
@@ -4290,7 +4317,7 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
     await db.clearVendorLead(phone).catch(() => {});
     return say(phone,
       fr ? "D'accord, pas de problème." :
-      ar ? "داكور، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
+      ar ? "ok، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
   }
   // Unclear -> AI nudge (acknowledge + re-ask), no per-message regex.
   const vqq = fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)"
@@ -4395,6 +4422,29 @@ function looksLikeDoctorQuestion(text) {
   return /(سؤال للطبيب|سؤال للدكتور|نسأل الطبيب|نسأل الدكتور|اسأل الطبيب|أسأل الطبيب)/.test(raw);
 }
 
+// Fix AG (2026-10-15): a BARE question announcement — "عندي سؤال",
+// "3andi sou2el", "j'ai une question" — states no question yet and names
+// no doctor, so it matched neither the FAQ paths nor the doctor-question
+// branch and fell into the booking flow (live, Mahjoub 52). Bare means:
+// announces a question AND asks nothing concrete in the same message
+// (no ؟/?, no FAQ topic, no slot, no doctor anchor).
+function looksLikeBareQuestion(text) {
+  const raw = (text || "").trim();
+  if (!raw) return false;
+  if (/[?؟]/.test(raw)) return false;
+  if (looksLikeDoctorQuestion(raw)) return false;
+  const t = " " + raw.toLowerCase() + " ";
+  const announces = /(عندي سؤال|عندى سؤال|عندي استفسار|عندي تساؤل)/.test(raw)
+    || /\b(3andi|andi|3ndi)\s+(sou2el|so2el|souel|question|istifsar|istifser)\b/.test(t)
+    || /\b(j'ai|jai)\s+une\s+question\b/.test(t)
+    || /\bi\s+have\s+a\s+question\b/.test(t)
+    || /\b(n7eb|nheb|n7b|nhb|7ab|hab)\s+(nes2el|ns2el|nes2al|nsa2el)\b/.test(t);
+  if (!announces) return false;
+  if (faqKind(raw)) return false;
+  if (dates.resolveSlot(raw).date) return false;
+  return true;
+}
+
 // Shared by the WhatsApp webhook and the /test page.
 // displayNumber: the bot number's display_phone_number from the webhook
 // metadata (optional) — used to resolve the salon vertical without a
@@ -4492,6 +4542,32 @@ async function processPatientText(phone, text, numberId, displayNumber) {
     // Expired or anything else: fall through to normal handling.
   }
 
+  // Fix AG (2026-10-15): the message after a bare-question invite IS the
+  // patient's question. Administrative topics and booking-family intents
+  // fall through to their normal handling; anything else is treated as a
+  // question for the doctor and offered for forwarding through the same
+  // offer/accept machinery as every other doctor question.
+  if (vertical === "dentist" && pendingBareQuestion.has(phone)) {
+    const bq = pendingBareQuestion.get(phone);
+    pendingBareQuestion.delete(phone);
+    if (Date.now() - bq.ts <= QUESTION_TTL_MS) {
+      const rsBQ = dates.resolveSlot(text);
+      const fallsThrough = (rsBQ.found && rsBQ.date)
+        || looksLikeBookingIntent(text) || looksLikeCancellation(text)
+        || looksLikeReschedule(text) || looksLikeStatusQuestion(text)
+        || !!faqKind(text);
+      if (!fallsThrough) {
+        let lang = await resolveLang(phone, text, { history });
+        if (bq.lang && !langOfText(text)) lang = bq.lang;
+        pendingQuestion.set(phone, {
+          question: String(text).slice(0, 500), clinicId: clinic && clinic.id, ts: Date.now(), lang,
+        });
+        console.log(`[question] bare-question captured for ${phone}`);
+        return (await say(phone, msg("doc_q_offer", lang), clinic)).reply;
+      }
+    }
+  }
+
   // Explicit script request ("aktebli bel 3arbi" / "aktebli b 7rouf"):
   // remembered per patient, honored from this message on. An explicit
   // French request ("ektebli bel francais") is remembered the same way
@@ -4574,6 +4650,17 @@ async function processPatientText(phone, text, numberId, displayNumber) {
   if (vertical === "dentist" && /^\s*[\[(]?\s*(audio|voice note|voice message|vocal|message vocal|note vocale|رسالة صوتية|مقطع صوتي)\s*[\])]?\s*$/i.test(text || "")) {
     const lang = await resolveLang(phone, text, { history });
     return (await say(phone, msg("voice_note", lang), clinic)).reply;
+  }
+
+  // Fix AG (2026-10-15): bare question announcement ("عندي سؤال" with
+  // nothing asked yet) — invite the patient to write the question and arm
+  // the capture for the next message (handled at the top of this
+  // function). A pending booking proposal is left untouched and resumes.
+  if (vertical === "dentist" && looksLikeBareQuestion(text)) {
+    const lang = await resolveLang(phone, text, { history });
+    pendingBareQuestion.set(phone, { ts: Date.now(), lang });
+    console.log(`[question] bare-question invite for ${phone}`);
+    return (await say(phone, msg("q_invite", lang), clinic)).reply;
   }
 
   // Fix T (Q1a/Q2/Q4/Q5) — a question FOR THE DOCTOR in deterministic mode
@@ -5989,6 +6076,7 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   // supervisor-notification helper (exported for test-lang.js)
   MSG, msg, resolveLang, langOfText, notifySupervisor,
   _pendingQuestion: pendingQuestion, _pendingDoctorAnswer: pendingDoctorAnswer,
+  _pendingBareQuestion: pendingBareQuestion, looksLikeBareQuestion, negatesBooking,
   // viewer PIN 2026-10-09 (exported for the regression test)
   pinCookieValue, pinCookieOk, viewerPinOk, parseCookies,
   // global admin 2026-10-09 (exported for the regression test)
