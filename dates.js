@@ -99,6 +99,22 @@ const DAYS = [
   ["الخميس", 4],
   ["الجمعة", 5],
   ["السبت", 6],
+  // Fix AI (2026-10-15, live): BARE Arabic weekday names, no article —
+  // a patient wrote "نهار جمعة" (Jrad test) and the token matcher only
+  // knew "الجمعة", so the day never resolved and the bot re-asked
+  // "which day exactly?". With the article-less forms in the table, the
+  // weekday resolves to its next occurrence and the normal proposal
+  // flow shows the full date for a one-word confirmation (Ahmed's
+  // approved logic). "اثنين" is dual-listed in NUM_WORDS (= 2) exactly
+  // like Latin "ethnin": the weekday word is blanked before the time
+  // scan, so it is never misread as 2 o'clock. Bare "احد" stays out,
+  // same as bare "a7ad" above: it also means "someone".
+  ["اثنين", 1], ["إثنين", 1],
+  ["ثلاثاء", 2],
+  ["اربعاء", 3], ["أربعاء", 3],
+  ["خميس", 4],
+  ["جمعة", 5],
+  ["سبت", 6],
 ];
 // NOTE: bare "a7ad" is intentionally NOT here — it also means "someone"
 // ("ma fammech a7ad"). Use "la7ad"/"l7ad" for Sunday.
