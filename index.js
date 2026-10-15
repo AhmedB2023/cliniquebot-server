@@ -5042,6 +5042,28 @@ async function processSecretaryText(text, clinic, from) {
   if (/^(merci( beaucoup)?|choukran( barcha)?|chokran|شكرا|شكراً|thanks|thank you|bravo|parfait|super|excellent|très bien|tres bien|ya3tik el sa77a|yaatik el saha|barakallahou fik|بارك الله فيك|👍|👌|🙏|❤️|🌸)$/.test(smalltalk)) {
     return /^(👍|👌|🙏|❤️|🌸)$/.test(smalltalk) ? "👍" : "El 3afou, marhba bik fi kol wa9t. 🌸";
   }
+  // Fix AH (2026-10-15, live): a pure GREETING from the supervisor
+  // ("Salut" — Marwen, testing the line from abroad) fell into the
+  // suggestion box and got "modification en cours" — confusing as a
+  // doctor's first contact with the bot. A message that is ONLY a
+  // greeting now gets a welcome + the command list, in the greeting's
+  // own language. EXACT whole-message matches only, like the smalltalk
+  // rule above: "salut, modifiez le rdv…" still files as a suggestion,
+  // and a greeting never consumes a pending doctor answer (it sits in
+  // the same pre-answer social slot as "merci").
+  const greetNorm = t.toLowerCase()
+    .replace(/👋|🌸|😊|🙂|❤️|🙏|👍|👌/g, "")
+    .replace(/[\s.!؟?،,؛:]+$/g, "")
+    .trim();
+  if (/^(salut|bonjour|bonsoir|hello|hi)( (docteur|doctor|dr))?$/.test(greetNorm)) {
+    return "Bonjour docteur 👋 Je suis l'assistant du cabinet. Les commandes : 'ok <numero>' pour valider un rendez-vous, 'le <numero>' pour l'annuler, 'list' pour les rendez-vous en attente, 'rapport' pour le rapport du jour.";
+  }
+  if (/^(سلام|السلام عليكم|عسلامة|مرحبا|اهلا|أهلا|صباح الخير|مساء الخير)$/.test(greetNorm)) {
+    return "مرحبا 👋 أنا مساعد العيادة. الأوامر: 'ok <الرقم>' لتأكيد موعد، 'le <الرقم>' لإلغائه، 'list' للمواعيد في الانتظار، 'rapport' لتقرير اليوم.";
+  }
+  if (/^(aslema|3aslema|ahla|ahlen|marhba|salem|salam)$/.test(greetNorm)) {
+    return "Aslema 👋 Ena el assistant mta3 el cabinet. El commandes: 'ok <numero>' bech tvalidi rendez-vous, 'le <numero>' bech tfass5ou, 'list' bech tchouf el pending, 'rapport' lel rapport mta3 el youm.";
+  }
   // GENERAL RULE (2026-10-08, live bug): a question is never a suggestion.
   // The supervisor asking "chnowa ta3mel tawa?" got "modification en cours" —
   // wrong. Answer the question (or say you can't), never file it as a suggestion.
