@@ -234,6 +234,12 @@ const dateCases = [
   ["demain", "needs:23-09-2026"],
   ["apres demain", "needs:24-09-2026"],
   ["n7eb rendez-vous nos el lil", "FOUND-NODATE"], // midnight, no date -> out-of-hours branch
+  // Fix AI (2026-10-15): bare Arabic weekday names (no article) resolve
+  // to the next occurrence — the live Jrad message "نهار جمعة مع ل
+  // 11:00" used to fall to ask_day_exact. Clock: Tue 22-09-2026.
+  ["نهار جمعة مع ل 11:00", "25-09-2026، 11:00"], // bare Friday + time
+  ["نهار خميس", "needs:24-09-2026"], // bare Thursday, no time
+  ["يوم سبت مع 10:00", "26-09-2026، 10:00"], // bare Saturday + time
 ];
 
 for (const [input, expected] of dateCases) {
@@ -605,6 +611,23 @@ async function run() {
     ok("flow9e: statement saved", (await stubDb.getSuggestions()).length === 1, "saved");
   }
 
+  // Flow 9g — supervisor GREETING gets a welcome + commands, never the
+  // suggestion box (Fix AH, live 2026-10-15: Marwen's "Salut" got
+  // "modification en cours"). Greeting + instruction still suggests.
+  {
+    const clinicA = { id: "CLINIC_A", name: "Clinique A" };
+    const n0 = (await stubDb.getSuggestions()).length;
+    const gFr = await bot.processSecretaryText("Salut", clinicA, "21611111111");
+    has("flow9g: fr greeting -> help", gFr, "Les commandes");
+    const gAr = await bot.processSecretaryText("عسلامة", clinicA, "21611111111");
+    has("flow9g: ar greeting -> help", gAr, "الأوامر");
+    const gAz = await bot.processSecretaryText("aslema", clinicA, "21611111111");
+    has("flow9g: az greeting -> help", gAz, "El commandes");
+    ok("flow9g: greetings not saved as suggestions", (await stubDb.getSuggestions()).length === n0, "no suggestion");
+    const s2 = await bot.processSecretaryText("salut, badel el message mta3 el confirmation", clinicA, "21611111111");
+    has("flow9g: greeting+instruction still a suggestion", s2, "modification en cours");
+  }
+
   // Flow 9f — webhook signature verification (2026-10-08): only Meta can POST
   {
     const crypto = require("crypto");
@@ -637,13 +660,13 @@ async function run() {
     const r1 = await bot.processPatientText(p, "نحب نحجز");
     has("flow11: ar booking invite", r1, "باش نحجزلك");
     const r2 = await bot.processPatientText(p, "غدوة مع الخمسة متاع العشية");
-    has("flow11: ar proposal", r2, "داكور — 23-09-2026، 17:00");
+    has("flow11: ar proposal", r2, "ok — 23-09-2026، 17:00");
     has("flow11: ar proposal says ey", r2, "اي");
     const r3 = await bot.processPatientText(p, "اي");
     has("flow11: ar asks name", r3, "الاسم واللقب");
     const r3b = await bot.processPatientText(p, "أحمد بن صالح");
     has("flow11: ar booked", r3b, "نأكدلك رونديفو (23-09-2026، 17:00)");
-    has("flow11: ar d'accord wording", r3b, "داكور");
+    has("flow11: ar d'accord wording", r3b, "ok");
     has("flow11: ar merhba bik", r3b, "مرحبا بيك");
     const b = await stubDb.getLatestBooking(p);
     ok("flow11: ar slot in db", b && b.slot === "23-09-2026، 17:00", JSON.stringify(b));
@@ -699,10 +722,10 @@ async function run() {
     // Arabic version
     const pa = "21600000016";
     await stubDb.saveMessage(pa, "user", "سلام، نحب نحجز");
-    await stubDb.saveMessage(pa, "assistant", "داكور! أنهو نهار وأنهو وقت يساعدك؟");
+    await stubDb.saveMessage(pa, "assistant", "ok! أنهو نهار وأنهو وقت يساعدك؟");
     const ra = await bot.processPatientText(pa, "نحب نحجز رونديفو");
     has("flow15: ar rephrased nudge", ra, "فهمتك تحب تحجز");
-    ok("flow15: ar no repeated question", ra !== "داكور! أنهو نهار وأنهو وقت يساعدك؟", ra);
+    ok("flow15: ar no repeated question", ra !== "ok! أنهو نهار وأنهو وقت يساعدك؟", ra);
     // prompt carries the no-repeat memory rule
     has("flow15: prompt has memory rule", bot.SYSTEM_PROMPT, "MAMNOU3 t3awed nafs el sou2el");
   }
@@ -798,7 +821,7 @@ async function run() {
     const a2 = await bot.processPatientText(pa, "اي");
     has("flow20: ar asks name", a2, "الاسم واللقب");
     const a3 = await bot.processPatientText(pa, "أحمد بن صالح");
-    has("flow20: ar confirmation", a3, "داكور");
+    has("flow20: ar confirmation", a3, "ok");
     const ba = await stubDb.getLatestBooking(pa);
     ok("flow20: ar name saved", ba && ba.patient_name === "أحمد بن صالح", JSON.stringify(ba));
   }
