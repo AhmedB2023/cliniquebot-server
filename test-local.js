@@ -628,6 +628,39 @@ async function run() {
     has("flow9g: greeting+instruction still a suggestion", s2, "modification en cours");
   }
 
+  // Flow 9h — Fix AJ (2026-10-16, Ahmed): EVERY non-command supervisor
+  // message (thanks, question, suggestion) opens with a welcome and ends
+  // with the command list — not only a bare greeting. Marwen's "Merci"
+  // (Oct 16, live) got a bare "El 3afou" with no commands. Commands
+  // themselves stay direct, no welcome padding.
+  {
+    const clinicAJ = { id: "CLINIC_AJ", name: "Clinique AJ" };
+    const n0 = (await stubDb.getSuggestions()).length;
+    const mFr = await bot.processSecretaryText("merci", clinicAJ, "21611111111");
+    has("flow9h: fr thanks -> welcome", mFr, "Bonjour docteur");
+    has("flow9h: fr thanks -> commands", mFr, "Les commandes");
+    const mTn = await bot.processSecretaryText("choukran", clinicAJ, "21611111111");
+    has("flow9h: tn thanks -> welcome", mTn, "Marhba bik docteur");
+    has("flow9h: tn thanks -> commands", mTn, "El commandes");
+    const mAr = await bot.processSecretaryText("شكرا", clinicAJ, "21611111111");
+    has("flow9h: ar thanks -> commands", mAr, "الأوامر");
+    ok("flow9h: thanks not saved as suggestions", (await stubDb.getSuggestions()).length === n0, "no suggestion");
+    const em = await bot.processSecretaryText("👍", clinicAJ, "21611111111");
+    ok("flow9h: emoji stays a mirror", em === "👍", `got: ${em}`);
+    const q1 = await bot.processSecretaryText("chnowa ta3mel tawa?", clinicAJ, "21611111111");
+    has("flow9h: status question -> welcome", q1, "Marhba bik docteur");
+    has("flow9h: status question -> answer", q1, "rendez-vous en cours");
+    has("flow9h: status question -> commands", q1, "El commandes");
+    const q2 = await bot.processSecretaryText("wa9tech el rapport?", clinicAJ, "21611111111");
+    has("flow9h: other question -> welcome", q2, "Marhba bik docteur");
+    has("flow9h: other question -> refusal kept", q2, "Ma najjamch");
+    const sug = await bot.processSecretaryText("badel el message mta3 el tasdi9", clinicAJ, "21611111111");
+    has("flow9h: suggestion -> welcome first", sug, "Marhba bik docteur");
+    has("flow9h: suggestion -> ack kept", sug, "modification en cours");
+    const lst = await bot.processSecretaryText("list", clinicAJ, "21611111111");
+    ok("flow9h: command stays direct (no welcome)", !/Marhba bik docteur|Bonjour docteur/.test(lst), `got: ${String(lst).slice(0, 80)}`);
+  }
+
   // Flow 9f — webhook signature verification (2026-10-08): only Meta can POST
   {
     const crypto = require("crypto");
