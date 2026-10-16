@@ -5038,9 +5038,27 @@ async function processSecretaryText(text, clinic, from) {
   // command and not a suggestion — acknowledge politely, claim no action,
   // and never let it consume a pending doctor answer. EXACT matches only:
   // a real instruction ("badel el message…") still files as a suggestion.
+  // Fix AJ (2026-10-16, Ahmed): the welcome + command list is the rule for
+  // EVERY non-command supervisor message — greeting (Fix AH), thanks, or a
+  // question — not only a bare greeting. Marwen wrote "Merci" the morning
+  // after Fix AH shipped and got a bare "El 3afou" with no commands; Ahmed:
+  // "kol ma el superviseur ykallem el bot, yebda bel tarhib w ykammel bel
+  // commandes mte3ou." Real commands (ok / le / list / rapport / wasel)
+  // stay direct, with no welcome padding.
+  const SUP_WELCOME = { fr: "Bonjour docteur 👋", ar: "مرحبا دكتور 👋", tn: "Marhba bik docteur 👋" };
+  const SUP_CMDS = {
+    fr: "Les commandes : 'ok <numero>' pour valider un rendez-vous, 'le <numero>' pour l'annuler, 'list' pour les rendez-vous en attente, 'rapport' pour le rapport du jour.",
+    ar: "الأوامر: 'ok <الرقم>' لتأكيد موعد، 'le <الرقم>' لإلغائه، 'list' للمواعيد في الانتظار، 'rapport' لتقرير اليوم.",
+    tn: "El commandes: 'ok <numero>' bech tvalidi rendez-vous, 'le <numero>' bech tfass5ou, 'list' bech tchouf el pending, 'rapport' lel rapport mta3 el youm.",
+  };
+  const supLangOf = (txt) => (/[\u0600-\u06FF]/.test(txt) ? "ar"
+    : /\b(salut|bonjour|bonsoir|merci|combien|rendez-vous|attente|valider|annuler)\b/i.test(txt) ? "fr" : "tn");
   const smalltalk = t.toLowerCase().replace(/[\s.!]+$/g, "");
-  if (/^(merci( beaucoup)?|choukran( barcha)?|chokran|شكرا|شكراً|thanks|thank you|bravo|parfait|super|excellent|très bien|tres bien|ya3tik el sa77a|yaatik el saha|barakallahou fik|بارك الله فيك|👍|👌|🙏|❤️|🌸)$/.test(smalltalk)) {
-    return /^(👍|👌|🙏|❤️|🌸)$/.test(smalltalk) ? "👍" : "El 3afou, marhba bik fi kol wa9t. 🌸";
+  if (/^(👍|👌|🙏|❤️|🌸)$/.test(smalltalk)) return "👍";
+  if (/^(merci( beaucoup)?|choukran( barcha)?|chokran|شكرا|شكراً|thanks|thank you|bravo|parfait|super|excellent|très bien|tres bien|ya3tik el sa77a|yaatik el saha|barakallahou fik|بارك الله فيك)$/.test(smalltalk)) {
+    if (/شكرا|شكراً|بارك الله فيك/.test(smalltalk)) return SUP_WELCOME.ar + " العفو. " + SUP_CMDS.ar;
+    if (/^(merci|bravo|parfait|super|excellent|très bien|tres bien)/.test(smalltalk)) return SUP_WELCOME.fr + " Avec plaisir. " + SUP_CMDS.fr;
+    return SUP_WELCOME.tn + " El 3afou. " + SUP_CMDS.tn;
   }
   // Fix AH (2026-10-15, live): a pure GREETING from the supervisor
   // ("Salut" — Marwen, testing the line from abroad) fell into the
@@ -5075,7 +5093,8 @@ async function processSecretaryText(text, clinic, from) {
       const pending = await db.getPendingBookings(clinic && clinic.id).catch(() => []);
       const day = todayInTunis();
       const todays = await db.getBookingsForDay(clinic && clinic.id, day).catch(() => []);
-      return `El tawa: ${pending.length} rendez-vous en cours, ${todays.length} lyoum (${day}).`;
+      const supL = supLangOf(t);
+      return `${SUP_WELCOME[supL]} El tawa: ${pending.length} rendez-vous en cours, ${todays.length} lyoum (${day}). ${SUP_CMDS[supL]}`;
     }
     // Fix X (SP8): a COUNT question about a specific day ("9adech men
     // rendez-vous ghodwa?") is answered from that day's bookings — it
@@ -5088,16 +5107,16 @@ async function processSecretaryText(text, clinic, from) {
       if (/(ghodwa|ghadwa|demain|غدوة|غدا)/i.test(t)) {
         const tmStr = new Date(dates.tunisNow().getTime() + 86400000).toISOString().slice(0, 10);
         const toms = await db.getBookingsForDay(clinic && clinic.id, tmStr).catch(() => []);
-        return `Ghodwa (${fmtD(tmStr)}): ${toms.length} rendez-vous.`;
+        return `${SUP_WELCOME[supLangOf(t)]} Ghodwa (${fmtD(tmStr)}): ${toms.length} rendez-vous. ${SUP_CMDS[supLangOf(t)]}`;
       }
       if (/(lyoum|elyoum|aujourd|اليوم)/i.test(t)) {
         const todays = await db.getBookingsForDay(clinic && clinic.id, todayStr).catch(() => []);
-        return `Lyoum (${fmtD(todayStr)}): ${todays.length} rendez-vous.`;
+        return `${SUP_WELCOME[supLangOf(t)]} Lyoum (${fmtD(todayStr)}): ${todays.length} rendez-vous. ${SUP_CMDS[supLangOf(t)]}`;
       }
       const pending = await db.getPendingBookings(clinic && clinic.id).catch(() => []);
-      return `Fama ${pending.length} rendez-vous en cours.`;
+      return `${SUP_WELCOME[supLangOf(t)]} Fama ${pending.length} rendez-vous en cours. ${SUP_CMDS[supLangOf(t)]}`;
     }
-    return "Ma najjamch njeweb 3la el sou2el hetha. El commandes: ok <numero>, le <numero>, list, rapport.";
+    return SUP_WELCOME[supLangOf(t)] + " Ma najjamch njeweb 3la el sou2el hetha. El commandes: ok <numero>, le <numero>, list, rapport.";
   }
   // 2026-10-09: pending doctor answer. The supervisor's free-text reply is the
   // doctor's answer to the patient's escalated question — forward it, don't
@@ -5127,7 +5146,7 @@ async function processSecretaryText(text, clinic, from) {
     await db.saveSuggestion(clinic.id, from || null, t).catch(() => {});
     console.log(`[suggestion] saved from ${from || "?"} (${clinic.id})`);
   }
-  return "Ok, modification en cours ✅\n(Ekteb: 'ok <numero>' bech tvalidi, 'le <numero>' bech tl4i, 'list' bech tchouf el pending.)";
+  return SUP_WELCOME[supLangOf(t)] + "\nOk, modification en cours ✅\n(Ekteb: 'ok <numero>' bech tvalidi, 'le <numero>' bech tl4i, 'list' bech tchouf el pending, 'rapport' lel rapport mta3 el youm.)";
 }
 
 async function settleBooking(id, approve, clinic) {
