@@ -426,7 +426,18 @@ async function run() {
       clinicName: "Cabinet Test", dateLabel: "2026-10-08",
       bookings: [{ slot_at: "2026-10-08T09:00:00", slot: "08-10-2026, 09:00", patient_name: "Ahmed", phone: "21600000001", status: "confirmed" }],
     });
-    ok("flow9c: pdf with booking", withB.length > empty.length, `${withB.length} vs ${empty.length}`);
+    // Content check (2026-10-21): file LENGTH is an invalid proxy here — the
+    // empty-state sentence is longer than one booking line and both PDFs land
+    // at exactly 1481 bytes (verified in isolation). Decode the FlateDecode
+    // streams + hex glyph strings and assert the booking is actually rendered.
+    const zlib9c = require("zlib");
+    const pdfText9c = (buf) => {
+      const s = buf.toString("latin1"); const parts = []; let m; const re = /stream\r?\n/g;
+      while ((m = re.exec(s))) { const st = m.index + m[0].length; let en = s.indexOf("endstream", st); if (en < 0) break; let ee = en; if (s[ee - 1] === "\n") ee--; if (s[ee - 1] === "\r") ee--; try { parts.push(zlib9c.inflateSync(Buffer.from(s.slice(st, ee), "latin1")).toString("latin1")); } catch (e) {} }
+      return [...parts.join("\n").matchAll(/<([0-9a-fA-F]+)>/g)].map((x) => Buffer.from(x[1], "hex").toString("latin1")).join("");
+    };
+    const txtEmpty9c = pdfText9c(empty), txtWith9c = pdfText9c(withB);
+    ok("flow9c: pdf with booking", txtWith9c.includes("Ahmed") && txtWith9c.includes("Rendez-vous: 1") && !txtEmpty9c.includes("Ahmed"), `decoded withB ${txtWith9c.length} chars vs empty ${txtEmpty9c.length}`);
     // Command path: supervisor asks "rapport" -> confirmation text mentions PDF.
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Tunis", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     await stubDb.saveBooking("21600000002", `${day} 10:00`, `${day}T10:00:00`, "Meriem", "CLINIC1");
@@ -2379,11 +2390,14 @@ async function run() {
     const last = signups[signups.length - 1];
     ok("S21: signup saved kind=clinic", last && last.kind === "clinic" && /Trabelsi/i.test(last.name), JSON.stringify(last));
 
-    // Qualify no -> patient redirect, nothing sold.
+    // Qualify no -> patient intake (2026-10-21: the NOTOWNER dead-end is
+    // replaced by the patient branch — full coverage in PART V).
     const r1 = await vix("vixN1", "3aslema");
     const r2 = await vix("vixN1", "le");
-    has("S21: non-owner redirected", r2, "propriétaires des cliniques");
-    ok("S21: non-owner sells nothing", !/blech|pitch|esm/i.test(r2) || /3iyada mte3ek direct/.test(r2), r2.slice(0, 80));
+    has("S21: non-owner -> patient greeting", r2, "nnaDHmoulek el dossier");
+    has("S21: non-owner -> intake asks name", r2, "chnowa esmek?");
+    const r2s = await stubDb.getVendorLead("vixN1");
+    ok("S21: non-owner -> vpat_ask_name", r2s && r2s.stage === "vpat_ask_name", r2s && r2s.stage);
 
     // Unclear -> re-ask.
     await vix("vixU1", "salam");
@@ -2487,13 +2501,15 @@ async function run() {
     const w8e = await vix("vixT3", "3aslema");
     has("S21: '3aslema' not a time", w8e, "10 d9aye9");
 
-    // "ma3andich clinique" is a denial, not a clinic name -> not-owner redirect.
+    // "ma3andich clinique" is a denial, not a clinic name -> patient intake
+    // (2026-10-21: replaces the not-owner dead-end; the given name is kept).
     await stubDb.saveVendorLead("vixC1", "vixa_ask_clinic",
       JSON.stringify({ lang: "latin", name: "Ahmed" }));
     const w8f = await vix("vixC1", "ma3andich clinique");
-    has("S21: denies clinic -> not-owner", w8f, "propriétaires");
+    has("S21: denies clinic -> patient intake", w8f, "Toskon win?");
     const w8fs = await stubDb.getVendorLead("vixC1");
-    ok("S21: denies clinic clears lead", !w8fs || !w8fs.stage, w8fs && w8fs.stage);
+    ok("S21: denies clinic -> vpat_ask_residence", w8fs && w8fs.stage === "vpat_ask_residence", w8fs && w8fs.stage);
+    ok("S21: denies clinic keeps name", w8fs && JSON.parse(w8fs.clinic_name || "{}").name === "Ahmed", w8fs && w8fs.clinic_name);
 
     // A real clinic name still advances.
     await stubDb.saveVendorLead("vixC2", "vixa_ask_clinic",
@@ -2861,6 +2877,174 @@ async function run() {
     ok("S32: fr walkin detector", bot.looksLikeWalkin("je peux venir sans rendez-vous ?") === true);
     ok("S32: fr cancel detector", bot.looksLikeCancellation("je veux annuler mon rendez-vous") === true);
     ok("S32: derja reschedule not stolen by fr", bot.looksLikeReschedule("n7eb nbadal el rendez-vous") === true);
+  }
+
+  // ---- PART V — VIXA PATIENT INTAKE (2026-10-21): the patient branch of
+  // the 53/VIXA number. A patient is never sold to and never dead-ended:
+  // deterministic case intake (name -> residence -> specialty -> city ->
+  // case -> documents -> constraints -> summary -> confirm), supervisor
+  // notified with the full structured case on completion. Red lines: no
+  // medical advice, no doctor named, no price, no tight timeframe. ----
+  {
+    const VIXA = "21652999999";
+    const vp = async (ph, txt, disp) => bot.processPatientText(ph, txt, undefined, disp === undefined ? VIXA : disp);
+    const stageOf = async (ph) => { const l = await stubDb.getVendorLead(ph); return l && l.stage; };
+    const dataOf = async (ph) => { const l = await stubDb.getVendorLead(ph); try { return JSON.parse((l && l.clinic_name) || "{}"); } catch { return {}; } };
+    const textSendsTo = (to) => fetchCalls
+      .filter((x) => String(x.url).includes("/messages"))
+      .map((x) => { try { return JSON.parse(x.opts.body); } catch { return null; } })
+      .filter((b) => b && b.type === "text" && b.to === to);
+
+    // V1 — trigger (a): qualify "le" -> intake, never the dead-end.
+    await vp("vptA1", "slm");
+    const t1 = await vp("vptA1", "le");
+    has("V1: qualify le -> patient greeting", t1, "nnaDHmoulek el dossier");
+    ok("V1: never the NOTOWNER dead-end", !/propriétaires des cliniques|مخصص لأصحاب العيادات/.test(t1), t1.slice(0, 80));
+    ok("V1: stage vpat_ask_name", (await stageOf("vptA1")) === "vpat_ask_name", await stageOf("vptA1"));
+
+    // V2 — trigger (b): first message seeks a doctor in Tunisia (Latin).
+    const t2 = await vp("vptB1", "nlawej 3la tbib asnen fi tounes lel implants");
+    has("V2: seeking -> patient greeting", t2, "nnaDHmoulek el dossier");
+    ok("V2: greeting is not the owner pitch", !/lel 3iyada mte3ek/.test(t2), t2.slice(0, 80));
+    ok("V2: stage vpat_ask_name", (await stageOf("vptB1")) === "vpat_ask_name", await stageOf("vptB1"));
+
+    // V3 — trigger (b) in French -> French intake.
+    const t3 = await vp("vptB2", "je cherche un dentiste en Tunisie pour des implants");
+    has("V3: french seeking -> french greeting", t3, "Nous organisons votre dossier médical");
+    ok("V3: lang fr stored", (await dataOf("vptB2")).lang === "fr", JSON.stringify(await dataOf("vptB2")));
+
+    // V4 — detectors: seeking vs advice vs owner phrases.
+    ok("V4: unit signal seeking", bot.vixaPatientSignal("nlawej 3la tbib fi tounes") === true);
+    ok("V4: unit signal owner-safe", bot.vixaPatientSignal("b9adech el ichtirak?") === false);
+    ok("V4: unit signal symptom-only safe", bot.vixaPatientSignal("3andi wji3a kbira fel senna") === false);
+    ok("V4: unit advice question", bot.vpatAdviceAsk("chnowa el dwe lel wji3a?") === true);
+    ok("V4: unit meds mention is not advice", bot.vpatAdviceAsk("na5ou fi dwe el damm mel 2020") === false);
+    ok("V4: unit confirm", bot.vpatIsConfirm("s7i7") === true && bot.vpatIsConfirm("el mdina ghalta") === false);
+    ok("V4: unit fieldOf city", bot.vpatFieldOf("el mdina ghalta") === "city");
+
+    // V5 — FULL Arabic-script walk-through to COMPLETE + supervisor notified.
+    // Driven with the real 53 phone_number_id (like S23 drives Mahjoub's):
+    // only then does the supervisor send carry a number id and hit the
+    // (mocked) Graph API — in production the webhook always supplies it.
+    const vpId = async (ph, txt) => bot.processPatientText(ph, txt, "1322286220971446", VIXA);
+    fetchCalls.length = 0;
+    const A = "vptAR1";
+    await vpId(A, "عسلامة");
+    let r = await vpId(A, "لا");
+    has("V5: ar qualify la -> ar patient greeting", r, "ننظّمولك ملفّك الطبي");
+    has("V5: ar greeting asks name", r, "شنوة اسمك؟");
+    ok("V5: stage vpat_ask_name", (await stageOf(A)) === "vpat_ask_name", await stageOf(A));
+    r = await vpId(A, "فاطمة بن علي");
+    has("V5: ar name -> residence Q", r, "تسكن فين؟");
+    r = await vpId(A, "ليبيا، طرابلس");
+    has("V5: ar residence -> specialty Q", r, "الاختصاص ولا العملية");
+    r = await vpId(A, "عملية غدة درقية");
+    has("V5: ar specialty -> city Q", r, "مدينة معينة في تونس");
+    r = await vpId(A, "تونس العاصمة");
+    has("V5: ar city -> case Q", r, "احكيلي على حالتك");
+    r = await vpId(A, "عندي عقدة كبيرة في الغدة من 2022 وعملت تحاليل وتصوير");
+    has("V5: ar case -> docs Q", r, "تقارير، تحاليل ولا تصوير");
+    r = await vpId(A, "[media:image]");
+    has("V5: ar media counted at docs step", r, "وصلت الوثيقة");
+    ok("V5: docs count = 1", (await dataOf(A)).docs === 1, JSON.stringify(await dataOf(A)));
+    ok("V5: media keeps docs stage", (await stageOf(A)) === "vpat_ask_docs", await stageOf(A));
+    r = await vpId(A, "كملت");
+    has("V5: ar docs done -> constraints Q", r, "آخر سؤال قبل الملخّص");
+    r = await vpId(A, "التقسيط مهم ونحب طبيبة مراة");
+    has("V5: ar constraints -> summary", r, "ملخّص ملفّك");
+    has("V5: summary shows specialty", r, "عملية غدة درقية");
+    has("V5: summary shows docs count", r, "1 وثائق مبعوثة");
+    r = await vpId(A, "صحيح");
+    has("V5: ar confirm -> closing", r, "ملفّك تأكّد");
+    has("V5: closing promises written reply + estimate", r, "ردّ مكتوب وتقدير سعر");
+    ok("V5: closing quotes no price", !/\d+\s*(DT|dt|dinar|€|\$)/.test(r), r.slice(0, 100));
+    ok("V5: stage vpat_done", (await stageOf(A)) === "vpat_done", await stageOf(A));
+    const notif = textSendsTo("17174204057").map((b) => (b.text && b.text.body) || "").join("\n");
+    ok("V5: supervisor notified", /7ala maridh jdida/.test(notif), notif.slice(0, 80));
+    ok("V5: notification carries name", notif.includes("فاطمة بن علي"), notif.slice(0, 140));
+    ok("V5: notification carries specialty", notif.includes("عملية غدة درقية"), notif.slice(0, 140));
+    ok("V5: notification carries docs count", /El watha2e9: 1/.test(notif), notif.slice(0, 200));
+
+    // V6 — after completion: status line, no duplicate case.
+    r = await vpId(A, "فما جديد؟");
+    has("V6: follow-up -> status line", r, "ملفّك عند المختصّين");
+    ok("V6: still vpat_done", (await stageOf(A)) === "vpat_done", await stageOf(A));
+
+    // V7 — FULL Latin walk-through: mid-flow medical question (red line,
+    // flow continues), emergency line, summary correction, confirm.
+    const B = "vptLT1";
+    r = await vp(B, "nlawej 3la dentiste fi sousse");
+    has("V7: latin seeking -> greeting", r, "nnaDHmoulek el dossier");
+    r = await vp(B, "Karim Haddad");
+    has("V7: name -> residence Q", r, "Toskon win?");
+    r = await vp(B, "Algerie, Alger");
+    has("V7: residence -> specialty Q", r, "e5tisas walla el 3amaliya");
+    r = await vp(B, "chnowa el dwe lel wji3a?");
+    has("V7: advice -> red line", r, "ma njewbch 3la as2ila tibbiya");
+    has("V7: advice -> specialty re-asked", r, "e5tisas walla el 3amaliya");
+    ok("V7: advice keeps stage", (await stageOf(B)) === "vpat_ask_specialty", await stageOf(B));
+    ok("V7: question noted for the doctors", ((await dataOf(B)).questions || []).length === 1, JSON.stringify(await dataOf(B)));
+    r = await vp(B, "zar3 asnen, implants");
+    has("V7: specialty -> city Q", r, "T7eb mdina mou3ayna");
+    r = await vp(B, "kif kif");
+    has("V7: city -> case Q", r, "A7kili 3la 7altek");
+    r = await vp(B, "manajmch netnafes tawa");
+    has("V7: emergency -> safety line", r, "7ala est3jaliya");
+    has("V7: emergency -> case step kept", r, "A7kili 3la 7altek");
+    ok("V7: emergency keeps stage", (await stageOf(B)) === "vpat_ask_case", await stageOf(B));
+    r = await vp(B, "na5ou fi dwe el damm mel 2020, w 5ayef mel 3amaliya");
+    has("V7: case (meds mention ok) -> docs Q", r, "ta9arir, t7alil walla tasawir");
+    r = await vp(B, "ma3andich");
+    has("V7: no docs -> constraints Q", r, "E5er sou2el 9bal el moula55as");
+    r = await vp(B, "le");
+    has("V7: constraints none -> summary", r, "Moula55as dossierek");
+    has("V7: summary shows name", r, "Karim Haddad");
+    has("V7: summary notes doctor question", r, "As2ila lel atibba");
+    r = await vp(B, "el mdina ghalta");
+    has("V7: correction -> asks the value", r, "ekteb el mdina el mofadla bel s7i7");
+    ok("V7: stage vpat_fix_value", (await stageOf(B)) === "vpat_fix_value", await stageOf(B));
+    r = await vp(B, "Sousse");
+    has("V7: fixed -> summary again", r, "Moula55as dossierek");
+    has("V7: summary shows corrected city", r, "Sousse");
+    ok("V7: back at confirm", (await stageOf(B)) === "vpat_confirm", await stageOf(B));
+    r = await vp(B, "s7i7");
+    has("V7: confirm -> closing", r, "Dossierek t2akked");
+    ok("V7: closing quotes no price", !/\d+\s*(DT|dt|dinar|€|\$)/.test(r), r.slice(0, 100));
+    ok("V7: stage vpat_done", (await stageOf(B)) === "vpat_done", await stageOf(B));
+
+    // V8 — French: bonjour -> "non" at qualify -> French intake.
+    const C = "vptFR1";
+    await vp(C, "Bonjour");
+    r = await vp(C, "non");
+    has("V8: fr non -> french patient greeting", r, "Nous organisons votre dossier médical");
+    has("V8: fr greeting asks name", r, "quel est votre nom ?");
+    r = await vp(C, "Marie Dupont");
+    has("V8: fr name -> residence Q", r, "Vous habitez où ?");
+
+    // V9 — cancel mid-intake clears the case.
+    const D = "vptCX1";
+    await vp(D, "nlawej 3la tbib 9alb fi tounes");
+    await vp(D, "Sami Ayadi");
+    ok("V9: intake running", (await stageOf(D)) === "vpat_ask_residence", await stageOf(D));
+    r = await vp(D, "sayeb 3laya");
+    has("V9: dismissal -> cancel line", r, "l4it el dossier");
+    ok("V9: case cleared", !(await stageOf(D)), await stageOf(D));
+
+    // V10 — owner path untouched (mirror of S21): ey -> pitch -> lead flow.
+    const E = "vptOWN1";
+    await vp(E, "slm");
+    r = await vp(E, "ey");
+    has("V10: owner pitch intact", r, "blech");
+    ok("V10: owner stage intact", (await stageOf(E)) === "vixa_ask_name", await stageOf(E));
+
+    // V11 — wrong verticals: the intake never fires on salon/dentist numbers.
+    await stubDb.saveVendorLead("vptS1", "vpat_ask_name", JSON.stringify({ lang: "latin" }));
+    const s1 = await bot.processPatientText("vptS1", "slm", undefined, "21653180566");
+    has("V11: salon number stays salon", s1, "Assistant Salon");
+    ok("V11: salon shows no intake", !/nnaDHmoulek/.test(s1), s1.slice(0, 60));
+    ok("V11: salon does not advance the intake", (await stageOf("vptS1")) === "vpat_ask_name", await stageOf("vptS1"));
+    const d1 = await bot.processPatientText("vptD1", "nlawej 3la tbib fi tounes");
+    ok("V11: dentist number shows no intake", !/nnaDHmoulek el dossier/.test(d1 || ""), (d1 || "").slice(0, 60));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
