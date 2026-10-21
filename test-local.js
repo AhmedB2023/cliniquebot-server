@@ -2350,8 +2350,10 @@ async function run() {
 
     // Greeting -> VIXA + qualify state.
     const g1 = await vix("vixG1", "slm");
-    has("S21: greeting says VIXA", g1, "Assistant VIXA");
-    has("S21: greeting qualifies", g1, "3iyada/cabinet?");
+    // Patient-first copy (2026-10-21, Ahmed-approved): the greeting leads with
+    // the patient fork; these two assertions track the new approved text.
+    has("S21: greeting says VIXA", g1, "fi VIXA");
+    has("S21: greeting qualifies", g1, "«3iyada»");
     const g1s = await stubDb.getVendorLead("vixG1");
     ok("S21: greeting saves vixa_qualify", g1s && g1s.stage === "vixa_qualify", g1s && g1s.stage);
 
@@ -2421,7 +2423,7 @@ async function run() {
 
     // French: qualify -> oui -> French pitch (gratuit, no price).
     const f1 = await vix("vixF1", "Bonjour");
-    has("S21: french qualify", f1, "une clinique ? (oui/non)");
+    has("S21: french qualify", f1, "« clinique »");
     const f2 = await vix("vixF1", "oui");
     has("S21: french pitch gratuit", f2, "gratuit");
     ok("S21: french pitch no price", !/\d+\s*(DT|dt|€)/.test(f2), f2.slice(0, 100));
@@ -3045,6 +3047,35 @@ async function run() {
     ok("V11: salon does not advance the intake", (await stageOf("vptS1")) === "vpat_ask_name", await stageOf("vptS1"));
     const d1 = await bot.processPatientText("vptD1", "nlawej 3la tbib fi tounes");
     ok("V11: dentist number shows no intake", !/nnaDHmoulek el dossier/.test(d1 || ""), (d1 || "").slice(0, 60));
+
+    // V12 — patient-first greeting + fork words (2026-10-21): the first
+    // message offers both sides; a short fork reply routes without ey/le.
+    const F1 = "vptFRK1";
+    r = await vp(F1, "slm");
+    has("V12: greeting offers the patient fork", r, "«maridh»");
+    has("V12: greeting offers the clinic fork", r, "«3iyada»");
+    ok("V12: greeting is patient-first (no owner-pitch opener)", !/n3awen les cliniques/.test(r), r.slice(0, 60));
+    r = await vp(F1, "maridh");
+    ok("V12: fork «maridh» -> intake", (await stageOf(F1)) === "vpat_ask_name", await stageOf(F1));
+    has("V12: intake opens after fork", r, "chnowa esmek");
+    const F2 = "vptFRK2";
+    await vp(F2, "slm");
+    r = await vp(F2, "3iyada");
+    has("V12: fork «3iyada» -> owner pitch", r, "blech");
+    ok("V12: fork «3iyada» -> lead flow", (await stageOf(F2)) === "vixa_ask_name", await stageOf(F2));
+    const F3 = "vptFRK3";
+    r = await vp(F3, "سلام");
+    has("V12: AR greeting offers «مريض»", r, "«مريض»");
+    r = await vp(F3, "مريض");
+    ok("V12: fork «مريض» -> intake", (await stageOf(F3)) === "vpat_ask_name", await stageOf(F3));
+    const F4 = "vptFRK4";
+    await vp(F4, "salut");
+    r = await vp(F4, "patient");
+    ok("V12: FR fork «patient» -> intake", (await stageOf(F4)) === "vpat_ask_name", await stageOf(F4));
+    const F5 = "vptFRK5";
+    await vp(F5, "salut");
+    r = await vp(F5, "clinique");
+    ok("V12: FR fork «clinique» -> lead flow", (await stageOf(F5)) === "vixa_ask_name", await stageOf(F5));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
