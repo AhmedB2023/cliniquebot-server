@@ -549,12 +549,17 @@ async function notifySales(text) {
 // patients asking for them are handed to the secretary, never booked by bot.
 // Shared VIXA sales greeting (used by the id seed and the display-number
 // seed below — one source of truth so they can never drift apart).
+// Patient-first greeting (2026-10-21, Ahmed's call): the 53 line's job is now
+// catching patients, so the fork is explicit in the FIRST message — «maridh»
+// routes to the intake, «3iyada» to the owner flow (see vixaForkSide).
 const VIXA_GREETING =
-  "Ahla w sahla! 👋 Ena Assistant VIXA — n3awen les cliniques fi Tounes bech yjewbou 3la les patients mte3hom 3la WhatsApp.\n" +
-  "Enti tbib walla 3andek 3iyada/cabinet? (ey / le)";
+  "Ahla w sahla bik fi VIXA! 👋\n" +
+  "• Tlawej 3la 3ilej walla 3amaliya fi Tounes? Ekteb «maridh» walla a7kili 3la 7altek — nnaDHmoulek dossierek blech w neb3athouh l atibba mou5tassin, w yerja3lek rad maktoub w ta9dir soum.\n" +
+  "• Enti tbib walla 3andek 3iyada w t7eb el assistant lel 3iyada mte3ek? Ekteb «3iyada».";
 const VIXA_GREETING_AR =
-  "أهلا وسهلا! 👋 أنا مساعد VIXA — نعاون العيادات في تونس باش يجاوبو على المرضى متاعهم على واتساب.\n" +
-  "انتي طبيب ولا عندك عيادة؟ (أي / لا)";
+  "أهلا وسهلا بيك في VIXA! 👋\n" +
+  "• تلوّج على علاج ولا عملية في تونس؟ اكتب «مريض» ولا احكيلي على حالتك — ننظّمولك ملفّك بلاش ونبعثوه لأطباء مختصّين، ويرجعولك ردّ مكتوب وتقدير سعر.\n" +
+  "• انتي طبيب ولا عندك عيادة وتحب المساعد للعيادة متاعك؟ اكتب «عيادة».";
 
 const SEED_CLINICS = {};
 // DENTIST PILOT (2026-10-07): Dr Issam Mahjoub's config, shared by the
@@ -4072,8 +4077,9 @@ function vixaOwnerPitchFr() {
 }
 
 function vixaFrenchFallback() {
-  return "Salut ! 🏥 Je suis Assistant VIXA — un assistant WhatsApp pour les cliniques en Tunisie.\n" +
-    "Vous êtes médecin / vous avez une clinique ? (oui/non)";
+  return "Salut ! 🏥 Bienvenue chez VIXA.\n" +
+    "• Vous cherchez un traitement ou une intervention en Tunisie ? Écrivez « patient » ou décrivez votre cas — nous organisons votre dossier gratuitement et l'envoyons à des spécialistes ; vous recevez une réponse écrite et une estimation.\n" +
+    "• Vous êtes médecin / vous avez une clinique et vous voulez l'assistant pour votre clinique ? Écrivez « clinique ».";
 }
 
 // ---------- VIXA lead capture (clinic owner wants the assistant) ----------
@@ -4713,13 +4719,34 @@ function vixaYesNo(text) {
   return null;
 }
 
+// Patient-first fork (2026-10-21): SHORT replies only (<= 4 words) naming a
+// side of the greeting's fork — «مريض»/maridh/patient -> patient intake,
+// «عيادة»/3iyada/clinique/cabinet -> clinic-owner flow. Long texts return
+// null here: a case description mentioning a doctor is never read as the
+// clinic side (the patient-signal check below handles those).
+function vixaForkSide(text) {
+  const t = " " + String(text || "").toLowerCase().trim() + " ";
+  if (t.trim().split(/\s+/).filter(Boolean).length > 4) return null;
+  if (/(مريض|مريضة|maridh|maridha|patient|patiente)/.test(t)) return "patient";
+  if (/(عيادة|عياده|3iyada|3iyeda|clinique|cabinet)/.test(t)) return "clinic";
+  return null;
+}
+
 async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
   // The qualify question's language rides in the lead data ("oui"/"non" alone
   // are not detectable as French by the word-list detector).
   const lang = (lead && vixaLeadData(lead).lang) || (ar ? "ar" : "latin");
   const fr = lang === "fr";
   // yes/no first: "le" here answers "3andek 3iyada?" (no), it is not a cancel.
-  const yn = vixaYesNo(text);
+  // The greeting's fork words (2026-10-21) count as answers too: a short
+  // «مريض» -> intake, a short «عيادة» -> the owner "yes" branch below.
+  const yn0 = vixaYesNo(text);
+  const fork = yn0 ? null : vixaForkSide(text);
+  if (!yn0 && fork === "patient") {
+    return startVixaPatientIntake(phone, fr ? "fr" : ar ? "ar" : "latin", clinic, null,
+      looksLikeEmergency(text));
+  }
+  const yn = yn0 || (fork === "clinic" ? "yes" : null);
   if (yn === "yes") {
     // Clinic owner -> pitch (blech, no price) -> straight into the lead flow.
     // If the yes came in French ("je suis un dentiste"), pitch in French too.
@@ -4744,8 +4771,9 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
   if (vixaPatientSignal(text) && !vpatAdviceAsk(text))
     return startVixaPatientIntake(phone, vpatLangOf(text, ar), clinic, null, looksLikeEmergency(text));
   // Unclear -> AI nudge (acknowledge + re-ask), no per-message regex.
-  const vqq = fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)"
-    : ar ? "انتي طبيب ولا عندك عيادة؟ (أي / لا)" : "Enti tbib walla 3andek 3iyada? (ey / le)";
+  const vqq = fr ? "Vous cherchez un traitement ? Écrivez « patient » — ou vous êtes médecin / avez une clinique ? Écrivez « clinique »."
+    : ar ? "تلوّج على علاج؟ اكتب «مريض» — ولا انتي طبيب ولا عندك عيادة؟ اكتب «عيادة»."
+    : "Tlawej 3la 3ilej? Ekteb «maridh» — walla enti tbib walla 3andek 3iyada? Ekteb «3iyada».";
   return vixaAiNudge(phone, text, vqq, ar, clinic);
 }
 
