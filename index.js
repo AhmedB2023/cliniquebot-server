@@ -4220,10 +4220,10 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
   }
 
   if (stage === "vixa_ask_clinic") {
-    // "ma3andich clinique" -> not an owner after all: same redirect as "le".
+    // "ma3andich clinique" -> not an owner after all: patient intake
+    // (2026-10-21), keeping the name they already gave as the first field.
     if (vixaDeniesClinic(text)) {
-      await db.clearVendorLead(phone).catch(() => {});
-      return say(phone, lang === "fr" ? VIXA_NOTOWNER_FR : lang === "ar" ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic);
+      return startVixaPatientIntake(phone, lang, clinic, { name: d.name || "" }, false);
     }
     const cn2 = (text || "").trim().slice(0, 80);
     if (!cn2 || cn2.length < 2 || /[?؟]/.test(cn2) || vixaLooksLikeSentence(text))
@@ -4276,6 +4276,426 @@ async function handleVixaLeadTurn(phone, text, lead, ar, clinic) {
     : "El demande mte3ek woslet — bech nettaslou bik 9rib. Ken 3andek sou2el e5er, ekteb houni.", clinic);
 }
 
+// ---------- VIXA PATIENT INTAKE (2026-10-21) ----------
+// The patient branch of the vixa vertical. Until today a patient landing on
+// the VIXA number hit VIXA_NOTOWNER_* — a dead end ("this number is for
+// clinic owners... contact your clinic directly"). Approved replacement
+// (Ahmed, 2026-10-21): the SAME number now runs a deterministic case intake —
+// VIXA organizes the patient's medical file for free and sends it to
+// specialists in Tunisia who accept cases like theirs; the patient gets a
+// written reply + a price estimate back here on WhatsApp before travelling.
+// Stages live in vendor_leads under "vpat_*" (the vixa_* lead stages and the
+// salon_* stages never touch these). Case data rides in the clinic_name
+// column as JSON, exactly like the vixa lead flow.
+// RED LINES (hard): no medical advice or interpretation at any step; no
+// doctor or clinic ever named; no price ever quoted by the bot (estimates
+// come from the specialists, in writing); no timeframe beyond "the coming
+// days". "idari = bot, tibbi = insen" — the bot organizes, doctors answer.
+
+// Seeking care for ONESELF (a doctor / a treatment / an operation), as
+// opposed to asking for medical ADVICE (vpatAdviceAsk below) or owning a
+// clinic (the vixa lead flow). Deliberately narrow: owner phrases, price
+// questions about the subscription and symptom-only messages never match.
+function vixaPatientSignal(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/\b(ena|ana) (patient|maridh|mridh)\b/.test(t)) return true;
+  if (/je suis (un |une )?(patient|malade)/.test(t)) return true;
+  if (/(أنا|انا) (مريض|مريضة)/.test(raw)) return true;
+  if (/(nlawej|nlawech|lawej|n7eb|nheb).{0,40}(tbib|toubib|doktor|docteur|dentiste|specialiste|spécialiste|3ilej|traitement|3amaliya|3amaliyet|opération|operation|implants|zra3|soins|chirurg)/.test(t)) return true;
+  if (/(tbib|toubib|docteur|dentiste|spécialiste|specialiste).{0,30}(fi tounes|en tunisie|a tunis|à tunis)/.test(t)) return true;
+  if (/(je cherche|je recherche|je voudrais|je veux|je souhaite).{0,40}(dentiste|médecin|medecin|docteur|spécialiste|specialiste|chirurgien|traitement|soins|opération|operation|implants|greffe)/.test(t)) return true;
+  if (/me faire (soigner|opérer|operer)/.test(t)) return true;
+  if (/(نلوّج|نلوج|نبحث|نحب|نريد).{0,25}(طبيب|دكتور|اختصاصي|أخصائي|علاج|عملية|زرع|تقويم)/.test(raw)) return true;
+  if (/(علاج|عملية|زرع أسنان|زرع اسنان).{0,15}(في تونس|بتونس)/.test(raw)) return true;
+  if (/(3ilej|traitement|soins).{0,25}(fi tounes|en tunisie)/.test(t)) return true;
+  return false;
+}
+
+// Asking for medical ADVICE ("what medicine for X", "do I need an
+// operation?") — the red line. Narrow on purpose: a case description that
+// merely MENTIONS medication taken ("na5ou fi dwe el damm") is NOT advice.
+function vpatAdviceAsk(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(chnowa|chneya|chniya).{0,18}(dwe|dawa)/.test(t)) return true;
+  if (/(شنوة|شنو|آش).{0,14}(الدواء|الدوا|علاج|العلاج)/.test(raw)) return true;
+  if (/(quel|quels|quelle).{0,25}(médicament|medicament|traitement|remède|remede)/.test(t)) return true;
+  if (/(dois-je|faut-il|faut il|lazemni|lezemni).{0,30}(opération|operation|3amaliya|عملية|traitement|dwe|na3mel|نعمل)/.test(t)) return true;
+  if (/[?؟]/.test(raw) && /(na5ou|nakhou|ناخذ|je prends|prendre)/.test(t) && /(dwe|dawa|دواء|دوا|médicament|medicament)/.test(t)) return true;
+  return false;
+}
+
+// Intake language: same three worlds as the rest of the vixa flow.
+function vpatLangOf(text, ar) {
+  if (looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text)) return "fr";
+  return ar ? "ar" : "latin";
+}
+
+const VPAT_GREETING = {
+  ar: "أهلاً بيك في VIXA 🏥 نحن ننظّمولك ملفّك الطبي بلاش ونبعثوه لأطباء مختصّين في تونس يقبلوا حالات كيف حالتك، ويرجعولك ردّ مكتوب وتقدير سعر قبل ما تسافر — باش تقرّر على بيّنة.\nنبداو: شنوة اسمك؟",
+  latin: "Ahla bik fi VIXA 🏥 A7na nnaDHmoulek el dossier el tibbi mte3ek blech w neb3athouh l atibba mou5tassin fi Tounes y9ablou 7alet kif 7altek, w yerja3lek rad maktoub w ta9dir soum 9bal ma tsefer — bech t9arrer 3la bayna.\nNabdew: chnowa esmek?",
+  fr: "Bienvenue chez VIXA 🏥 Nous organisons votre dossier médical gratuitement et l'envoyons à des spécialistes en Tunisie qui acceptent des cas comme le vôtre ; vous recevez une réponse écrite et une estimation de prix avant de voyager — pour décider en connaissance de cause.\nOn commence : quel est votre nom ?",
+};
+
+// The question asked AT each stage (advance replies and re-asks share it).
+function vpatAsk(stage, lang, d) {
+  const L = lang || "latin";
+  if (stage === "vpat_ask_name")
+    return L === "fr" ? "Quel est votre nom ?"
+      : L === "ar" ? "شنوة اسمك؟" : "Chnowa esmek?";
+  if (stage === "vpat_ask_residence")
+    return L === "fr" ? "Vous habitez où ? (pays et ville)"
+      : L === "ar" ? "تسكن فين؟ (البلد والمدينة)" : "Toskon win? (el balad wel mdina)";
+  if (stage === "vpat_ask_specialty")
+    return L === "fr" ? "Quelle spécialité ou intervention cherchez-vous ? (ex : implants dentaires, opération de la thyroïde, prothèse de hanche...)"
+      : L === "ar" ? "شنوة الاختصاص ولا العملية اللّي تلوّج عليها؟ (مثال: زرع أسنان، عملية غدة درقية، تقويم مفصل...)"
+      : "Chnowa el e5tisas walla el 3amaliya eli tlawej 3liha? (mthel: zar3 asnen, 3amaliyet ghudda dara9iya, ta9wim mefsal...)";
+  if (stage === "vpat_ask_city")
+    return L === "fr" ? "Vous préférez une ville en Tunisie (Tunis, Sousse, Sfax, Djerba...) ou pas de préférence ? Écrivez « aucune » si vous n'en avez pas."
+      : L === "ar" ? "تحب مدينة معينة في تونس (تونس العاصمة، سوسة، صفاقس، جربة...) ولا ما عندكش تفضيل؟ اكتب «كيف كيف» كان ما عندكش تفضيل."
+      : "T7eb mdina mou3ayna fi Tounes (Tounes el 3asma, Sousse, Sfax, Djerba...) walla ma 3andekch tafdhil? Ekteb «kif kif» ken ma 3andekch tafdhil.";
+  if (stage === "vpat_ask_case")
+    return L === "fr" ? "Décrivez votre cas avec vos mots : quel est le problème, depuis quand, et qu'avez-vous déjà fait (analyses, médicaments, opérations) ? Écrivez comme vous le diriez à votre médecin."
+      : L === "ar" ? "احكيلي على حالتك بكلماتك: آش المشكل، من وقتاش، وآش عملت لتوّا (تحاليل، أدوية، عمليات قبل)؟ اكتب كيما تحكي لطبيبك."
+      : "A7kili 3la 7altek b kelmetek: chnowa el mochkla, men wa9tech, w chnowa 3malt le tawa (t7alil, dweyet, 3amaliyet 9bal)? Ekteb kima te7ki l tbibek.";
+  if (stage === "vpat_ask_docs")
+    return L === "fr" ? "Si vous avez des rapports, analyses ou imageries (radio, IRM...), envoyez-les ici en photos ou PDF — ils aident les médecins à vous répondre précisément. Si vous n'avez rien, écrivez « aucun »."
+      : L === "ar" ? "كان عندك تقارير، تحاليل ولا تصوير (راديو، IRM...)، ابعثهم هوني صور ولا PDF — يعاونوا الأطباء يردّوا عليك بدقة. وكان ما عندك حتى شي، اكتب «ما عنديش»."
+      : "Ken 3andek ta9arir, t7alil walla tasawir (radio, IRM...), eb3athom houni tsawer walla PDF — y3awnou el atibba yroddou 3lik b di9a. W ken ma 3andek 7atta chay, ekteb «ma3andich».";
+  if (stage === "vpat_ask_constraints")
+    return L === "fr" ? "Dernière question avant le résumé : des choses à savoir ? Le budget ou le paiement en plusieurs fois comptent pour vous ? Les dates (quand voulez-vous venir) ? Vous préférez une femme médecin ? Autre chose — écrivez-le, ou « non » s'il n'y a rien."
+      : L === "ar" ? "آخر سؤال قبل الملخّص: فمّا حاجات لازم نعرفوها؟ الميزانية ولا التقسيط مهمّين ليك؟ التوقيت (تحب تجي وقتاش)؟ تفضّل طبيبة مراة؟ أي حاجة أخرى — اكتبها، ولا اكتب «لا» كان ما فمّاش."
+      : "E5er sou2el 9bal el moula55as: fama 7ajet lezem na3refouha? El mizaniya walla el ta9sit mouhemmin lik? El taw9it (t7eb tji wa9tech)? Tfadhal tbiba mra? Ay 7aja o5ra — ektebha, walla ekteb «le» ken ma famach.";
+  return "";
+}
+
+const VPAT_MEDICAL = {
+  ar: "السؤال هذا طبي — يدخل في ملفّك والأطباء يجاوبوك عليه في ردّهم المكتوب. أنا ننظّم ملفات، ما نجاوبش على أسئلة طبية.",
+  latin: "El sou2el hetha tibbi — yod5el fi dossierek wel atibba yjewbouk 3lih fi radhom el maktoub. Ena nnaDhem malaffet, ma njewbch 3la as2ila tibbiya.",
+  fr: "Cette question est médicale — elle entre dans votre dossier et les médecins y répondront dans leur réponse écrite. J'organise les dossiers, je ne réponds pas aux questions médicales.",
+};
+
+const VPAT_EMERGENCY = {
+  ar: "⚠️ اللّي تحكي عليه ينجم يكون حالة استعجالية — اتصل بالإسعاف ولا روح لأقرب قسم استعجالات توّا، قبل كل شيء. ملفّك نكملوه بعد ما تطمّن على روحك.",
+  latin: "⚠️ Elli te7ki 3lih ynajem ykoun 7ala est3jaliya — etassel bel es3af walla rou7 l a9reb 9esm est3jelet tawa, 9bal kol chay. Dossierek nkamllouh ba3d ma tet2aman 3la rou7ek.",
+  fr: "⚠️ Ce que vous décrivez peut être une urgence — appelez les secours ou allez aux urgences les plus proches tout de suite, avant tout. On finira votre dossier quand vous serez en sécurité.",
+};
+
+const VPAT_CANCEL = {
+  ar: "ok، لغيت الملف. كان بدلت رايك، اكتبلي وقت ما تحب ونبداو من جديد.",
+  latin: "D'accord, l4it el dossier. Ken badelt rayek, ektebli wa9t ma t7eb w nabdew men jdid.",
+  fr: "D'accord, dossier annulé. Si vous changez d'avis, écrivez-moi quand vous voulez et on recommence.",
+};
+
+const VPAT_CLOSING = {
+  ar: "✅ ملفّك تأكّد. باش ننظّموه ونبعثوه في الأيام الجاية لأطباء مختصّين يقبلوا حالات كيف حالتك. كي يرجع ردّ مكتوب وتقدير سعر من عندهم، يوصلوك هوني على الواتساب — وانت تقرّر بعد. يعطيك الصحة 🙏",
+  latin: "✅ Dossierek t2akked. Bech nnaDHmouh w neb3athouh fel ayem el jeya l atibba mou5tassin y9ablou 7alet kif 7altek. Ki yarja3 rad maktoub w ta9dir soum men 3andhom, youselouk houni 3al WhatsApp — w enti t9arrer ba3d. Ya3tik el sa7a 🙏",
+  fr: "✅ Votre dossier est confirmé. Nous allons l'organiser et l'envoyer dans les jours qui viennent à des spécialistes qui acceptent des cas comme le vôtre. Dès qu'une réponse écrite et une estimation arrivent, vous les recevez ici sur WhatsApp — et c'est vous qui décidez ensuite. Merci 🙏",
+};
+
+const VPAT_FOLLOWUP = {
+  ar: "ملفّك عند المختصّين. كي يرجع أي ردّ مكتوب ولا تقدير سعر، يوصلك هوني مباشرة. كان تحب تزيد معلومة على ملفّك ابعثها هوني، وكان عندك حالة جديدة اكتب «حالة جديدة».",
+  latin: "Dossierek 3and el mou5tassin. Ki yarja3 ay rad maktoub walla ta9dir soum, youselek houni direct. Ken t7eb tzid ma3louma 3la dossierek eb3atha houni, w ken 3andek 7ala jdida ekteb «7ala jdida».",
+  fr: "Votre dossier est chez les spécialistes. Dès qu'une réponse écrite ou une estimation arrive, vous la recevez ici directement. Pour ajouter une information à votre dossier, envoyez-la ici ; pour un nouveau cas, écrivez « nouveau cas ».",
+};
+
+const VPAT_FIXWHICH = {
+  ar: "شنوة نبدّل؟ قولي: الاسم، السكن، الاختصاص، المدينة المفضلة، الحالة، الوثائق، ولا الطلبات؟",
+  latin: "Chnowa nbadel? 9olli: el esm, el sakan, el e5tisas, el mdina el mofadla, el 7ala, el watha2e9, walla el talabet?",
+  fr: "Qu'est-ce qu'on corrige ? Dites-moi : le nom, la résidence, la spécialité, la ville préférée, le cas, les documents, ou les demandes ?",
+};
+
+function vpatDocsDisplay(lang, d) {
+  const n = d.docs || 0;
+  if (!n) return lang === "fr" ? "aucun" : lang === "ar" ? "ما عندوش" : "ma 3andouch";
+  return lang === "fr" ? `${n} document(s) envoyé(s)`
+    : lang === "ar" ? `${n} وثائق مبعوثة` : `${n} watha2e9 teb3atou`;
+}
+
+function vpatSummary(lang, d) {
+  const L = lang || "latin";
+  const head = L === "fr" ? "📋 Résumé de votre dossier :"
+    : L === "ar" ? "📋 ملخّص ملفّك:" : "📋 Moula55as dossierek:";
+  const rows = L === "fr" ? [
+    `• Nom : ${d.name || "—"}`,
+    `• Résidence : ${d.residence || "—"}`,
+    `• Vous cherchez : ${d.specialty || "—"}`,
+    `• Ville préférée : ${d.city || "—"}`,
+    `• Votre cas : ${d.caseText || "—"}`,
+    `• Documents : ${vpatDocsDisplay(L, d)}`,
+    `• Vos demandes : ${d.constraints || "—"}`,
+  ] : L === "ar" ? [
+    `• الاسم: ${d.name || "—"}`,
+    `• تسكن: ${d.residence || "—"}`,
+    `• تلوّج على: ${d.specialty || "—"}`,
+    `• المدينة المفضلة: ${d.city || "—"}`,
+    `• حالتك: ${d.caseText || "—"}`,
+    `• الوثائق: ${vpatDocsDisplay(L, d)}`,
+    `• طلباتك: ${d.constraints || "—"}`,
+  ] : [
+    `• El esm: ${d.name || "—"}`,
+    `• Toskon: ${d.residence || "—"}`,
+    `• Tlawej 3la: ${d.specialty || "—"}`,
+    `• El mdina el mofadla: ${d.city || "—"}`,
+    `• 7altek: ${d.caseText || "—"}`,
+    `• El watha2e9: ${vpatDocsDisplay(L, d)}`,
+    `• Talabetek: ${d.constraints || "—"}`,
+  ];
+  if ((d.questions || []).length)
+    rows.push(L === "fr" ? `• Questions pour les médecins : ${d.questions.join(" | ")}`
+      : L === "ar" ? `• أسئلة للأطباء: ${d.questions.join(" | ")}`
+      : `• As2ila lel atibba: ${d.questions.join(" | ")}`);
+  const tail = L === "fr" ? "C'est correct ? Écrivez « oui » pour confirmer, ou dites-moi ce qu'on corrige."
+    : L === "ar" ? "صحيح هكّا؟ اكتب «صحيح» للتأكيد، ولا قولي آش نبدّل."
+    : "S7i7 haka? Ekteb «s7i7» lel ta2kid, walla 9olli chnowa nbadel.";
+  return head + "\n" + rows.join("\n") + "\n" + tail;
+}
+
+// "Stay on the current step" reply body: at confirm, staying means showing
+// the summary again; everywhere else it means re-asking the step's question.
+function vpatReask(stage, lang, d) {
+  if (stage === "vpat_confirm" || stage === "vpat_fix_field" || stage === "vpat_fix_value")
+    return vpatSummary(lang, d);
+  return vpatAsk(stage, lang, d);
+}
+
+function vpatIsConfirm(text) {
+  const raw = (text || "").trim().toLowerCase().replace(/[.,!؟?]/g, "");
+  if (/(ghalet|ghalt|غلط|faux|incorrect|wrong|pas correct|nbadel|badal|بدّل|نبدّل)/.test(raw)) return false;
+  if (/^(ey|eyy|oui|yes|ok|na3m|aye|اي|أي|نعم|اه|صحيح|s7i7|sa7i7|d'accord|daccord|correct|parfait|تمام|mriguel|mrigla)$/.test(raw)) return true;
+  return /(s7i7|sa7i7|صحيح|c'est correct|c est correct|tout est correct|kol chay s7i7|كل شي صحيح)/.test(raw);
+}
+
+// Which case field does a correction message point at? ("docs" re-enters the
+// documents step instead of taking a typed value.)
+function vpatFieldOf(text) {
+  const raw = text || "";
+  const t = " " + raw.toLowerCase() + " ";
+  if (/(e5tisas|اختصاص|spécialité|specialite|specialty|3amaliya|عملية|intervention|procédure|procedure)/.test(t) || /(اختصاص|عملية)/.test(raw)) return "specialty";
+  if (/(watha2e9|وثائق|documents|docs|ta9arir|تقارير|تصوير)/.test(t) || /(وثائق|تقارير)/.test(raw)) return "docs";
+  if (/(talabet|طلبات|contraintes|ta9sit|تقسيط|budget|ميزانية|mizaniya|demandes)/.test(t) || /(طلبات|تقسيط|ميزانية)/.test(raw)) return "constraints";
+  if (/(mdina el mofadla|ville préférée|ville preferee|preferred city|المدينة المفضلة)/.test(t) || /(المدينة المفضلة)/.test(raw)) return "city";
+  if (/(sakan|noskon|yoskon|تسكن|سكن|habit|résidence|residence|تسكن)/.test(t) || /(سكن|تسكن)/.test(raw)) return "residence";
+  if (/(esm|اسم|nom|name)/.test(t) || /(اسم)/.test(raw)) return "name";
+  if (/(mdina|مدينة|ville|city)/.test(t) || /(مدينة)/.test(raw)) return "city";
+  if (/(7ala|حالة|cas|case|description|mochkla|مشكل)/.test(t) || /(حالة|مشكل)/.test(raw)) return "caseText";
+  return null;
+}
+
+function vpatFixValueAsk(lang, field) {
+  const L = lang || "latin";
+  const label = {
+    name: L === "fr" ? "le nom" : L === "ar" ? "الاسم" : "el esm",
+    residence: L === "fr" ? "la résidence (pays et ville)" : L === "ar" ? "السكن (البلد والمدينة)" : "el sakan (el balad wel mdina)",
+    specialty: L === "fr" ? "la spécialité ou l'intervention" : L === "ar" ? "الاختصاص ولا العملية" : "el e5tisas walla el 3amaliya",
+    city: L === "fr" ? "la ville préférée" : L === "ar" ? "المدينة المفضلة" : "el mdina el mofadla",
+    caseText: L === "fr" ? "la description de votre cas" : L === "ar" ? "وصف حالتك" : "wasf 7altek",
+    constraints: L === "fr" ? "vos demandes" : L === "ar" ? "طلباتك" : "talabetek",
+  }[field] || "";
+  return L === "fr" ? `D'accord — écrivez ${label} correctement :`
+    : L === "ar" ? `باهي — اكتب ${label} بالصحيح:`
+    : `Behi — ekteb ${label} bel s7i7:`;
+}
+
+function vpatCaseNotification(phone, d) {
+  return "🧾 7ala maridh jdida — VIXA (53)\n" +
+    `Esm: ${d.name || "—"}\n` +
+    `Numero: ${phone}\n` +
+    `Yoskon: ${d.residence || "—"}\n` +
+    `Ylawej 3la: ${d.specialty || "—"}\n` +
+    `El mdina el mofadla: ${d.city || "—"}\n` +
+    `El 7ala (b kelmetou): ${d.caseText || "—"}\n` +
+    `El watha2e9: ${d.docs ? d.docs + " teb3atou" : "ma 3andouch"}\n` +
+    `Talabet/9youd: ${d.constraints || "—"}\n` +
+    `As2ila lel atibba: ${(d.questions || []).join(" | ") || "—"}`;
+}
+
+// Entry point: greeting (patient-service framing, never the owner pitch) +
+// first question. A name already known from the owner flow is kept.
+async function startVixaPatientIntake(phone, lang, clinic, prefill, emergency) {
+  const d = { lang: lang || "latin", docs: 0, questions: [] };
+  if (prefill && prefill.name) d.name = prefill.name;
+  const stage = d.name ? "vpat_ask_residence" : "vpat_ask_name";
+  await db.saveVendorLead(phone, stage, JSON.stringify(d));
+  let greet = VPAT_GREETING[d.lang];
+  if (d.name) // greeting ends with the name question — swap in the residence one
+    greet = greet.replace(/ شنوة اسمك؟$/, "").replace(/ chnowa esmek\?$/i, "").replace(/ quel est votre nom \?$/i, "")
+      + "\n" + vpatAsk("vpat_ask_residence", d.lang, d);
+  if (emergency) greet = VPAT_EMERGENCY[d.lang] + "\n" + greet;
+  return say(phone, greet, clinic);
+}
+
+async function handleVixaPatientTurn(phone, text, lead, ar, clinic) {
+  const d = vixaLeadData(lead);
+  const lang = d.lang || vpatLangOf(text, ar);
+  const stage = lead.stage;
+  const isMedia = /^\[media:/.test(text || "");
+
+  // Completed case: any new message gets the status line; "new case"
+  // restarts the intake; extra documents are still counted in the case.
+  if (stage === "vpat_done") {
+    if (/(7ala jdida|حالة جديدة|nouveau cas|new case|autre cas)/.test(" " + (text || "").toLowerCase() + " ") || /حالة جديدة/.test(text || ""))
+      return startVixaPatientIntake(phone, lang, clinic);
+    if (isMedia) {
+      d.docs = (d.docs || 0) + 1;
+      await db.saveVendorLead(phone, "vpat_done", JSON.stringify(d));
+    }
+    return say(phone, VPAT_FOLLOWUP[lang], clinic);
+  }
+
+  // Inbound media (webhook routes "[media:<type>]" here on vixa numbers):
+  // counted in the case, never interpreted, flow stays on the current step.
+  if (isMedia) {
+    d.docs = (d.docs || 0) + 1;
+    await db.saveVendorLead(phone, stage, JSON.stringify(d));
+    const ack = lang === "fr" ? `Document reçu ✅ (total : ${d.docs})`
+      : lang === "ar" ? `وصلت الوثيقة ✅ (المجموع: ${d.docs})`
+      : `Woslet el wathi9a ✅ (el majmou3: ${d.docs})`;
+    const tail = stage === "vpat_ask_docs"
+      ? (lang === "fr" ? " — s'il y en a d'autres envoyez-les, sinon écrivez « terminé »."
+        : lang === "ar" ? " — كان عندك أخرين ابعثهم، وكان كملت اكتب «كملت»."
+        : " — ken 3andek o5rin eb3athom, w ken kamalt ekteb «kamalt».")
+      : "\n" + vpatReask(stage, lang, d);
+    return say(phone, ack + tail, clinic);
+  }
+
+  // Emergency-sounding content: safety line first, never stored as an
+  // answer, flow stays on the current step.
+  if (looksLikeEmergency(text))
+    return say(phone, VPAT_EMERGENCY[lang] + "\n" + vpatReask(stage, lang, d), clinic);
+
+  // Cancel / dismissal mid-intake (never at confirm/correction: there a
+  // "le"/"non" means "something is wrong", not "cancel").
+  if (stage !== "vpat_confirm" && stage !== "vpat_fix_field" && stage !== "vpat_fix_value"
+      && stage !== "vpat_ask_constraints"
+      && (looksLikeRefusal(text) || looksLikeCancellation(text) || vixaDismissal(text))) {
+    await db.clearVendorLead(phone).catch(() => {});
+    return say(phone, VPAT_CANCEL[lang], clinic);
+  }
+
+  // Medical ADVICE question mid-flow: red line, the question is noted in the
+  // file for the doctors, flow stays on the current step.
+  if (vpatAdviceAsk(text)) {
+    d.questions = [...(d.questions || []), String(text).trim().slice(0, 300)];
+    await db.saveVendorLead(phone, stage, JSON.stringify(d));
+    return say(phone, VPAT_MEDICAL[lang] + "\n" + vpatReask(stage, lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_name") {
+    const name = parsePatientName(text);
+    if (!name) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.name = capName(name);
+    await db.saveVendorLead(phone, "vpat_ask_residence", JSON.stringify(d));
+    const hi = lang === "fr" ? `Enchanté ${d.name} ! `
+      : lang === "ar" ? `متشرفين ${d.name}! ` : `Mitcharfin ${d.name}! `;
+    return say(phone, hi + vpatAsk("vpat_ask_residence", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_residence") {
+    const v = (text || "").trim().slice(0, 100);
+    if (v.length < 2) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.residence = v;
+    await db.saveVendorLead(phone, "vpat_ask_specialty", JSON.stringify(d));
+    return say(phone, vpatAsk("vpat_ask_specialty", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_specialty") {
+    const v = (text || "").trim().slice(0, 150);
+    if (v.length < 2) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.specialty = v;
+    await db.saveVendorLead(phone, "vpat_ask_city", JSON.stringify(d));
+    return say(phone, vpatAsk("vpat_ask_city", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_city") {
+    const v = (text || "").trim().slice(0, 100);
+    if (v.length < 2) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.city = v;
+    await db.saveVendorLead(phone, "vpat_ask_case", JSON.stringify(d));
+    return say(phone, vpatAsk("vpat_ask_case", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_case") {
+    const v = (text || "").trim().slice(0, 1200);
+    if (v.length < 3) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.caseText = v;
+    await db.saveVendorLead(phone, "vpat_ask_docs", JSON.stringify(d));
+    return say(phone, vpatAsk("vpat_ask_docs", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_docs") {
+    const t = " " + (text || "").toLowerCase().trim() + " ";
+    const none = /(ma ?3andi(ch)?|ma3andich|aucun|aucune|rien|ما عندي|ما عنديش|معنديش|لا يوجد)/.test(t);
+    const done = /(kamalt|kamelt|terminé|termine|done|finished|كملت|خلصت|هذا كل|c'est tout)/.test(t);
+    if (!none && !done) return say(phone, vpatAsk(stage, lang, d), clinic);
+    if (d.fixReturn) { // came back here from a summary correction
+      delete d.fixReturn;
+      await db.saveVendorLead(phone, "vpat_confirm", JSON.stringify(d));
+      return say(phone, vpatSummary(lang, d), clinic);
+    }
+    await db.saveVendorLead(phone, "vpat_ask_constraints", JSON.stringify(d));
+    return say(phone, vpatAsk("vpat_ask_constraints", lang, d), clinic);
+  }
+
+  if (stage === "vpat_ask_constraints") {
+    const v = (text || "").trim().slice(0, 500);
+    if (!v) return say(phone, vpatAsk(stage, lang, d), clinic);
+    d.constraints = /^(le|la|non|no|لا|لأ|rien|aucune?|manheb chay|ما فماش|لا شي)$/i.test(v) ? "—" : v;
+    await db.saveVendorLead(phone, "vpat_confirm", JSON.stringify(d));
+    return say(phone, vpatSummary(lang, d), clinic);
+  }
+
+  if (stage === "vpat_confirm") {
+    if (vpatIsConfirm(text)) {
+      await db.saveVendorLead(phone, "vpat_done", JSON.stringify(d));
+      await notifySecretary(vpatCaseNotification(phone, d), clinic).catch(() => {});
+      return say(phone, VPAT_CLOSING[lang], clinic);
+    }
+    const f = vpatFieldOf(text);
+    if (f === "docs") {
+      d.fixReturn = true;
+      await db.saveVendorLead(phone, "vpat_ask_docs", JSON.stringify(d));
+      return say(phone, vpatAsk("vpat_ask_docs", lang, d), clinic);
+    }
+    if (f) {
+      d.fixField = f;
+      await db.saveVendorLead(phone, "vpat_fix_value", JSON.stringify(d));
+      return say(phone, vpatFixValueAsk(lang, f), clinic);
+    }
+    await db.saveVendorLead(phone, "vpat_fix_field", JSON.stringify(d));
+    return say(phone, VPAT_FIXWHICH[lang], clinic);
+  }
+
+  if (stage === "vpat_fix_field") {
+    const f = vpatFieldOf(text);
+    if (!f) return say(phone, VPAT_FIXWHICH[lang], clinic);
+    if (f === "docs") {
+      d.fixReturn = true;
+      await db.saveVendorLead(phone, "vpat_ask_docs", JSON.stringify(d));
+      return say(phone, vpatAsk("vpat_ask_docs", lang, d), clinic);
+    }
+    d.fixField = f;
+    await db.saveVendorLead(phone, "vpat_fix_value", JSON.stringify(d));
+    return say(phone, vpatFixValueAsk(lang, f), clinic);
+  }
+
+  if (stage === "vpat_fix_value") {
+    const f = d.fixField;
+    const v = (text || "").trim().slice(0, f === "caseText" ? 1200 : 200);
+    if (f && v.length >= 2) {
+      if (f === "name") { const nm = parsePatientName(v); d.name = capName(nm || v); }
+      else d[f] = v;
+    }
+    delete d.fixField;
+    await db.saveVendorLead(phone, "vpat_confirm", JSON.stringify(d));
+    return say(phone, vpatSummary(lang, d), clinic);
+  }
+
+  // Unknown vpat stage: re-ask the current step rather than dropping the case.
+  return say(phone, vpatReask(stage, lang, d), clinic);
+}
+
 // ---------- VIXA qualify: "3andek 3iyada?" -> branch ----------
 // "ey" (clinic owner) -> pitch (blech, no price) -> lead flow (vixa_ask_name).
 // "le" (patient by mistake) -> redirect to their own clinic, nothing sold.
@@ -4309,9 +4729,10 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
     return say(phone, yesFr ? vixaOwnerPitchFr() : vixaOwnerPitch(ar), clinic);
   }
   if (yn === "no") {
-    // Patient by mistake -> redirect, nothing sold.
-    await db.clearVendorLead(phone).catch(() => {});
-    return say(phone, fr ? VIXA_NOTOWNER_FR : ar ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic);
+    // Not an owner -> a patient: the intake branch (2026-10-21) replaces the
+    // old NOTOWNER dead-end. Nothing is sold to patients either.
+    return startVixaPatientIntake(phone, fr ? "fr" : ar ? "ar" : "latin", clinic, null,
+      looksLikeEmergency(text));
   }
   if (looksLikeRefusal(text) || looksLikeCancellation(text)) {
     await db.clearVendorLead(phone).catch(() => {});
@@ -4319,6 +4740,9 @@ async function handleVixaQualifyTurn(phone, text, ar, clinic, lead) {
       fr ? "D'accord, pas de problème." :
       ar ? "ok، ما فما حتى مشكل." : "D'accord, ma fama 7atta mochkla.", clinic);
   }
+  // A patient describing their case instead of answering ey/le -> intake.
+  if (vixaPatientSignal(text) && !vpatAdviceAsk(text))
+    return startVixaPatientIntake(phone, vpatLangOf(text, ar), clinic, null, looksLikeEmergency(text));
   // Unclear -> AI nudge (acknowledge + re-ask), no per-message regex.
   const vqq = fr ? "Vous êtes médecin / vous avez une clinique ? (oui/non)"
     : ar ? "انتي طبيب ولا عندك عيادة؟ (أي / لا)" : "Enti tbib walla 3andek 3iyada? (ey / le)";
@@ -4336,6 +4760,9 @@ async function handleVixaTurn(phone, text, clinic) {
   // 2) lead flow in progress (stages "vixa_*").
   if (vqual && vqual.stage && vqual.stage.indexOf("vixa_") === 0)
     return handleVixaLeadTurn(phone, text, vqual, ar0, clinic);
+  // 2b) patient intake in progress (stages "vpat_*").
+  if (vqual && vqual.stage && vqual.stage.indexOf("vpat_") === 0)
+    return handleVixaPatientTurn(phone, text, vqual, ar0, clinic);
   // 3) explicit lead trigger ("n7eb lel 3iyada mte3i" ...).
   if (vixaLeadTrigger(text)) {
     await db.saveVendorLead(phone, "vixa_ask_name", JSON.stringify({ lang: ar0 ? "ar" : "latin" }));
@@ -4343,6 +4770,11 @@ async function handleVixaTurn(phone, text, clinic) {
       ? "ممتاز! 🎉 باش نحضرولك المساعد للعيادة متاعك. شنوة اسمك؟"
       : "Super! 🎉 Bech n7adhroulek el assistant lel 3iyada mte3ek. Chnowa esmek?", clinic);
   }
+  // 3b) a patient describing their own case / seeking treatment -> intake
+  // (2026-10-21). Medical ADVICE stays on the red line below: a seeking
+  // phrase wins only when the message does not ask for advice.
+  if (vixaPatientSignal(text) && !vpatAdviceAsk(text))
+    return startVixaPatientIntake(phone, vpatLangOf(text, ar0), clinic, null, looksLikeEmergency(text));
   // 4) medical question -> redirect, NEVER answered (red line).
   if (vixaFaqKind(text) === "medical") {
     const fr = looksLikeFrenchRequest(text) || looksLikeFrenchAuto(text);
@@ -4609,7 +5041,8 @@ async function processPatientText(phone, text, numberId, displayNumber) {
       return (await say(phone, fr0 ? vixaOwnerPitchFr() : vixaOwnerPitch(useAr), clinic)).reply;
     }
     if (yn0 === "no") {
-      return (await say(phone, useAr ? VIXA_NOTOWNER_AR : VIXA_NOTOWNER_LATIN, clinic)).reply;
+      // Not an owner -> patient intake (2026-10-21), never the dead-end.
+      return (await startVixaPatientIntake(phone, useAr ? "ar" : "latin", clinic, null, false)).reply;
     }
     await db.saveVendorLead(phone, "vixa_qualify", JSON.stringify({ lang: useAr ? "ar" : "latin" })).catch(() => {});
     const r = await say(phone, useAr
@@ -5263,6 +5696,23 @@ app.post("/webhook", async (req, res) => {
         await sendWhatsApp(from, reply, numberId);
         await db.saveMessage(from, "assistant", reply, clinic && clinic.id).catch(() => {});
         continue;
+      }
+      // 1c) Patient-intake media (2026-10-21): on a VIXA number, a patient
+      // with an intake in progress sends reports/imaging as photos/PDFs —
+      // route them into the intake as a media event so they are counted in
+      // the case (never interpreted). Everywhere else — and for anyone
+      // without an intake in progress — non-text stays skipped as before.
+      if ((msg.type === "image" || msg.type === "document") && clinic.vertical === "vixa"
+          && !(clinic.secretary && samePhone(from, clinic.secretary)) && !samePhone(from, "17174204057")) {
+        const lead0 = await db.getVendorLead(from).catch(() => null);
+        if (lead0 && lead0.stage && lead0.stage.indexOf("vpat_") === 0) {
+          const mtext = `[media:${msg.type}]`;
+          console.log(`[msg] intake media from ${from} (${msg.type})`);
+          const reply = await processPatientText(from, mtext, numberId, displayNumber);
+          lastWebhook = { at: new Date().toISOString(), from, text: mtext, reply };
+          if (reply) await sendWhatsApp(from, reply, numberId);
+          continue;
+        }
       }
       if (msg.type !== "text" || !msg.text?.body) {
         console.log(`[msg] non-text from ${from} (${msg.type}) -> skipped`);
@@ -6149,4 +6599,6 @@ module.exports = { processPatientText, processSecretaryText, dates, buildRapport
   VIXA_GREETING, VIXA_GREETING_AR, isVixaDisplayNumber, SEED_VIXA_BY_NUMBER, SEED_VIXA_BY_ID, SEED_MAHJOUB, SEED_JRAD, SEED_CLINICS,
   vixaFaqKind, vixaFaqAnswer, vixaLeadTrigger, vixaFrenchFallback,
   vixaYesNo, vixaOwnerPitch, vixaOwnerPitchFr, handleVixaQualifyTurn,
+  // VIXA patient intake (2026-10-21, exported for the regression test)
+  vixaPatientSignal, vpatAdviceAsk, vpatIsConfirm, vpatFieldOf, handleVixaPatientTurn, startVixaPatientIntake,
   VIXA_OFFER_LATIN, VIXA_OFFER_AR, VIXA_INTRO_LATIN, VIXA_INTRO_AR };
